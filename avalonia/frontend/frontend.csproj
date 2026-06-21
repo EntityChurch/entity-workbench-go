@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>EntityAvalonia</RootNamespace>
+    <AssemblyName>entity-avalonia</AssemblyName>
+    <Version>0.8.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="entity-avalonia-tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.2.3" />
+    <PackageReference Include="Markdig" Version="0.41.0" />
+    <!-- Explicit SkiaSharp ref — Avalonia 11.2.3 pulls it transitively,
+         but we use SKGraphics.GetFontCacheUsed() from MarkdownViewPanel
+         to instrument the strike-cache size between renders (forensic
+         data for the open follow-on #4 investigation; see
+         MODEL-AVALONIA-RUNTIME.md §4 + §6). Pin to Avalonia.Skia's
+         transitive minimum to avoid downgrade errors. -->
+    <PackageReference Include="SkiaSharp" Version="2.88.9" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,109 @@
+# ===========================================================
+# avalonia — multi-stage build for the Avalonia desktop renderer
+#
+# Build context expectation: the parent of entity-workbench-go,
+# so both `entity-core-go/` and `entity-workbench-go/` are visible.
+# The Makefile handles invoking podman with the right context.
+# ===========================================================
+
+# -----------------------------------------------------------
+# Stage 1: build the Go c-shared bridge + Avalonia frontend
+# -----------------------------------------------------------
+FROM fedora:43 AS builder
+
+# Headless UI tests now run real Skia paint (UseHeadlessDrawing=false
+# in TestAppBuilder), so the builder image also needs libSkiaSharp's
+# native dependencies — fontconfig + freetype + harfbuzz + libpng.
+# Without these, the test process throws "Unable to load shared
+# library 'libSkiaSharp'" on first Window.Show().
+RUN dnf install -y \
+        golang \
+        gcc \
+        glibc-devel \
+        dotnet-sdk-8.0 \
+        fontconfig \
+        freetype \
+        harfbuzz \
+        libpng \
+        libicu \
+    && dnf clean all
+
+# Both siblings into /src
+COPY entity-core-go         /src/entity-core-go
+COPY entity-workbench-go    /src/entity-workbench-go
+
+# ---- Go c-shared bridge ------------------------------------
+# Symbols kept (no -s -w). When the app crashes, `make crash`
+# uses addr2line against this library to decode coredump
+# addresses to Go function names — we can't diagnose without it,
+# and the size cost is ~3-4MB which we don't care about.
+WORKDIR /src/entity-workbench-go/avalonia/bridge
+RUN CGO_ENABLED=1 \
+    go build -buildmode=c-shared \
+        -o /build/libbridge.so .
+
+# ---- Avalonia self-contained publish -----------------------
+WORKDIR /src/entity-workbench-go/avalonia/frontend
+RUN dotnet publish -c Release -r linux-x64 --self-contained true \
+        -p:PublishSingleFile=false \
+        -o /build/dist
+
+# Drop the bridge into the .NET runtime directory so the loader
+# finds it adjacent to the host executable.
+RUN cp /build/libbridge.so /build/dist/
+
+# Install dotnet-dump for managed crash analysis. Ship it inside
+# /build/dist so `make crash` on the host can run it via the
+# self-contained .NET runtime included in the dist. Without this
+# the host (which has no .NET SDK) can't decode managed minidumps.
+RUN dotnet tool install --tool-path /build/dist/tools dotnet-dump
+
+# -----------------------------------------------------------
+# Stage 1.5: headless UI tests
+#
+# Reuses the builder's SDK + already-built libbridge.so. Runs
+# Avalonia.Headless.XUnit tests against a real bridge-backed peer
+# (no mocks). Failures here fail the build, so `podman build
+# --target tester` is the make test-avalonia entry point.
+#
+# LD_LIBRARY_PATH=/build so the test process's DllImport("bridge")
+# finds the just-built libbridge.so adjacent to the test binary
+# in /build.
+# -----------------------------------------------------------
+FROM builder AS tester
+WORKDIR /src/entity-workbench-go/avalonia/tests/Workbench.Headless.Tests
+ENV LD_LIBRARY_PATH=/build
+RUN dotnet test -c Release --logger "console;verbosity=normal"
+
+# -----------------------------------------------------------
+# Stage 2: runtime image (minimal X11/GL stack for Avalonia)
+# -----------------------------------------------------------
+FROM fedora:43
+
+RUN dnf install -y \
+        libicu \
+        fontconfig \
+        freetype \
+        libX11 \
+        libXi \
+        libXcursor \
+        libXrandr \
+        libXinerama \
+        libxkbcommon \
+        libGL \
+        mesa-dri-drivers \
+        xorg-x11-server-Xvfb \
+        ImageMagick \
+    && dnf clean all
+
+WORKDIR /app
+COPY --from=builder /build/dist/ ./
+
+ENV LD_LIBRARY_PATH=/app
+# DOTNET_EnableDiagnostics=1 is the default — leaving the previous
+# explicit `=0` in place silenced every managed exception + stack
+# trace at process exit, which is what kept us guessing through
+# four segfaults. Make sure it stays enabled.
+ENV DOTNET_EnableDiagnostics=1
+
+CMD ["./entity-avalonia"]

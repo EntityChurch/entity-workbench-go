@@ -1,0 +1,28 @@
+module entity-workbench-go/entity-seed-site
+
+go 1.25.0
+
+require entity-workbench-go/entitysdk v0.0.0
+
+require (
+	go.entitychurch.org/entity-core-go/core v0.8.0 // indirect
+	go.entitychurch.org/entity-core-go/ext v0.8.0 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/mr-tron/base58 v1.2.0 // indirect
+	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/x448/float16 v0.8.4 // indirect
+	golang.org/x/sys v0.42.0 // indirect
+	modernc.org/libc v1.72.0 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.11.0 // indirect
+	modernc.org/sqlite v1.50.0 // indirect
+)
+
+replace (
+	go.entitychurch.org/entity-core-go/core => ../../entity-core-go/core
+	go.entitychurch.org/entity-core-go/ext => ../../entity-core-go/ext
+	entity-workbench-go/entitysdk => ../entitysdk
+)
