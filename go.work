@@ -1,0 +1,22 @@
+go 1.25.0
+
+use (
+	./entitysdk
+	./shellcmd
+	./shellboot
+	./shellpanel
+	./shell
+	./workbench
+	./console
+	./perfreview
+	./inspect
+	./publish
+	./entity-publish
+	./vcs
+	./entity-vcs
+	./fetch
+	./entity-fetch
+	./entity-seed-site
+	./entity-serve-cors
+	./avalonia/bridge
+)

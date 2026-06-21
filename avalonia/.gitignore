@@ -1,0 +1,6 @@
+bin/
+obj/
+dist/
+dist-native/
+*.so
+*.h

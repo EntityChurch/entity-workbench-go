@@ -1,0 +1,19 @@
+# Build-context exclusions for entity-workbench-go/avalonia/Containerfile.
+#
+# WHY THIS FILE LIVES HERE: podman reads .containerignore from the
+# build context root only. The avalonia Containerfile uses this
+# directory (the parent of all sibling entity-* repos) as its context,
+# so the ignore file must live here too.
+
+# `make -C entity-workbench-go/avalonia extract` writes here, which
+# sits *inside* the COPY'd subtree. Without this exclusion, every
+# extract mutates the workbench-go subtree, invalidating the
+# `COPY entity-workbench-go` layer on the next build and re-running
+# the entire Go + dotnet pipeline from scratch. With this exclusion,
+# successive `make up` runs are fully cache-hit.
+entity-workbench-go/avalonia/dist-native/
+
+# .git directories aren't needed for the build and are large + churny.
+# Excluding them shrinks the context tarball and stabilizes the
+# COPY layer hash against unrelated git activity.
+**/.git/

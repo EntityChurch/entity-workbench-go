@@ -1,0 +1,402 @@
+# ============================================================
+# entity-workbench-go Makefile
+# ============================================================
+#
+# All go invocations go through this Makefile. Never call `go test`
+# or `go build` directly — the Makefile pins the toolchain (see
+# GOTOOLCHAIN below) and forwards ARGS so callers don't have to
+# remember the toolchain or test flags every time.
+#
+# ---------- Workflow targets ----------
+#
+#   make test                                  Full test sweep (race, count=1)
+#   make test ARGS="-run TestE2E_Mount -v"     Narrow + verbose
+#   make test-sdk / test-shell                 Per-module sweeps
+#   make test-shellcmd / test-workbench
+#   make build                                 Build all shipped binaries
+#                                              (entity-shell + entity-console)
+#   make shell-build                           Just the entity-shell binary
+#   make shell                                 go run the shell (REPL)
+#   make shell ARGS="info"                     go run the shell (one-shot)
+#
+# ---------- Generic go alias (escape hatch) ----------
+#
+# When the workflow targets aren't enough, `make go` proxies any go
+# subcommand. Pass everything via ARGS="...", including the
+# subcommand itself:
+#
+#   make go ARGS="test -race -count=1 ./entitysdk/..."
+#   make go ARGS="build -ldflags '-X main.version=test' -o /tmp/eshell ./shell/cmd/entity-shell"
+#   make go ARGS="run ./shell/cmd/entity-shell help"
+#   make go ARGS="vet ./..."
+#   make go ARGS="mod tidy"
+#   make go ARGS="env GOTOOLCHAIN"
+#
+# Why ARGS= and not positional passthrough: make treats anything
+# starting with `-` as its own flag, so `make go test -race` doesn't
+# work — make never sees `-race` as an argument. ARGS= is the clean
+# workaround and keeps everything in this Makefile.
+#
+# ---------- Toolchain ----------
+#
+# Core-go's ext/go.mod declares `go 1.25.0`; workbench's modules
+# declare `go 1.24`. The newer requirement wins under the sibling-
+# replace setup, so we need a 1.25.x toolchain. Pinned here once so
+# callers never have to set GOTOOLCHAIN themselves. Setting it inline
+# on the command line triggers a permission prompt every invocation —
+# do NOT do that.
+# ============================================================
+
+PARENT := $(shell dirname $(CURDIR))
+GOMOD_CACHE := $(HOME)/.cache/go-mod-entity-workbench
+GOBUILD_CACHE := $(HOME)/.cache/go-build-entity-workbench
+
+# BIN_DIR is where `make build` installs runnable binaries.
+# Default: ~/bin (assumes user has it on PATH). Override per
+# invocation, e.g. `make build BIN_DIR=./bin` for a project-local
+# build. Binaries are always rebuilt fresh — no incremental cache
+# checks beyond what `go build` does internally.
+BIN_DIR ?= $(HOME)/bin
+
+# Absolutize BIN_DIR against the repo root. The per-module build targets
+# `cd` into their own module before `go build -o $(BIN_DIR)/...`, so a
+# RELATIVE BIN_DIR — the `BIN_DIR=bin` the bare-box targets pass, or a
+# documented `make build BIN_DIR=./bin` — would otherwise be re-rooted
+# inside each module and scatter binaries into console/bin,
+# entity-publish/bin, … `override` so a command-line BIN_DIR is caught too.
+override BIN_DIR := $(abspath $(BIN_DIR))
+
+export GOTOOLCHAIN ?= go1.25.1
+
+# Podman resource caps (committed defaults + per-machine override). The root
+# targets here are all native `go` and run no containers, but caps.mk is the
+# single committed source of the CAP_*/PODMAN_*_CAPS standard; avalonia/Makefile
+# includes the same file and uses the caps on every podman build/run.
+include caps.mk
+
+.PHONY: workbench-test console-build console-run test test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-publish perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native fmt-native
+
+# ============================================================
+# make + podman — bare-box entry points
+# ============================================================
+#
+# `make build` / `make test` run the native targets below INSIDE the
+# stock pinned golang image (which ships go + make + git), with the
+# meta repo bind-mounted at /src/entity-systems so the required sibling
+# `../entity-core-go/` resolves. Host needs only `make` + `podman`.
+#
+# On a machine that already has the Go toolchain, run the `-native`
+# targets directly (`make build-native` / `make test-native`) to skip
+# the container. To run a SINGLE granular target bare-box, append
+# `-box` (e.g. `make test-sdk-box`) — see the `%-box` rule below.
+TOOLCHAIN_IMAGE := golang:1.25-bookworm
+
+define IN_CONTAINER
+	mkdir -p $(GOMOD_CACHE) $(GOBUILD_CACHE)
+	podman run --rm \
+		-e GOTOOLCHAIN=local \
+		-v $(PARENT):/src/entity-systems:Z \
+		-v $(GOMOD_CACHE):/go/pkg/mod:Z \
+		-v $(GOBUILD_CACHE):/root/.cache/go-build:Z \
+		-w /src/entity-systems/entity-workbench-go \
+		$(TOOLCHAIN_IMAGE) \
+		$(1)
+endef
+
+.DEFAULT_GOAL := help
+
+# ADR-0019 Tier-1 verbs: help build test lint fmt check clean. build/test/lint/fmt
+# self-containerize (the `-native` workers run inside the pinned golang image via
+# IN_CONTAINER); `make <verb>-native` runs the worker directly on a Go host.
+help:
+	@echo "entity-workbench-go — make + podman (host needs only make + podman)"
+	@echo
+	@echo "  build    build every shipped Go binary, in-container"
+	@echo "  test     full -race sweep across all modules, in-container"
+	@echo "  lint     go vet ./... across all modules (read-only), in-container"
+	@echo "  fmt      gofmt -w over the tree (writes), in-container"
+	@echo "  check    lint + test (the green gate)"
+	@echo "  clean    remove build outputs (canonical binaries + strays)"
+	@echo
+	@echo "  -native variants run on a host Go toolchain; ARGS=… / *-box per the"
+	@echo "  Makefile header. Avalonia builds: cd avalonia (podman-only)."
+
+# Pull the toolchain image (optional; `make build`/`test` auto-pull).
+image:
+	podman pull $(TOOLCHAIN_IMAGE)
+
+build:
+	$(call IN_CONTAINER,make build-native BIN_DIR=bin)
+
+test:
+	$(call IN_CONTAINER,make test-native)
+
+# Tier-1 lint/fmt/check — same container-default / -native-opt-in split as
+# build/test. lint is read-only (go vet); fmt writes (gofmt -w).
+lint:
+	$(call IN_CONTAINER,make lint-native)
+
+fmt:
+	$(call IN_CONTAINER,make fmt-native)
+
+check: lint test
+
+# --- Single granular target, bare-box --------------------------------
+#
+# `make build` / `make test` self-containerize, but the granular targets
+# (test-sdk, test-shell, test-shellcmd, shell-build, publish-build, …)
+# call `go` directly: fine on a native-toolchain host, but
+# `go: command not found` on a bare box (only make + podman). The `%-box`
+# pattern rule runs ANY target inside the toolchain image, so a bare box
+# runs the granular targets too:
+#
+#   make test-sdk-box                      # was: make test-sdk
+#   make test-shellcmd-box                 # was: make test-shellcmd
+#   make publish-build-box BIN_DIR=bin     # was: make publish-build
+#   make test-shell-box ARGS="-run TestFoo"
+#
+# It mirrors the build/build-native split: the bare `test-sdk` stays the
+# native worker (used directly on a Go host AND re-invoked inside the
+# container by this rule); `test-sdk-box` is the containerized entry.
+# NOT for the interactive/host targets (shell, publish-serve, console-run)
+# — those need a tty / display / host LAN and stay host-side by design.
+%-box:
+	$(call IN_CONTAINER,make $* BIN_DIR=bin ARGS="$(ARGS)")
+
+# --- Entity Shell (REPL + one-shot) ---
+#
+# `make shell` runs the entity-shell from source via `go run`, so you
+# always get the latest code without managing a stale binary. Pass
+# extra flags or one-shot args via ARGS, e.g.:
+#
+#   make shell                          # interactive REPL
+#   make shell ARGS="ls"                # one-shot
+#   make shell ARGS="--json info"       # JSON output, one-shot
+#   make shell ARGS="-version"          # print build-stamped version + exit
+#   make shell-build                    # produce a ./entity-shell binary with stamped version
+#   make shell-test                     # run shellcmd + entitysdk tests
+#
+# See docs/architecture/USAGE-SHELL.md for usage examples.
+#
+# SHELL_VERSION is derived from git for stamp injection at build/run
+# time via -ldflags. `--dirty` annotates if the worktree has uncommitted
+# changes — useful for distinguishing "this is exactly v1.2.3" from
+# "this is v1.2.3 plus local edits."
+SHELL_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "(no-git)")
+SHELL_LDFLAGS := -ldflags "-X main.version=$(SHELL_VERSION)"
+
+shell:
+	go run $(SHELL_LDFLAGS) ./shell/cmd/entity-shell $(ARGS)
+
+shell-once: shell
+
+shell-help:
+	go run $(SHELL_LDFLAGS) ./shell/cmd/entity-shell help
+
+shell-build: ensure-bindir
+	go build $(SHELL_LDFLAGS) -o $(BIN_DIR)/entity-shell ./shell/cmd/entity-shell
+
+shell-test:
+	cd entitysdk && go test ./...
+	cd shellcmd && go test ./...
+
+# --- Workbench (shared library) ---
+
+workbench-test:
+	cd workbench && go test -v ./...
+
+# --- Console (TUI, no CGo) ---
+
+console-build: ensure-bindir
+	cd console && go build -v -o $(BIN_DIR)/entity-console .
+
+console-run: console-build
+	$(BIN_DIR)/entity-console
+
+# --- CDN corridor binaries (publish + vcs + fetch) ---
+#
+# Same posture as shell-build / console-build: each cd's into its own
+# module so the per-module go.mod replace directives win cleanly, then
+# emits the binary into BIN_DIR. Run `make build` to rebuild all of
+# them; run any single one for a targeted rebuild.
+
+publish-build: ensure-bindir
+	cd entity-publish && go build -o $(BIN_DIR)/entity-publish .
+
+# publish-serve — publish a peer's tree + serve the output dir over
+# HTTP via python3 -m http.server so cohort validators on this LAN
+# can fetch the http-poll origin and verify hash/manifest behaviour.
+# Sits in the foreground until Ctrl-C.
+#
+# entity-publish prints the full §6.5.3 manifest, peer-id, and URL
+# patterns on every run — share that block with the cohort so their
+# validate-peer harnesses know what to target.
+#
+# Usage:
+#   make publish-serve IDENTITY=alice
+#   make publish-serve IDENTITY=alice PREFIX=docs/ PORT=8080
+#   make publish-serve IDENTITY=alice IP=10.0.0.5
+#
+# Variables:
+#   IDENTITY (required)  Named identity under ~/.entity/identities/.
+#   PREFIX               Tree prefix to publish; default "" = whole tree.
+#   PORT                 HTTP listen port. Default 8080.
+#   IP                   Advertised LAN IP. Auto-detected from
+#                        `hostname -I`; pass explicitly to override.
+#   PUBLISH_OUT          Output directory. Default ./publish-out.
+PORT ?= 8080
+PUBLISH_OUT ?= ./publish-out
+PREFIX ?=
+IP ?= $(shell hostname -I 2>/dev/null | awk '{print $$1}')
+
+publish-serve: publish-build
+ifndef IDENTITY
+	$(error IDENTITY is required, e.g. `make publish-serve IDENTITY=alice`)
+endif
+	@if [ -z "$(IP)" ]; then \
+		echo "publish-serve: could not auto-detect LAN IP; pass IP=... explicitly"; \
+		exit 1; \
+	fi
+	@rm -rf $(PUBLISH_OUT)
+	$(BIN_DIR)/entity-publish \
+		-identity $(IDENTITY) \
+		-prefix '$(PREFIX)' \
+		-out $(PUBLISH_OUT) \
+		-origin http://$(IP):$(PORT)
+	@echo ""
+	@echo " serving $(PUBLISH_OUT) at http://$(IP):$(PORT) — Ctrl-C to stop"
+	@echo ""
+	@if ss -lnt 2>/dev/null | awk '{print $$4}' | grep -qE ':$(PORT)$$'; then \
+		echo "publish-serve: port $(PORT) is already in use — clear it with:"; \
+		echo "    pkill -f 'http.server $(PORT)'   # or"; \
+		echo "    fuser -k $(PORT)/tcp"; \
+		exit 1; \
+	fi
+	cd $(PUBLISH_OUT) && exec python3 -m http.server $(PORT)
+
+vcs-build: ensure-bindir
+	cd entity-vcs && go build -o $(BIN_DIR)/entity-vcs .
+
+fetch-build: ensure-bindir
+	cd entity-fetch && go build -o $(BIN_DIR)/entity-fetch .
+
+ensure-bindir:
+	@mkdir -p $(BIN_DIR)
+
+# --- Canvas removed (Phase I Session 1) ---
+# Raylib-based canvas renderer deleted; the workbench-go family is now
+# console (TUI, frozen as discipline enforcer) + avalonia (primary GUI).
+# See PHASE-I-MULTI-PEER-PLAN.md §3 and feedback-no-forced-renderer-parity.
+
+# --- Top-level test + build (race-enabled, count=1 by default) ---
+#
+# See the docs at the top of this Makefile for usage examples.
+
+# -timeout=30m: the default `go test` per-package timeout is 10m. The heavy
+# multi-peer E2E convergence suite in shellcmd (TestE2E_Bidirectional_*,
+# TestE2E_Burst*, …) is collectively slow under `-race` — individual cases run
+# many seconds (e.g. TestE2E_Bidirectional_BurstThenTrigger ≈ 22.7s), and the
+# documented ~17× modernc.org/sqlite-under-race penalty (see AGENTS.md "Perf
+# measurement") compounds it, pushing the cumulative package runtime past the
+# 10m default and panicking the suite (exit 2). Give generous headroom; this
+# matches the perfreview target's -timeout=20m precedent.
+GOTEST_FLAGS := -race -count=1 -timeout=30m
+
+test-native: test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-inspect
+	@echo "--- full sweep passed ---"
+
+# Native lint/fmt workers (used directly on a Go host AND re-invoked inside the
+# toolchain image by the containerized lint/fmt targets above). lint = go vet
+# across test-native's module set plus `publish`; fmt = gofmt -w over the whole
+# tree (gofmt operates on files, so one pass covers every module). Note: the
+# shipped-binary modules console/entity-{publish,vcs,fetch} are not vetted here
+# — widen LINT_MODULES if lint should track the full `make build` ship set.
+LINT_MODULES := entitysdk inspect shell shellboot shellcmd shellpanel workbench publish
+
+lint-native:
+	@for m in $(LINT_MODULES); do \
+		echo "== vet $$m =="; (cd $$m && go vet $(ARGS) ./...) || exit 1; \
+	done
+	@echo "--- vet clean ---"
+
+fmt-native:
+	gofmt -w .
+	@echo "--- gofmt -w done ---"
+
+test-sdk:
+	cd entitysdk && go test $(GOTEST_FLAGS) $(ARGS) ./...
+
+test-inspect:
+	cd inspect && go test $(GOTEST_FLAGS) $(ARGS) ./...
+
+test-shell:
+	cd shell && go test $(GOTEST_FLAGS) $(ARGS) ./...
+
+test-shellboot:
+	cd shellboot && go test $(GOTEST_FLAGS) $(ARGS) ./...
+
+test-shellcmd:
+	cd shellcmd && go test $(GOTEST_FLAGS) $(ARGS) ./...
+
+test-shellpanel:
+	cd shellpanel && go test $(GOTEST_FLAGS) $(ARGS) ./...
+
+test-workbench:
+	cd workbench && go test $(GOTEST_FLAGS) $(ARGS) ./...
+
+test-publish:
+	cd publish && go test $(GOTEST_FLAGS) $(ARGS) ./...
+
+# perfreview — production-readiness measurement harness. Gated by the
+# `perfreview` build tag (files use `//go:build perfreview`) so default
+# `make test` skips them. No -race here: modernc.org/sqlite slows ~17×
+# under the race detector per feedback_race_detector_vs_sqlite memo,
+# which would distort every measurement.
+perfreview:
+	cd perfreview && go test -v -count=1 -tags=perfreview -timeout=20m $(ARGS) ./...
+
+# `make build` builds every shipped binary (entity-shell, entity-console,
+# CDN corridor tools). The Avalonia bridge .so is built separately by
+# avalonia/bridge/build.sh; see avalonia/README.md.
+#
+# clean-strays runs first to nuke any dir-named binaries that `go
+# build` drops when invoked directly inside a module dir without
+# `-o`. The Makefile always uses `-o`, but past invocations + habit
+# leave artifacts that get mistaken for current builds (cf. the
+# `./console/console` incident where a May-9 binary was
+# silently launched instead of today's `entity-console`).
+build-native: clean-strays shell-build console-build publish-build vcs-build fetch-build
+	@echo "--- built into $(BIN_DIR): entity-shell entity-console entity-publish entity-vcs entity-fetch ---"
+
+# Nuke any binary named after its directory in a module dir. These
+# are never produced by the Makefile — they only appear when someone
+# (or a past version of this Makefile) ran `go build` without `-o`.
+# Listing them out explicitly so it's obvious what's being removed.
+clean-strays:
+	@for p in console/console shell/shell workbench/workbench workbench/entity-console \
+	         entity-publish/entity-publish entity-vcs/entity-vcs entity-fetch/entity-fetch \
+	         entity-seed-site/entity-seed-site entity-serve-cors/entity-serve-cors \
+	         canvas/canvas canvas/entity-canvas \
+	         entity-shell; do \
+		if [ -f "$$p" ]; then \
+			echo "removing stray binary: $$p"; \
+			rm -f "$$p"; \
+		fi; \
+	done
+
+# Wipe all build outputs — canonical binaries + strays. Use after a
+# rename or when you're unsure what's stale.
+clean: clean-strays
+	@rm -f entity-shell console/entity-console
+	@rm -f $(BIN_DIR)/entity-shell $(BIN_DIR)/entity-console \
+	       $(BIN_DIR)/entity-publish $(BIN_DIR)/entity-vcs $(BIN_DIR)/entity-fetch
+	@echo "--- cleaned ($(BIN_DIR) + strays) ---"
+
+# --- Generic go alias (escape hatch for any go subcommand) ---
+#
+# `make go ARGS="subcommand <flags> <pkgs>"` — see docs at the top of
+# the Makefile for examples. Covers test/build/run/vet/mod/fmt/env/...
+# without needing a separate target per subcommand.
+
+go:
+	go $(ARGS)

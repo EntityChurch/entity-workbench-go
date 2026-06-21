@@ -1,0 +1,177 @@
+# Canonical docs manifest for entity-workbench-go.
+#
+# Declares the *publishable* canonical doc surface so the content leaf can
+# ingest these instead of hand-authoring prose about them. Absence is the
+# honest default: only docs ready for public eyes are listed here. Everything
+# else under docs/architecture/ (status snapshots, reviews, EXPLORATION-*,
+# PROPOSAL-*, design notes, phase plans) is ephemeral and is scrubbed by the
+# release builder's path/name patterns — intentionally not listed.
+#
+# Schema mirrors docs/release-readiness/CANONICAL-DOCS-FORMAT.md (meta).
+# Paths are repo-relative (resolved against this manifest's location).
+
+[project]
+name   = "Entity Workbench (Go)"
+slug   = "entity-workbench-go"
+repo   = "entity-workbench-go"
+github = "https://github.com/entity-systems/entity-workbench-go"
+intro  = """
+Entity Workbench (Go) is a reference application built on the Entity Core
+Protocol — it sits at the bindings/apps layer of the ecosystem, above the Go
+reference implementation (entity-core-go) and below nothing: nothing else
+depends on it. It exists to show one coherent way to build an entity-native
+application: a CLI (entity-shell), a TUI (entity-console), a desktop GUI
+(Avalonia), a Go SDK (entitysdk) over the kernel, and a small CDN-corridor
+toolset (entity-publish / entity-vcs / entity-fetch).
+
+It is a *reference paradigm, not a mandate*. The protocol does not require any
+of these shapes; the workbench is an opinionated demonstration, and the
+documents below are the disciplines and patterns that demonstration holds
+itself to — offered as a worked example, not a standard to conform to.
+"""
+
+# ---------------------------------------------------------------------------
+# The canonical framework: the rule set this project measures itself against,
+# the runtime model it stands on, the recipes that respect the rules, and the
+# testing + logging conventions.
+# ---------------------------------------------------------------------------
+
+[[doc]]
+path  = "docs/architecture/DISCIPLINE-CHARTER.md"
+title = "Discipline Charter"
+blurb = "The 17 disciplines (D1–D17), the nine review questions, and the anti-pattern catalog (AP1–AP9) — the rule set everything is measured against."
+group = "Disciplines & runtime model"
+
+[[doc]]
+path  = "docs/architecture/MODEL-AVALONIA-RUNTIME.md"
+title = "Avalonia Runtime Model"
+blurb = "Forensic record of what the Avalonia/.NET/Skia/X11 runtime actually does: stack diagram, type-lifecycle matrix, six-boundary map, invariants."
+group = "Disciplines & runtime model"
+
+[[doc]]
+path  = "docs/architecture/GUIDE-AVALONIA-PANEL-PATTERNS.md"
+title = "Avalonia Panel Patterns"
+blurb = "The recipes (P0–P6) for building panels that respect the disciplines. New panels lift these shapes."
+group = "Disciplines & runtime model"
+
+[[doc]]
+path  = "docs/architecture/TESTING-STRATEGY.md"
+title = "Testing Strategy"
+blurb = "The four test tiers and what each one proves (and does not). Naming the tier is the discipline."
+group = "Disciplines & runtime model"
+
+[[doc]]
+path  = "docs/architecture/LOGGING-CONVENTIONS.md"
+title = "Logging Conventions"
+blurb = "PanelLog breadcrumb discipline and category list — the pre-crash forensic surface."
+group = "Disciplines & runtime model"
+
+# ---------------------------------------------------------------------------
+# Usage guides — how to drive the tools the repo ships.
+# ---------------------------------------------------------------------------
+
+[[doc]]
+path  = "docs/architecture/PERFORMANCE-CHARACTERISTICS.md"
+title = "Performance Characteristics & Proven Capabilities"
+blurb = "Measured numbers from the perfreview harness (write latency, signature cost, delivery throughput, continuations, compute, storage lifecycle, resilience) + the end-to-end capabilities the test suite proves. How to reproduce it all."
+group = "Proof & performance"
+
+[[doc]]
+path  = "docs/architecture/USAGE-SHELL.md"
+title = "Entity Shell — Usage"
+blurb = "The primary CLI: entity-shell (REPL + one-shot), its verbs, flags, and identity/storage options."
+group = "Usage guides"
+
+[[doc]]
+path  = "docs/architecture/USAGE-REVISION-HISTORY.md"
+title = "Revision History — Usage"
+blurb = "Working with revision/version history: diff, follow, and auto-version workflows."
+group = "Usage guides"
+
+[[doc]]
+path  = "docs/architecture/USAGE-PROTOTYPE-FILESYSTEM-SYNC.md"
+title = "Filesystem Sync — Usage"
+blurb = "Bridging a filesystem directory to a tree prefix via the shell's mount verb; edits round-trip to disk."
+group = "Usage guides"
+
+[[doc]]
+path  = "docs/architecture/USAGE-CROSS-IMPL-VALIDATION.md"
+title = "Cross-Impl Validation — Usage"
+blurb = "Validating interop against the other reference implementations."
+group = "Usage guides"
+
+[[doc]]
+path  = "docs/architecture/USAGE-DEPLOYMENT-DRY-RUN.md"
+title = "Deployment Dry-Run — Usage"
+blurb = "The wipe-and-rebuild deployment posture and how to rehearse it."
+group = "Usage guides"
+
+[[doc]]
+path  = "docs/architecture/GUIDE-CONTINUATIONS-WORKBENCH.md"
+title = "Continuations Guide"
+blurb = "Cross-peer follow / continuation patterns as exercised by the workbench."
+group = "Usage guides"
+
+# ---------------------------------------------------------------------------
+# Architecture & framework reference — the durable "what this is and how it's
+# built" layer.
+# ---------------------------------------------------------------------------
+
+[[doc]]
+path  = "docs/ENTITY-SYSTEM.md"
+title = "Entity system — reference"
+blurb = "Reference orientation to the entity system as the workbench builds on it."
+group = "Architecture & framework"
+
+[[doc]]
+path  = "docs/architecture/ARCHITECTURE.md"
+title = "Workbench architecture map"
+blurb = "The repo architecture map: the CLI/TUI/GUI surfaces, the Go SDK, and how they sit on the kernel."
+group = "Architecture & framework"
+
+[[doc]]
+path  = "docs/architecture/ENTITY-APPLICATION-FRAMEWORK.md"
+title = "Entity Application Framework"
+blurb = "The kernel→framework→application doctrine — the methodology thesis for building an entity-native application."
+group = "Architecture & framework"
+
+[[doc]]
+path  = "docs/architecture/ENTITY-SDK-API.md"
+title = "Entity SDK — Go API surface"
+blurb = "The entitysdk Go API surface the workbench programs against."
+group = "Architecture & framework"
+
+[[doc]]
+path  = "docs/architecture/APPLICATION-HANDLER-INTEGRATION.md"
+title = "Application–handler integration"
+blurb = "How application code integrates with protocol handlers."
+group = "Architecture & framework"
+
+[[doc]]
+path  = "docs/architecture/CROSS-IMPL-HELPER-REFERENCE.md"
+title = "Cross-impl helper reference (authoritative)"
+blurb = "The authoritative cross-implementation helper contract used for interop work."
+group = "Architecture & framework"
+
+# ---------------------------------------------------------------------------
+# Direction docs — long-lived belief about a topic (per the repo's own
+# tracking-doc convention: {TOPIC}-DIRECTION.md is "Long-lived — edit in place").
+# ---------------------------------------------------------------------------
+
+[[doc]]
+path  = "docs/architecture/DEPLOYMENT-DIRECTION.md"
+title = "Deployment direction"
+blurb = "Operational posture: the wipe-and-rebuild model, identity-bundle backup, and the keypair/identity terminology convention (§3)."
+group = "Direction"
+
+[[doc]]
+path  = "docs/architecture/SHELL-DIRECTION.md"
+title = "Shell direction"
+blurb = "Long-lived belief about the entity-shell's direction and design."
+group = "Direction"
+
+[[doc]]
+path  = "docs/architecture/DIAGNOSTIC-DIRECTION.md"
+title = "Diagnostic direction"
+blurb = "The 'observe, don't theorize' inspect doctrine for diagnosing the running application."
+group = "Direction"

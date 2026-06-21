@@ -1,0 +1,36 @@
+# Binaries — canonical outputs and any "dir-named" strays Go drops
+# when someone runs `go build` directly inside a module dir without
+# `-o`. The Makefile always uses `-o`, but past invocations and habit
+# leave artifacts; keep this list aligned with the `clean-strays`
+# Makefile target.
+entity-shell
+console/entity-console
+console/console
+canvas/entity-canvas
+canvas/canvas
+shell/shell
+workbench/workbench
+workbench/entity-console
+entity-publish/entity-publish
+entity-vcs/entity-vcs
+entity-fetch/entity-fetch
+entity-seed-site/entity-seed-site
+entity-serve-cors/entity-serve-cors
+
+# Podman resource caps — per-machine overrides (RESOURCE-CAPS standard).
+# Committed defaults live in caps.mk; each machine's deviations go here and
+# must never be tracked. See caps.mk for the override schema.
+caps.local.mk
+
+# Go
+*.exe
+*.test
+*.out
+
+# Publish output — `make publish-serve` and any direct
+# `entity-publish` run drop the http-poll origin layout under
+# ./publish-out/ by default (top-level manifest + content/{wire[0:2]}
+# /{wire[2:4]}/{wire} + {peer_id}/{path}.bin). The directory is
+# wiped on every `make publish-serve` run; never meant to be tracked.
+# If you override `-out`/`PUBLISH_OUT`, add that path yourself.
+publish-out/
