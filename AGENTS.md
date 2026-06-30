@@ -93,9 +93,9 @@ entities):
   `LOGGING-CONVENTIONS.md`, `DEPLOYMENT-DIRECTION.md`, `SHELL-DIRECTION.md`,
   `REPOSITORY-WORKSPACE-ROADMAP.md`, active `PHASE-*-PLAN.md`). These are **undated /
   living** — edit in place.
-  - `docs/architecture/status/` — dated `STATUS-YYYY-MM-DD.md` snapshots (immutable once
-    published) + undated long-lived `status/{NAME}.md`. Latest:
-    `ls docs/architecture/status/STATUS-*.md | sort | tail -1`.
+  - `docs/status/` — the ephemeral status area: `STATUS.md` (the current self-contained
+    thread) plus any dated `STATUS-YYYY-MM-DD.md` snapshots (immutable once published).
+    (Moved here from the old top-level `status/`.)
   - `docs/architecture/reviews/` — dated cross-team exchanges (`reviews/{TOPIC}-{DATE}.md`);
     closed ones move to `reviews/archive/`.
 - **Don't synthesize project state from `git log` or top-down code reading** — use the
@@ -107,7 +107,7 @@ entities):
 - **`../entity-core-go/` is a sibling dependency, not part of this repo.** Read it for
   protocol/store behavior; never edit it from here (route cross-impl changes via `reviews/`
   per AGENTS-STANDARD).
-- **Status snapshots (`status/STATUS-YYYY-MM-DD.md`) are immutable once published** — never
+- **Status snapshots (`docs/status/STATUS-YYYY-MM-DD.md`) are immutable once published** — never
   re-open a closed snapshot to add work; write a new dated one.
 - **Avalonia is podman-only** — don't touch the host package set for the .NET toolchain.
 

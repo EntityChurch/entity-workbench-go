@@ -175,3 +175,9 @@ path  = "docs/architecture/DIAGNOSTIC-DIRECTION.md"
 title = "Diagnostic direction"
 blurb = "The 'observe, don't theorize' inspect doctrine for diagnosing the running application."
 group = "Direction"
+
+[[doc]]
+path  = "docs/status/STATUS.md"
+title = "Status"
+blurb = "Current project status — where the project is, recent work, backlog, and what's next."
+group = "Direction"
