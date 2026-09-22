@@ -2,7 +2,12 @@
 
 _Updated: 2026-09-07 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
-> **Start here:** **§16 — the blocker was the instrument, and M3 is much smaller than we
+> **Start here:** **§19 — the growth guard, the machinery that reached no pixel, and the
+> conflict detector that flagged every file**, then
+> **§18 — a file costs eight queue slots, two of our own numbers were wrong,
+> and the bound we were about to build on turned out to be a no-op**, then
+> **§17 — what it does under load, and the copy that stopped at 676**, then
+> **§16 — the blocker was the instrument, and M3 is much smaller than we
 > priced it**, then **§15 — the receiver stores nothing (SUPERSEDED by §16)**, then
 > **§14 — three peers**, then
 > **§13 — the SIGSEGV, named**, then
@@ -32,6 +37,354 @@ _Updated: 2026-09-07 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > project's own state lives in `docs/status/`, which publishes nothing: dated snapshots,
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
+
+## §19 NEW (2026-09-07) — the growth we could not bound, the machinery nobody could see, and a conflict detector that flagged every file
+
+§18 left three things at the top of the list: bound the unbounded change recording, put the
+catch-up machinery somewhere an operator can see it, and finish M3. All three are done. The
+finding worth reading is the third one, because it was wrong in a way that looked right.
+
+### 1. Recording growth is bounded per path now, and the bound is "stop"
+
+Change recording costs a flat ~1.2 KB per WRITE and nothing prunes it, so one continuously
+rewritten file — a log, a database, an editor swap file — is ~1.2 GB/day until the disk fills.
+§18 established that the substrate's own `max_depth` prunes nothing and that there is no
+collector in the cohort, so **there is no mechanism below us that makes an existing chain
+smaller.** The only lever is to stop adding.
+
+So the guard stops, and says so. Past 2,000 recorded versions of one path it writes a disabled
+exact-path history config and a durable record naming the path, the depth, the budget and the
+time; `status` and the *Sharing Status* panel both report it.
+
+**The trade is stated rather than buried: stopping keeps the OLDEST versions and loses the
+newest**, which is backwards for recovery. It is right for the workload it catches and it is
+why a tripped limit is a problem line on every reading rather than an internal event.
+
+Two things worth carrying. **The signal was free**: every recorded transition writes a head
+pointer, which is an ordinary tree mutation, so one prefix watch is exactly one event per
+transition for the price of a map increment — and it goes quiet by itself when recording stops.
+And **the exclusion is surgical because the kernel's own specificity rule makes it so**: an
+exact-path config disabled outranks the folder's `…/*`, so one file stops and its neighbours
+keep recording. That was a reading of a sibling repo, so it was a hypothesis until the
+end-to-end test ran it — with a control arm that does the same workload unguarded and asserts
+the chain keeps growing, without which the test passes against a build where recording never
+worked at all.
+
+Measured: budget 5, `server.log` stopped at 6 transitions with `notes.txt` beside it still
+recording; unguarded, 14 writes and a 14-deep chain still growing.
+
+### 2. Delivery saturation, catch-up and the growth guard reached a pixel
+
+All three were reachable from `entity-shell` and from nothing in the GUI — the wrong way round,
+because the failure they describe (a big copy stops part way, no error, every row green) is the
+one an operator hits first and can diagnose least.
+
+`ReconcileOutcome.Delivery` was the sharpest instance: computed on every reading since the load
+work, carried across the model boundary, and dropped by an undeclared bridge field one step
+short of the screen. That is AP49, and nothing would have noticed.
+
+The discipline the new section follows, and the one worth generalising: **measured-zero and
+not-measured must not render the same.** "Nothing dropped" and "nothing counted drops", "no
+pass recovered anything" and "no supervisor is running", "no path hit its budget" and "nothing
+is watching growth" — same words, opposite facts, and in each pair the second is the state in
+which the failure is silently in progress.
+
+### 3. The conflict detector flagged every file in the folder, and the reason is the finding
+
+M3's last step: notice when a delivery lands on a file you have edited, record what it replaced,
+and let you put it back.
+
+The discriminator was supposed to be free. The recorder writes who authored each chain position
+— a local edit arrives through the watcher (`local/files:watch`), a delivered one through
+blob-resolve (`local/files:write`) — and §16 measured exactly that. Read the head, compare.
+
+**Every file in a received folder has a `watch` head.** The receiver's own watcher ingests the
+file blob-resolve just wrote to disk; the bytes are identical but a file entity carries an
+mtime, and the watcher reads the filesystem's rather than the one the write recorded. Different
+entity, real transition, landing a second or so after every delivery.
+
+The baseline test asserts `trans[0].Operation == "write"` and passes — because it reads within a
+second of the delivery, before the echo arrives. **It is a measurement taken at one moment, read
+as a property**, and it had been written into a doc comment and into `AGENTS.md` as a fact about
+the chain. The generalisation: *a fact established by reading a mutable structure once is a fact
+about that instant*, and the tell is a test that reads immediately after the event it is about.
+
+What survives is the question *who last changed the BYTES* — walk the run of consecutive
+transitions carrying the current content hash and read its oldest member's operation. An
+mtime-only echo lengthens the run and cannot move its oldest member.
+
+**The anti-vacuity arm is what caught it**, not review. One delivery to an edited file and one
+to an untouched file in the same pass, asserting exactly one conflict. Without that arm,
+`return conflict` unconditionally passes — which is precisely the detection bug our own
+`SYNC-LIMITS` §5 says is the realistic cause of a conflict storm, and it is not self-limiting.
+
+### 4. What a conflict does now, and why the default creates no files
+
+`EXTENSION-REVISION` §2.3's `keep-both` keeps the local version at the path and writes the
+incoming one to a sibling. That is right for a two-way folder and wrong as a **default** here,
+for a reason that only appears in the topology this product ships most of: in a one-way share
+the receiver would stop converging to the owner's version and the owner would never be told.
+
+So the default converges — the arriving version wins on disk, as always — and records what it
+replaced, which stays recoverable from the chain. `keep-both` is a per-folder declaration.
+**Both versions are recoverable either way; the difference is whether both are PRESENT.**
+
+`resolve -keep mine` writes through the **filesystem**, and the obvious route is a silent
+regression: restoring through `local/files:write` records with a delivery's provenance, so the
+next catch-up pass reads that head, concludes the copy is stale, and undoes the operator's
+choice minutes later with nothing said. Gated by restoring and then running two passes.
+
+Verbs: `conflicts`, `resolve`. Panel: a row per file with **Restore mine** / **Keep theirs** /
+**Keep both**, and Restore offered only when the replaced version was actually kept. All four
+of `SYNC-LIMITS` §5's storm rules are met and the section says how.
+
+### 5. One flag was answering two questions
+
+`ReconcileOnStart` means *"I have declarations to re-establish"*; the catch-up supervisor needs
+*"am I going to be around to take another pass"*. They diverge for in-memory peers, so the GUI's
+`--ephemeral` peer — the one configuration where a lost file has no next launch to be recovered
+in — was the one without the loop. `Config.LongRunning` is the second question, or'd rather than
+merged so the several hundred peers the suites build measure exactly as they did.
+
+## §18 (2026-09-07) — a file costs eight queue slots, two of our published numbers were wrong, and two bounds we would have built on were already decided elsewhere
+
+§17 found that a big directory copy stops part way and said the cause was a saturating delivery
+queue. This is what happened when we stopped reasoning about that queue and swept it.
+
+### The cliff was partly a number we chose, in the wrong unit
+
+The subscription engine's delivery ring is configurable. Our SDK sets **4096** slots where
+core-go defaults to **65536** — a deliberate choice on a real memory measurement (~20.3 MB per
+peer, allocated eagerly, never released; a test binary holding ~100 peers paid ~2 GB). It was
+justified in our own source against core-go's stated sizing, *"sized for 1000+-file mount
+bursts"*, plus a four-fold margin.
+
+**That arithmetic counted files. The queue counts notifications.** One mounted file emits the
+watcher's file entity, the ingest chain's document, and the blob bindings. Swept with the
+catch-up supervisor off, so this measures the delivery path and not the mitigation:
+
+| ring slots | 2000 files | 10,000 files |
+|---|---|---|
+| **4096** (our old default) | **675**, 2350 dropped | — |
+| 16384 | 2000 ✓ in 3.0 s | **2949**, 12535 dropped |
+| **65536** (core-go's default) | 2000 ✓ in 3.0 s | **9100**, 900 dropped |
+| 262144 | 2000 ✓ in 3.3 s | 10,000 ✓ in 5.9 s |
+
+Bracketing those rows puts real demand at **6.5–8.2 slots per file**. A documented, four-fold
+margin was short by most of an order of magnitude because the unit was wrong, and the failure
+mode is silent data loss.
+
+**Both readings turned out to be true**, which is not what we expected: we set out to
+distinguish *"our default is too small"* from *"any finite queue fills"*. The default was too
+small — `shellboot.DefaultDeliveryQueueSize` is now 65536, the application tier making the
+opposite call to the library for the same reason it already does about the registry extension,
+and `Config.DeliveryQueueSize` exposes it, because it had been a documented mitigation
+reachable from no frontend at all. **And no value fixes it**: core-go's own default still loses
+900 of 10,000. The producer is a person with a file manager, and nothing in the delivery path
+can slow them down. The ring decides how big a burst finishes at live speed; the supervisor is
+what makes every larger one a delay rather than a loss.
+
+### Two numbers we published were wrong, and one of them was wrong in our own favour
+
+**"Live delivery runs ~90 files/s"** came from a 200-file run. Measured across two burst sizes,
+live delivery is **~2.3 s fixed cost plus ~0.36 ms per file** — and 2.3 s is essentially the
+whole of that 200-file run. It was never a throughput; it was an operation's setup cost divided
+by its file count.
+
+That retires **"the catch-up path is ~20× faster than the live path"**, which we had published
+as *the reason* the design leans on catch-up. The real gap is small. **Leaning on catch-up is
+still right, for the other reason** — and that is where this gets uncomfortable.
+
+### The specification had already said it, in a subsection we had not read
+
+`EXTENSION-SUBSCRIPTION` §5.5 ends: *"For guaranteed consistency, subscribers SHOULD
+periodically reconcile via GET on subscribed paths."* That sentence is the catch-up supervisor
+we designed from first principles over three days. §6.3 already MUSTs the outcome for mirrors.
+
+Our standing rule is *grep the dependency before you price the build*. We have applied it to the
+kernel four times and had never once applied it to the **specification**.
+
+**But when we did read it, §5.5's primary mechanism turns out not to work for this workload** —
+and that is worth more than the embarrassment. Gap detection is stated per-URI and works by a
+*later* notification arriving with a mismatched `previous_hash`. A folder sync writes most paths
+exactly once, so a dropped notification is the only one that chain will ever carry and **no
+successor arrives to mismatch**. Of 2350 dropped notifications, the number a conformant
+`previous_hash` implementation could have detected is **zero**. For bulk-create workloads the
+periodic reconciliation is not the belt-and-braces measure §5.5 presents it as; it is the only
+mechanism that works.
+
+### What went to architecture
+
+`reviews/SUBSCRIPTION-SATURATION-AND-THE-LAYER-BOUNDARY-2026-09-07.md`, with the layering
+question the operator asked and we cannot answer from here: *how much of flow control belongs in
+the extension?* Our position, held with varying confidence — the policy (ring size, backoff,
+whether to run a supervisor at all) is correctly ours; the **one** thing we would argue for is
+that publisher saturation be observable to a subscriber, because it is the single fact an
+application cannot obtain for itself, and every weakness in what we built traces to its absence.
+Our adaptive rate is a blind timer standing in for a feedback loop for exactly that reason.
+
+### The top open item got priced, and the substrate's own bound is a no-op
+
+Our standing top item is that change recording is **unbounded**: 2 entities and ~1.2 KB per
+*write*, so a shared folder containing a log or a database grows at ~1.2 GB/day with no error
+until the disk fills. Recording is on by default for a folder that receives, because the chain
+is what keeps an overwritten local edit recoverable.
+
+Priced against the substrate first, and it looked like a config change:
+`types.HistoryConfigData` carries `MaxDepth *uint64`, documented **"Max transitions per path;
+nil = no limit"**, and the recorder calls `prune(path, maxDepth)` after every transition.
+
+**It prunes nothing.** Measured through the real recorder at a real watched path:
+`max_depth = 3`, twelve serialized writes, **twelve transitions still reachable from the head.**
+`prune` walks to the nth transition and returns having written nothing — and cannot easily do
+otherwise, since transitions are immutable and content-addressed, so severing a link cascades a
+rewrite of the whole retained chain. Its comment's *"GC handles cleanup"* names a garbage
+collector that does not exist anywhere in the cohort. Setting `MaxDepth` today is a **pure
+cost**: an O(max_depth) walk per write, for nothing.
+
+Routed with the reproducer. The probe is kept and **inverts** — it fails if `max_depth` ever
+starts working, and says to take the cheap fix. The planning consequence, which is the reason
+this is worth a section: **a workbench-tier guard is real work, not a config field.**
+
+This is the fifth time we have priced a build against the substrate before starting and the
+first time the answer came back negative. That is the point of running it — *"the substrate does
+not have this"* is worth exactly as much as *"it does"*, and only one of the two is free.
+
+### Also this session
+
+- **`PeerManager.Destroy` never stopped the catch-up supervisor.** The loop runs on
+  `context.Background()` so a startup timeout cannot kill it, which also meant nothing cancelled
+  it when a peer was destroyed — one goroutine per removed peer, taking passes against a closed
+  store for the life of the process, invisible in `status` because a failed pass is not
+  recorded.
+- **The console had never set `ReconcileOnStart`**, so it ran neither the startup reconcile nor
+  the supervisor. Third instance of that shape on one flag. And the flag answers the wrong
+  question — it means *"I have durable declarations"* where the loop needs *"am I
+  long-running"*, so an in-memory peer that accepts a share mid-session is still uncovered.
+  Recorded rather than closed, with the reason: `Bootstrap` is what the test suites build peers
+  with, so defaulting the loop on for every peer changes the load profile of the whole sweep.
+- **A test we wrote this session failed 2 runs in 3 under suite load and passed every time in
+  isolation** — beside an unrelated change that raised per-peer memory 2.4×, which is exactly
+  what a memory regression looks like. It was our test: it asserted on the *starting* value of
+  an interval the adaptive rate is designed to change, so it was really asking whether a
+  goroutine had been scheduled yet. Six control runs located it. Worth recording because the
+  wrong conclusion arrives first and is the one nobody argues with.
+
+---
+
+## §17 (2026-09-07) — what folder sync does under load, and the copy that stopped at 676
+
+The load and failure-mode questions, asked for the first time. Full numbers, triage order and
+known limitations are in `docs/architecture/SYNC-LIMITS-AND-FAILURE-MODES.md`; this is the
+summary and what changed because of it.
+
+### The failure an operator hits first, and it was live
+
+Drop 2000 files into a shared folder at once. The sender ingests and binds all 2000. **676
+reach the receiver, and it stops there forever.** No error on either side, no chain error,
+`syncs` and `status` healthy throughout.
+
+The cause is not a bug in the kernel: the subscription engine's delivery queue is bounded and
+**drops on full**, deliberately, to avoid a deadlock. It happens on the **SENDING** peer,
+before anything reaches the wire — measured `sender dropped=2327, receiver dropped=0` — so the
+receiver is not behind, it was never told. There is no failed delivery to retry and no local
+counter that moves. Both peers are, from their own point of view, correct.
+
+**The defect was ours: nothing had ever read the kernel's counter.** `DroppedDeliveries()` and
+`DeliveryQueueDepth()` exist precisely so saturation is visible, and they had zero readers in
+this repo — not in shipped code, not in a test. D20 aimed at the kernel for the fourth time.
+
+And the suite could not have caught it. **Every cross-peer test in this tree moved between 1
+and 10 files**, so the burst regime was not under-tested, it was unreachable — no fixture was
+within two orders of magnitude of the bound. Catalogued as **AP77**.
+
+### What changed
+
+- **`shellcmd/delivery_health.go`** surfaces saturation through `status`, on the peer that
+  dropped. A silent stall is now a visible one.
+- **`shellcmd/catchup.go`** — a 60 s supervisor that re-derives the truth by asking each
+  sending peer what it actually holds and pulling what is missing. **On by default wherever
+  `ReconcileOnStart` is**, wired in `Bootstrap` rather than per-frontend (AP67). It does not
+  dial, which is what makes it safe on a timer where `Reconcile` is not.
+- **`catchup`** is a verb, and `status` reports the last pass — a background loop that silently
+  repairs things is half a feature, because an operator who cannot see it cannot tell "the
+  system healed itself" from "nothing was ever wrong".
+
+Gate: `shellboot/catchup_e2e_test.go`. Supervisor off, a 1500-file burst delivers **621** and
+stops; on, **1500 of 1500**. The control arm runs FIRST and the test *skips* rather than
+passing if the burst did not saturate on that machine — "1500 of 1500" is equally true of a
+working supervisor and a burst that never needed one.
+
+### The numbers that change design decisions
+
+**CORRECTED in §18 — both figures below are wrong.** Live delivery is ~2.3 s fixed + ~0.36 ms
+per file; the "~90 files/s" was a 200-file run's fixed setup cost divided by its file count,
+and the "20× faster" conclusion drawn from it does not survive. Backfill: ~1,900 files/s. A pass with nothing to do: **0.24 ms/file** (2000 files in 472 ms),
+because F9 already short-circuits on an equal blob hash. That asymmetry is the whole reason the
+design leans on catch-up rather than on making delivery more reliable.
+
+**Change recording is flat and unbounded.** 2 entities and ~1.2 KB per write, with p50 latency
+that does not move between 1k and 100k writes (141 µs → 165 µs). Affordable — but nothing
+prunes it, and the cost is per WRITE, not per file. A continuously-rewritten file is **~1.2
+GB/day**, silently, until the disk fills. **Do not share a directory containing a log, a
+database, or an editor's swap files.** Guarding this is owed.
+
+**Revision auto-versioning is the opposite and must not become a per-folder toggle.** ~4.5
+entities per write, and p50 goes 452 µs → 7 ms over 5,000 writes because each write recomputes
+a trie root over the whole prefix. Correct on a small curated prefix an operator points at
+deliberately; a trap as a checkbox beside a shared folder.
+
+### Conflict storms — designed against before they are reachable
+
+The realistic cause of a thousand conflict entities is a bug in "changed since delivery", not
+operator behaviour: a genuine concurrent edit is rare and self-limiting, a comparison bug fires
+on every file every pass. So three rules bind before conflict handling ships — a conflict pass
+is **rate-limited and fails closed**; conflicts are **listable and bulk-resolvable in the same
+change** that makes them creatable; and keep-both never destroys, so recovery is always
+"delete the copies". `SYNC-LIMITS-AND-FAILURE-MODES.md` §5.
+
+### The rate adapts, because a fixed period is wrong for one of the two regimes
+
+A folder that just took a burst is missing two thirds of itself; a folder idle since yesterday
+needs a pass only to notice something rare. Three orders of magnitude apart in urgency,
+identical in cost.
+
+The receiver cannot see the sender's counter, so the only local signal is **its own passes**:
+recovered files → delivery is losing things now; recovered nothing → it is not. No protocol
+change, and exactly as accurate as the use it is put to.
+
+| Signal | Next interval |
+|---|---|
+| The pass recovered files | **5 s** — to the floor, in one step |
+| The pass recovered nothing | **double**, to a 10 min ceiling |
+| Any pass | **never shorter than the pass itself** |
+
+`nextCatchUpInterval` is a pure function, so it is gated without a clock. Three properties, each
+earned: **recovery is asymmetric** (back off gently, return to the floor in one step — symmetric
+ramps are what make a sync tool feel broken, relaxing to ten minutes and then needing six passes
+to get interested again); **the ramp is a gradient, not a snap** (an earlier version clamped the
+way up at the configured rate and jumped 5 s → 60 s the instant a burst ended, discarding exactly
+the rates worth having while a copy trickles in, so the configured rate sets where the ramp
+*starts*); and **anti-churn — the wait is never shorter than the pass that produced it**, bounded
+at a 50% duty cycle and asserted as an invariant over a 50-pass sustained-load run.
+
+That last one is the one that matters, and it is why settling first is not merely cheaper but
+*more correct*: a catch-up reads **current state** rather than replaying a change stream, so one
+pass over a settled folder gets everything, while a pass taken mid-burst re-does most of its work.
+
+`status` reports the interval and whether the loop is recovering or settled — the two regimes
+produce an identical folder listing, and an operator looking at a stale folder needs to know
+which one they are in.
+
+### Still open
+
+Backpressure (the sender discards rather than slowing — belongs in the kernel's queue; catch-up
+makes it a delay, not a loss). Unbounded recording. First-change-after-restart, now mitigated by
+the startup catch-up pass but still uncaused. `Mode: both` receiver → owner. Four+ peers. No GUI
+surface for any of the catch-up machinery — it is reachable from `status` and `catchup` and from
+no pixel, which is D23's shape.
+
+---
 
 ## §16 NEW (2026-09-07) — the blocker was the instrument, and the milestone it blocked is mostly already built
 

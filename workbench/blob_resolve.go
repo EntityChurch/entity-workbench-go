@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"go.entitychurch.org/entity-core-go/core/crypto"
 	"go.entitychurch.org/entity-core-go/core/ecf"
@@ -68,6 +69,15 @@ const BlobResolvePattern = "workbench/blob-resolve"
 type BlobResolveHandler struct {
 	mu     sync.RWMutex
 	mounts map[string]string
+
+	// conflicts rate-limits the conflict path and fails closed past its
+	// limit — see conflict_detect.go. On the handler and not on a folder
+	// because a detection bug fires across every folder at once, which is
+	// exactly the case a per-folder limit would let through.
+	conflicts conflictLimiter
+	// conflictsDetected is this process's count, read through
+	// ConflictHealth. Guarded by the limiter's mutex.
+	conflictsDetected int
 }
 
 // NewBlobResolveHandler returns a new, mountless BlobResolveHandler.
@@ -331,15 +341,62 @@ func (h *BlobResolveHandler) Handle(ctx context.Context, req *handler.Request) (
 	// The deeper architectural fix lives in core-go: hctx.TreeSet
 	// (handler.go) should not fire a tree change event when the new
 	// entity hash equals the existing entity hash at the same path.
+	// The F9 arms, and the DIFFERENT one is where a conflict lives.
+	//
+	// Same hash → already current, short-circuit as above. Different hash
+	// → somebody changed something, and until M3 the handler assumed that
+	// somebody was the sender and overwrote. It is right most of the time
+	// and it is not always right: if the version on disk here was authored
+	// by OUR watcher, the overwrite replaces an edit the sender has never
+	// seen. The tree kept it — §1.1a guarantees that and the baseline test
+	// measures it — at a chain position no surface rendered and no verb
+	// reached, which made a recoverable loss an unrecoverable one.
+	var conflict conflictOutcome
+	var mineHash hash.Hash
+	var conflictRecoverable bool
 	if hctx.Store != nil {
-		if existingHash, ok := tryGetLocalFileBlobHash(hctx, targetTreePath); ok && existingHash == file.Content {
-			return ackEntity(200, map[string]interface{}{
-				"skipped":     true,
-				"reason":      "already_current",
-				"target_path": targetTreePath,
-				"blob_hash":   file.Content.String(),
-			})
+		if existingHash, ok := tryGetLocalFileBlobHash(hctx, targetTreePath); ok {
+			if existingHash == file.Content {
+				return ackEntity(200, map[string]interface{}{
+					"skipped":     true,
+					"reason":      "already_current",
+					"target_path": targetTreePath,
+					"blob_hash":   file.Content.String(),
+				})
+			}
+			mineHash = existingHash
+			conflict, conflictRecoverable = h.classifyConflict(
+				hctx, targetTreePath, targetPrefix, existingHash, file.Content)
 		}
+	}
+
+	// A decision the operator already made, honoured. Checked before the
+	// closure fetch because declining is the whole point — pulling the
+	// bytes of a version we are not going to write is work with no
+	// outcome, on every pass, forever.
+	if conflict == conflictDeclined {
+		return ackEntity(200, map[string]interface{}{
+			"skipped":     true,
+			"reason":      "declined_by_operator",
+			"target_path": targetTreePath,
+			"blob_hash":   file.Content.String(),
+		})
+	}
+
+	// FAIL CLOSED past the burst limit (SYNC-LIMITS §5 rule 1). Nothing
+	// is overwritten and nothing new is written: a storm is far more
+	// likely to be our comparison bug than their editing, and carrying on
+	// is the cheap wrong answer that is unrecoverable at scale. Recovery
+	// is automatic — the catch-up supervisor re-derives the truth on its
+	// next pass, by which time the window has expired — so this refusal
+	// delays a delivery rather than dropping it.
+	if conflict == conflictRefuse {
+		return handler.NewErrorResponse(429, "conflict_storm",
+			fmt.Sprintf("refusing to resolve a conflict at %s: more than %d "+
+				"conflicts in %s on this peer. Nothing was overwritten. Run "+
+				"`conflicts` to see what has been detected; delivery resumes by "+
+				"itself once the burst subsides",
+				targetTreePath, ConflictBurstLimit, ConflictBurstWindow))
 	}
 
 	// Fetch the blob closure cross-peer via system/content:get. Per
@@ -405,12 +462,177 @@ func (h *BlobResolveHandler) Handle(ctx context.Context, req *handler.Request) (
 			fmt.Sprintf("local/files:write returned status %d", status))
 	}
 
-	return ackEntity(200, map[string]interface{}{
+	// The conflict is recorded AFTER the write, and that ordering is the
+	// safe one in both directions. A record written first and a write
+	// that then fails would tell an operator their edit had been replaced
+	// when it had not — and the reverse, a lost record after a successful
+	// write, is exactly the state we were already in before M3, so the
+	// failure mode of this ordering is the status quo rather than a new
+	// false statement.
+	if conflict == conflictRecord || conflict == conflictKeepBoth {
+		keepBothPath := ""
+		if conflict == conflictKeepBoth {
+			keepBothPath = h.writeKeepBothSibling(ctx, hctx, targetTreePath, mineHash)
+		}
+		h.recordConflict(hctx, ConflictData{
+			Path:         qualify(string(hctx.LocalPeerID), targetTreePath),
+			Root:         strings.TrimSuffix(strings.TrimPrefix(targetPrefix, LocalFilesSourcePrefix), "/"),
+			RemotePeerID: sourcePeerID,
+			MineHash:     mineHash,
+			TheirsHash:   file.Content,
+			Recoverable:  conflictRecoverable,
+			KeepBothPath: keepBothPath,
+			AtMillis:     uint64(time.Now().UnixMilli()),
+		})
+	}
+
+	ack := map[string]interface{}{
 		"target_path": targetTreePath,
 		"blob_hash":   file.Content.String(),
 		"source_peer": sourcePeerID,
 		"size":        file.Size,
-	})
+	}
+	if conflict == conflictRecord || conflict == conflictKeepBoth {
+		ack["conflict"] = true
+		ack["replaced_blob"] = mineHash.String()
+		ack["recoverable"] = conflictRecoverable
+	}
+	return ackEntity(200, ack)
+}
+
+// classifyConflict decides what to do about a delivery whose hash differs
+// from what is on disk, and reports whether the replaced version will
+// still be recoverable.
+//
+// The burst limiter is consulted ONLY once a conflict has been
+// identified, so an ordinary catch-up over ten thousand files never
+// touches it. Consuming a slot on every differing hash would make the
+// limit a limit on syncing.
+func (h *BlobResolveHandler) classifyConflict(hctx *handler.HandlerContext,
+	targetTreePath, targetPrefix string, mine, theirs hash.Hash) (conflictOutcome, bool) {
+
+	// Never conflict a keep-both sibling with itself. A sibling is a real
+	// file that syncs like any other, and treating one as a conflict
+	// candidate would let a single collision breed on every pass.
+	if IsKeepBothPath(targetTreePath) {
+		return conflictNone, false
+	}
+
+	// An operator's standing answer outranks everything below, INCLUDING
+	// the burst limiter: declining costs nothing and refusing a delivery
+	// the operator has already declined would report a storm made of
+	// their own decisions.
+	if operatorDeclinedDelivery(hctx, qualify(string(hctx.LocalPeerID), targetTreePath), mine, theirs) {
+		return conflictDeclined, false
+	}
+
+	local, known := localEditAwaitsDelivery(hctx, targetTreePath)
+	if !known {
+		// No chain to read. NOT a conflict — see conflict_detect.go: the
+		// alternative conflicts an entire folder on the first pass after
+		// an upgrade, which is §5's storm arriving by way of the caution
+		// that was meant to prevent it.
+		return conflictNone, false
+	}
+	if !local {
+		// The last thing that happened here was a delivery, so we are
+		// simply behind. This is the overwhelmingly common case and it is
+		// the one that must stay free.
+		return conflictNone, false
+	}
+
+	if !h.conflicts.admit() {
+		return conflictRefuse, false
+	}
+	h.conflicts.mu.Lock()
+	h.conflictsDetected++
+	h.conflicts.mu.Unlock()
+
+	policy, _ := folderConflictPolicy(hctx, targetPrefix)
+	if policy == ConflictPolicyKeepBoth {
+		return conflictKeepBoth, true
+	}
+	// Recoverable because the chain was readable — which is the same fact
+	// that made this a conflict at all. The two cannot disagree, and
+	// deriving one from the other is what keeps them that way.
+	return conflictRecord, true
+}
+
+// writeKeepBothSibling materializes the replaced version at
+// EXTENSION-REVISION §2.3's sibling path, and returns the path it wrote
+// or "" if it could not.
+//
+// No closure fetch: the replaced version is OUR OWN previous content, so
+// its blob is already local by construction. That is why keep-both costs
+// nothing on the wire.
+func (h *BlobResolveHandler) writeKeepBothSibling(ctx context.Context,
+	hctx *handler.HandlerContext, targetTreePath string, mine hash.Hash) string {
+
+	if mine.IsZero() {
+		return ""
+	}
+	sibling := KeepBothPath(targetTreePath, mine)
+
+	// Idempotent: a re-delivery of the same pair must not rewrite the
+	// sibling, and must not report a second conflict for it either.
+	if existing, ok := tryGetLocalFileBlobHash(hctx, sibling); ok && existing == mine {
+		return sibling
+	}
+
+	content := mine
+	req := localfiles.WriteRequestData{Content: &content, CreateDirs: true}
+	raw, err := ecf.Encode(req)
+	if err != nil {
+		return ""
+	}
+	ent, err := entity.NewEntity(localfiles.TypeWriteRequest, cbor.RawMessage(raw))
+	if err != nil {
+		return ""
+	}
+	resp, err := hctx.Execute(ctx, "local/files", "write", ent,
+		handler.WithResource(&types.ResourceTarget{Targets: []string{sibling}}))
+	if err != nil || resp == nil || resp.Status >= 400 {
+		return ""
+	}
+	return sibling
+}
+
+// recordConflict writes the durable record.
+//
+// Best-effort and deliberately not fatal: the delivery has already
+// landed, and turning a failed record into a failed delivery would make
+// the reporting mechanism able to break the thing it reports on. A record
+// that does not get written leaves the peer in the pre-M3 state, which is
+// the state every peer was in until this shipped.
+func (h *BlobResolveHandler) recordConflict(hctx *handler.HandlerContext, c ConflictData) {
+	if hctx == nil || hctx.Store == nil || hctx.LocationIndex == nil {
+		return
+	}
+	raw, err := ecf.Encode(c)
+	if err != nil {
+		return
+	}
+	ent, err := entity.NewEntity(ConflictType, cbor.RawMessage(raw))
+	if err != nil {
+		return
+	}
+	stored, err := hctx.Store.Put(ent)
+	if err != nil {
+		return
+	}
+	// Qualified, because TreeSet writes through the location index and a
+	// bare path there is a different path (AP58's shape at the write end).
+	path := qualify(string(hctx.LocalPeerID), ConflictPrefix+c.Key())
+	_, _ = hctx.TreeSet(path, stored, "record-conflict")
+}
+
+// qualify prefixes a bare tree path with a peer-id. A path that already
+// carries one is returned unchanged, so applying it is never wrong.
+func qualify(peerID, path string) string {
+	if strings.HasPrefix(path, "/") || peerID == "" {
+		return path
+	}
+	return "/" + peerID + "/" + path
 }
 
 // tryGetLocalFileBlobHash returns the blob hash of a file entity at

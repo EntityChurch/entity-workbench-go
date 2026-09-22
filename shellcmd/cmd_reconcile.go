@@ -148,6 +148,73 @@ func cmdStatus(sh *Shell, args []string) (Result, error) {
 		}
 		lines = append(lines, "")
 	}
+
+	// The catch-up supervisor, said out loud. A background loop that
+	// silently repairs things is only half a feature: an operator who
+	// cannot see it running cannot tell "my files arrived because the
+	// system healed itself" from "my files arrived and nothing was ever
+	// wrong", and the second reading is the one that gets believed right
+	// up until the loop is off.
+	if last, ok := sh.LastCatchUp(); ok {
+		lines = append(lines, last.Summary())
+		if last.Recovered > 0 {
+			lines = append(lines,
+				"  (that many files had been silently lost to a delivery burst "+
+					"and were recovered — run `catchup` to pass again now)")
+		}
+		// The RATE, because it is adaptive and the two regimes look
+		// identical from a folder listing. "Checked every 5s because it is
+		// still finding things" and "checked every 10 minutes because it
+		// has been quiet since Tuesday" are the same table otherwise, and
+		// an operator staring at a stale folder needs to know which.
+		if iv, running := sh.CatchUpInterval(); running {
+			state := "settled"
+			if iv <= MinCatchUpInterval {
+				state = "actively recovering"
+			}
+			lines = append(lines,
+				fmt.Sprintf("  next pass in %s (%s; the rate adapts — it drops to %s "+
+					"while files are being recovered and backs off to %s once they "+
+					"are not)", iv.Round(time.Second), state,
+					MinCatchUpInterval, MaxCatchUpInterval))
+		} else {
+			lines = append(lines,
+				"  no supervisor is running in this process — nothing will pass again "+
+					"on its own")
+		}
+		lines = append(lines, "")
+	} else if len(out.Folders) > 0 {
+		lines = append(lines,
+			"no catch-up pass has run in this process — a folder that stopped "+
+				"part way will stay that way until `catchup` or `resync`.",
+			"")
+	}
+
+	// The recording growth guard, said out loud for the same reason as the
+	// supervisor above and one step stronger: the limits themselves are
+	// already in `problems:`, so the only thing left to say is whether
+	// anything is COUNTING. A guard that is not attached reports no limits
+	// and looks exactly like a peer with no runaway paths — which is the
+	// reading that gets believed right up until the disk fills.
+	if hb := sh.HistoryBudget(); hb.Running {
+		lines = append(lines,
+			fmt.Sprintf("change recording: %d version(s) recorded across %d path(s) "+
+				"this session, budget %d per path",
+				hb.Transitions, hb.Paths, hb.Budget))
+		if hb.Tripped > 0 {
+			lines = append(lines,
+				fmt.Sprintf("  %d path(s) hit the budget in this session and stopped "+
+					"recording — listed under problems above", hb.Tripped))
+		}
+		lines = append(lines, "")
+	} else if len(out.Folders) > 0 {
+		lines = append(lines,
+			"change recording is NOT being counted in this process — a file that "+
+				"something rewrites continuously will grow the tree without bound "+
+				"and nothing here will notice.",
+			"")
+	}
+
 	if out.Settled() {
 		lines = append(lines, "settled — everything declared is established.")
 	}

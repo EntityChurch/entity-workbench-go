@@ -161,8 +161,21 @@ Flags:
     // to Avalonia (so things like --help-avalonia or future avalonia
     // flags still work). Unknown args go through too — Avalonia ignores
     // unknown by default.
-    private static bool ParseArgs(string[] args, out string[] remaining)
+    //
+    // Public, and it resets Config, so the argv→JSON decision is testable
+    // without launching the app. That matters for one field in
+    // particular: reconcile_on_start is what turns on the startup
+    // reconcile AND the catch-up supervisor on the Go side, and a peer
+    // that silently lacks a supervisor is indistinguishable from one that
+    // never needed it. See FrontendConfigTests.
+    //
+    // The reset is not only for tests. Config is a static that ParseArgs
+    // mutated in place, so a second call accumulated the first call's
+    // flags — harmless while Main is the only caller and a trap the
+    // moment anything else calls it.
+    public static bool ParseArgs(string[] args, out string[] remaining)
     {
+        Config = new BridgeConfig();
         _ephemeral = false;
         _listenExplicit = false;
         var passthrough = new System.Collections.Generic.List<string>();
@@ -255,6 +268,11 @@ Flags:
     // real and useful thing; it just is not what someone gets by default.
     private static void ApplyDefaults()
     {
+        // A desktop application is long-running in every configuration it
+        // has. Set BEFORE the ephemeral early-return, because ephemeral is
+        // exactly the case this closes.
+        Config.LongRunning = true;
+
         if (_ephemeral)
         {
             if (string.IsNullOrEmpty(Config.Storage)) Config.Storage = "memory";
@@ -336,6 +354,19 @@ public class BridgeConfig
     // definition has nothing declared to re-establish.
     [System.Text.Json.Serialization.JsonPropertyName("reconcile_on_start")]
     public bool ReconcileOnStart { get; set; }
+
+    // This process stays open, which is a DIFFERENT question from whether
+    // it has declarations to re-establish — and it is the one the
+    // catch-up supervisor actually needs answered.
+    //
+    // Always true for the GUI, `--ephemeral` included. An ephemeral peer
+    // has nothing to re-establish at startup and can still accept a share
+    // mid-session, take a burst, and lose files permanently — with no next
+    // launch to recover them in, because there is no next launch. It was
+    // the one configuration where the loss was final, and it was the one
+    // configuration without the loop.
+    [System.Text.Json.Serialization.JsonPropertyName("long_running")]
+    public bool LongRunning { get; set; }
 
     [System.Text.Json.Serialization.JsonPropertyName("open_access")]
     public bool OpenAccess { get; set; }

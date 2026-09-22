@@ -304,6 +304,35 @@ func (m *PeerManager) Destroy(h int64) error {
 		hp.listenCancel()
 	}
 
+	// Stop the catch-up supervisor, and stop it BEFORE the AppPeer
+	// closes underneath it.
+	//
+	// Bootstrap starts this loop on context.Background() on purpose — it
+	// is process-lifetime and must not be cancelled by whatever context
+	// happened to be in scope at startup — which means nothing cancels
+	// it when a peer is destroyed rather than when the process exits.
+	// So until this line existed, destroying a peer left a goroutine
+	// running passes against a closed store every 5 s to 10 min, for the
+	// life of the process, once per peer the operator ever removed. It
+	// is a leak that gets worse the more an operator uses the feature,
+	// and nothing reports it: a pass that errors is not recorded, so the
+	// supervisor of a dead peer is invisible in `status` too.
+	//
+	// StopCatchUp WAITS for an in-flight pass, which is the behaviour we
+	// want here even though it makes Destroy take as long as one pass: a
+	// pass reading a store that closes mid-read is the alternative. A
+	// settled pass costs 0.24 ms/file, so this is sub-second on any
+	// folder an operator would recognise (SYNC-LIMITS-AND-FAILURE-MODES).
+	hp.Workspace.StopCatchUp()
+
+	// And the recording guard's prefix watch, for the same reason one
+	// line up: it is attached to a store that is about to close, and
+	// nothing else cancels it. Cheaper to leak than the supervisor — a
+	// watch with no writer delivers nothing — but a leak that is only
+	// quiet is still a leak, and it holds the destroyed peer's store
+	// alive through the SDK's watch hub.
+	hp.Workspace.StopHistoryBudget()
+
 	// Remove the roster entry. If the destroyed peer WAS the system
 	// peer and there's no replacement, skip (the tree we'd write to
 	// is going away anyway). If there IS a replacement, the old roster

@@ -10,6 +10,7 @@ import (
 	"entity-workbench-go/shellboot"
 	"entity-workbench-go/shellcmd"
 
+	"go.entitychurch.org/entity-core-go/core/hash"
 	"go.entitychurch.org/entity-core-go/ext/localfiles"
 )
 
@@ -114,8 +115,21 @@ func assertReceiverBinds(t *testing.T, storage, recvFolder string) {
 	// alone returns zero rows and no error, which is how "the receiver
 	// binds nothing" came to be reported. Measured: 0 rows against the
 	// copied main file, 2 against main+WAL, same instant, same store.
+	//
+	// And POLLED, not read once. The bytes landing on disk and the binding
+	// appearing in the index are two ends of an asynchronous chain — the
+	// delivery writes the file and the ingest handler binds the entity —
+	// so asserting on the second immediately after observing the first is
+	// a race, and it reads as a product defect ("the receiver has the
+	// bytes and no binding") rather than as a test that looked too early.
+	//
+	// It failed exactly that way, 1 run in 3, under full-suite load on
+	// 2026-09-07, beside an unrelated change — which is the expensive
+	// shape, because the obvious conclusion is that the change caused it.
+	// The window is not wide: it lost the race by less than 100 ms every
+	// time. But a race that is usually won is a race.
 	qualified := "/" + receiver.id + "/local/files/" + localRoot + "/" + name
-	h, bound := receiver.ap.RawLocationIndex().Get(qualified)
+	h, bound := awaitBinding(receiver, qualified, 30*time.Second)
 	if !bound {
 		t.Fatalf("the receiver has the bytes on disk and no binding at %s\n"+
 			"  receiver bindings under local/files: %v",
@@ -218,6 +232,26 @@ func mountOrFail(t *testing.T, p *syncTestPeer, dir, target string) shellcmd.Mou
 		t.Fatalf("mount %s: %v", dir, err)
 	}
 	return out
+}
+
+// awaitBinding polls the live location index for a qualified path.
+//
+// Deliberately NOT a helper that also waits for the file on disk: the
+// two are separate observations and the point of this test is that the
+// second follows the first. Collapsing them would hide the very ordering
+// the test exists to certify.
+func awaitBinding(p *syncTestPeer, qualified string, timeout time.Duration) (hash.Hash, bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if h, ok := p.ap.RawLocationIndex().Get(qualified); ok {
+			return h, true
+		}
+		if time.Now().After(deadline) {
+			var zero hash.Hash
+			return zero, false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func bindingPaths(p *syncTestPeer, prefix string) []string {

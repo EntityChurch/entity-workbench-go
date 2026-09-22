@@ -334,13 +334,35 @@ surprise, only as work that quietly did not happen.
 - When the substrate already has it, the work is registration, wiring
   and a consumer — plan *that*, and say so in the packet, because the
   sibling seat that scoped it for us is carrying the same wrong estimate.
+*Amendment 1 (2026-09-07) — the SPEC is substrate too, and we had never
+searched it.* The catch-up supervisor was designed here from first
+principles over three days. `EXTENSION-SUBSCRIPTION` §5.5 already ends
+*"For guaranteed consistency, subscribers SHOULD periodically reconcile
+via GET on subscribed paths"*, and §6.3 property (ii) already MUSTs the
+outcome for mirrors. Four prior instances of this rule all pointed at
+`../entity-core-go`; the *"then the spec"* in the first bullet had never
+once been the step that found anything, because a code grep either hits
+or misses and a spec search needs a **concept** rather than a symbol —
+"what does the spec say happens when a notification is lost" is not a
+`grep`. So the bullet is now explicit: **when the thing you are about to
+build is a RELIABILITY or RECOVERY property of somebody else's
+mechanism, read that mechanism's spec section before designing, because
+that is exactly the class the specification is most likely to have
+already ruled on and least likely to expose as a greppable name.** Worth
+the two minutes even when the answer is no: here it *was* yes, and
+reading it also produced the finding worth routing — §5.5's primary
+mechanism (`previous_hash` chain check) is structurally blind to a
+write-once workload, which nobody would notice without a workload that
+is write-once.
 *Enforcement:* every "we need to build X" line in a handoff, plan, or
 routed packet carries the search that established the absence (a
-`file:line` miss, or a named grep). The three that exist because of this
-rule: `publish/signed_root.go`'s note on `CollectNodeClosure`,
-`entitysdk/peer_status.go`'s division-of-labour note (core/peer owns the
-imperative half), and `entitysdk/network.go`'s (the handler owns the
-reactive half).
+`file:line` miss, or a named grep), and where X is a recovery or
+reliability behaviour, **the spec section consulted, by number**. The
+three that exist because of this rule: `publish/signed_root.go`'s note on
+`CollectNodeClosure`, `entitysdk/peer_status.go`'s division-of-labour
+note (core/peer owns the imperative half), and `entitysdk/network.go`'s
+(the handler owns the reactive half). The fourth, from Amendment 1:
+`shellcmd/catchup.go` cites §5.5.
 
 **D21 — Every packet that names this repo is inbound. The `To:` line is
 not the filter.**
@@ -668,7 +690,7 @@ Short enough to run on every change. Six inherited, four substrate-native.
 
 ---
 
-## 4. The anti-pattern catalog (AP1-AP76)
+## 4. The anti-pattern catalog (AP1-AP79)
 
 Each a real defect that shipped or a claim that was routed, diagnosed, and
 is now pinned by a regression test.
@@ -939,6 +961,37 @@ one mount and silently static for every one chosen afterwards.
 | AP74 | `avalonia/frontend/CrashDiagnostics.cs` + `AltStackProbe.cs`, from the 2026-08-21 mitigation until 2026-09-06 — found by reading two coredumps the previous session had already read and classified as "not a stack overflow" | **A mitigation installed PER-THREAD covers exactly the threads somebody enumerated, and the uncovered ones are invisible in every green run.** The alt-stack fix landed on 2026-08-21 for the UI thread, was extended to the render thread on 2026-09-02 when the render thread crashed, and on 2026-09-06 the process died twice on a *third* thread — one that is neither, and that no managed hook can reach, because `sigaltstack` must be called ON the thread it covers. Measured in each core: **16 threads still on the PAL's stock 16 KiB**, 3 of them having already taken a signal. Every gate was green and two of them (`run-xvfb-smoke.sh`'s exit-3, the startup `altstack:` lines) asserted *truthfully* that the two enumerated threads were covered — which is the trap: **the check's subject was the mitigation, not the process.** The file's own header had even written the gap down (*"Other managed threads are still uncovered"*) and left it as prose, which is D27's shape exactly. Two rules. **When a fix is per-instance, the gate must measure the POPULATION, not the instances you fixed** — here that is one probe thread asking the kernel what it actually got, which is why `ProbeAltStackCoverage` starts a thread rather than counting installs. And **when you cannot enumerate the population, stop enumerating**: interposing `sigaltstack(2)` itself (`altstack-preload.c`, LD_PRELOAD) covers every thread at the moment the runtime creates it, with no list to keep current. | D24, D25, D27 |
 | AP75 | this session's own forensics, 2026-09-06 — caught before it became a finding, but only just | **`info proc mappings` on a coredump reads the `NT_FILE` note, which by construction lists only FILE-BACKED mappings — so every stack, heap and guard page in the process is absent from it, and the tool reports them as "not present in core".** Asked which mapping the faulting `rsp` was in, gdb answered with a confident *nearest below / nearest above* pair of DLL mappings, which reads exactly like "this address was never mapped" — a wild pointer. It was nothing of the kind: the address was in a 4 KiB `PROT_NONE` guard page that the core records perfectly well, in its `PT_LOAD` program headers. **The authoritative record of what memory a core contains is its PT_LOAD table** (`p_vaddr`/`p_memsz` for what was mapped, `p_filesz` for what was dumped), and reading it turned "rsp points at nothing" into "rsp is 800 bytes into the guard page below a 12 KiB alt stack" — the whole diagnosis, from the same file, in one query. This is **AP55/D25 in the forensic layer**: a field that prints is not a field that answers, and the previous session's *"not a stack overflow"* was taken with an instrument that could not see a stack. Note also `p_filesz == 0` means "mapped, contents not dumped" and not "absent" — executable file-backed pages are always 0 there, which is normal and says nothing. | D25, D24 |
 | AP76 | the 2026-09-06 M2b "blocker" — *"the receiving peer binds no file entity"* — reported as the thing standing between us and M3, and refuted the next morning | **A copy of a live SQLite store is not the store, and the writes it is missing are reported as ZERO ROWS rather than as an error.** File-backed `SqliteStore` opens **WAL** (`core/store/sqlite.go`, `buildSqliteDSN` defaults `JournalMode` to `"WAL"`), so every write since the last checkpoint lives in the `-wal` sidecar. The measurement was `podman cp /data/store.db` followed by `sqlite3` on the copy; the sidecar did not come along. Measured on the same store at the same instant: **0 rows naming the file against the copied main file, 2 against main+WAL.** The asymmetry that made it convincing is exactly what WAL predicts — the *publisher's* binding was older and checkpointed, the *receiver's* was seconds old and still in the log — so the artifact presented as a clean structural finding about one side of the pipeline. Four downstream conclusions were built on it in one session (F9 is dead code; `resync`'s already-current never fires; `Mode: both` and first-change-after-restart both explained by it), and a milestone was inserted ahead of the one that mattered. **The instrument was adopted *because* the surfaces had been lying** — the session had correctly established that `info`, `mounts`, `subscription ls` and `inspect errors` each gave a wrong answer that day, and reached for "read the store directly" as the trustworthy floor. It was the right instinct and the wrong floor. Three rules. **A store read out from under a running process needs the sidecars or a checkpoint** — copy `-wal` and `-shm`, or read the file in place, or ask the process. **Silence from a new instrument is a claim about the instrument first**: an empty result and a broken reader are the same bytes, so before an absence becomes a finding, run the instrument against a case you KNOW is populated — the publisher's own binding was right there and would have failed the same way. And **when you distrust every surface, the replacement needs its own control arm**, because the reasoning that retires the surfaces is exactly the reasoning that makes the replacement feel unimpeachable. | D19, D25, D24 |
+| AP77 | the 2026-09-07 load characterisation — the first time anything in this repo moved more than ten files through a share | **Every cross-peer test in this tree moved between 1 and 10 files, so the entire burst regime was not under-tested, it was UNREACHABLE from the suite** — no fixture was within two orders of magnitude of the bound. At 2000 files the shipped product delivers **676 and stops forever**: the sending peer's subscription delivery shards saturate and drop (`ext/subscription/engine.go`, `OnTreeChange` — a deliberate, counted, deadlock-avoiding `default:` branch), and because the drop happens BEFORE the wire there is no failed delivery to retry, no chain error, and no counter on the receiving side that moves. Both peers report healthy; `syncs` lists the relationship as live; the operator's folder is two thirds full and stays that way. Measured: `sender dropped=2327, receiver dropped=0`. Two compounding halves. **The suite could not see it** — a scale-invariant fixture set cannot fail on a bound, and every one of the twenty-odd sync tests was scale-invariant in the same direction. **And the diagnosis was pre-paid and unclaimed**: the kernel maintains `DroppedDeliveries()` and `DeliveryQueueDepth()` *precisely* so an operator can see saturation, and both had **zero readers in this repo** — not in shipped code, not in a test — so even a hand investigation would have started blind. That is D20 aimed at the kernel for the fourth time (`tree.CollectNodeClosure`, `maintain-peer`, `subscription.Engine.Load`, now this). Three rules. **When a feature has a RATE or VOLUME dimension, one fixture at the comfortable order of magnitude is not coverage — pick a size that crosses the mechanism's bound, and if you do not know the bound, that is the measurement to run first.** **Before building a diagnosis, grep the dependency for the counter it already keeps for you.** And **a load test's positive arm is worthless without evidence the load actually stressed anything** — `TestCatchUp_HealsASilentlyStalledShare` runs its control arm FIRST and *skips* rather than passing when the burst failed to saturate on that machine, because "1500 of 1500 arrived" is equally true of a working supervisor and a burst that never needed one. | D19, D20, D24 |
+
+| AP78 | `entitysdk/config.go`'s `DefaultDeliveryQueueSize = 4096` and `docs/.../SYNC-LIMITS`'s *"~90 files/s"*, both landed 2026-08-20 / 2026-09-07 and both refuted 2026-09-07 by sweeping the axis instead of reasoning about it | **A capacity sized in the wrong UNIT, and a rate that was a fixed cost divided by a count — two numbers that survived review because each carried its own plausible derivation.** (1) The delivery ring was set to 4096 slots against a written rationale: core-go's own *"sized for 1000+-file mount bursts"* plus 4× margin. **That counted FILES; the queue counts NOTIFICATIONS**, and one mounted file emits the watcher's file entity, the ingest chain's document and the blob bindings. Measured by bracketing a two-axis sweep (`TestLoad_QueueDepthSweep`): real demand is **6.5–8.2 slots per file**, so a documented four-fold margin was short by most of an order of magnitude, and the failure mode is silent data loss. (2) *"Live delivery runs ~90 files/s"* came from a 200-file run; 2000 files take 3.0 s and 10,000 take 5.9 s, whose two-point fit is **2.3 s fixed + 0.36 ms/file** — and 2.3 s is essentially the whole 200-file run. The published rate was an operation's setup cost divided by its file count, and it was **7× pessimistic in the direction that flattered a design decision we had already made**, becoming the stated reason (*"catch-up is 20× faster"*) for a choice whose real justification is that §5.5 delivery is best-effort. Three rules. **Name the unit of a capacity in the same breath as the number** — "4096 slots" and "1000 files" are not comparable and nothing in the type system says so. **A single-point rate measurement cannot separate fixed cost from marginal cost**: take two sizes an order of magnitude apart and fit, or report a wall time for an operation and do not call it a rate. And **a derivation is not evidence** — both numbers had a paragraph of reasoning attached, which is exactly what stopped anyone re-measuring them; when a number decides a design, sweep the axis. | D19, D24, D25 |
+| AP79 | `shellboot/frontend_catchup_test.go`, written and caught in the same session, 2026-09-07 — after 2 of 3 full-suite runs failed and 3 of 3 isolated runs passed | **An assertion on the STARTING value of something designed to change is a race dressed as a configuration check, and it fails under load in the shape of a memory regression.** The new test asserted `CatchUpInterval() == DefaultCatchUpInterval` immediately after `PeerManager.Create`. But the supervisor's first pass runs **immediately** and a completed pass re-derives the interval — so the assertion was really *"has this goroutine been scheduled yet"*, which under full-suite load it usually has. It surfaced in the same runs as an unrelated change that raised per-peer memory 2.4×, and reads exactly like that change causing flakiness: pass in isolation, fail under load, two different tests failing on different runs. **It was nearly attributed to the memory change on that pattern alone**, which would have retired a correct fix on a false measurement. Two rules. **Before asserting on a value, ask what else writes it and when** — an adaptive quantity has no stable initial value observable from outside, and the ramp's start is gated where it lives, as a pure function, without a clock. And **a new test failing beside a new change is not evidence the change caused it**: run the control arm (this one was 3 clean baseline runs and 3 raised runs, which located the fault in the test rather than the change) before believing the correlation, because "my change broke the suite" is the conclusion that arrives first and the one nobody argues with. | D19, D24 |
+
+*Enforcement (AP78):* `shellboot/queue_depth_load_test.go` (`make loadtest
+ARGS="-run TestLoad_QueueDepthSweep"`) sweeps ring size × burst size and
+prints the table; its baseline arm must saturate or the run **skips**
+rather than reporting, so a sweep with no cliff in it cannot certify
+anything. `shellboot.DefaultDeliveryQueueSize`'s doc comment carries the
+measured slots-per-file bracket beside the number, so the unit is visible
+at the site of the constant. The rate correction is recorded in
+`SYNC-LIMITS-AND-FAILURE-MODES.md` §1 **in place, with the wrong figures
+named**, rather than silently replaced — a corrected number that hides
+what it corrected teaches nobody.
+
+*Enforcement (AP79):* none automated; the rule is in the test's own
+comment at the site of the assertion that was wrong, which is where the
+next person writing one will be. The generalizable half — run a control
+arm before attributing flakiness — is D19.
+
+*Enforcement (AP77):* `shellboot/catchup_e2e_test.go` is the gate — a
+1500-file burst with the supervisor off must stall and with it on must
+complete, control arm first so the run cannot certify a burst that never
+saturated. `shellboot/bigcopy_load_test.go` (`make loadtest`, outside the
+sweep) is the characterisation that produced the numbers and reports
+throughput, per-file store cost and stall behaviour rather than
+asserting thresholds, because a cost measurement dressed as a threshold
+becomes a flaky gate on somebody else's laptop. The saturation counter
+itself is surfaced by `shellcmd/delivery_health.go` through `status`, so
+the condition is visible without a test running at all.
 
 *Enforcement (AP76):* `shellboot/receive_binds_e2e_test.go` asserts the
 receiver's binding from the **live location index**, across four arms

@@ -74,7 +74,7 @@ export GOTOOLCHAIN ?= go1.25.1
 # includes the same file and uses the caps on every podman build/run.
 include caps.mk
 
-.PHONY: crossimpl-go twopeer-sync threepeer-sync conflict-semantics gui-drive twopeer-gui consume-live workbench-test console-build console-run test test-each test-each-native test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native lint-perfreview fmt-native
+.PHONY: loadtest crossimpl-go twopeer-sync threepeer-sync conflict-semantics gui-drive twopeer-gui consume-live workbench-test console-build console-run test test-each test-each-native test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native lint-perfreview fmt-native
 
 # ============================================================
 # make + podman — bare-box entry points
@@ -818,6 +818,17 @@ consume-live: fetch-build
 # `make test` skips them. No -race here: modernc.org/sqlite slows ~17×
 # under the race detector per feedback_race_detector_vs_sqlite memo,
 # which would distort every measurement.
+# `make loadtest` — the burst/backlog characterisation. Outside the sweep
+# because it is minutes and because it MEASURES rather than asserts: it
+# drops a directory into a share and reports what arrived, how fast, what
+# it cost in the store, and whether the documented remedy recovers it.
+#
+# LOAD_FILES / LOAD_BYTES tune the burst. Native (no podman), so it does
+# not collide with a running sweep.
+loadtest:
+	cd shellboot && go test -tags=loadtest -count=1 -v -timeout=40m \
+	  -run 'TestLoad_' $(ARGS) .
+
 perfreview:
 	cd perfreview && go test -v -count=1 -tags=perfreview -timeout=20m $(ARGS) ./...
 

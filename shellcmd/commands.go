@@ -422,6 +422,26 @@ func init() {
 		Handler: cmdResync,
 	})
 	r.Register(Command{
+		Name:    "catchup",
+		Usage:   "catchup",
+		Help:    "Pull anything missing from every received folder now. Reports what had been silently lost.",
+		Handler: cmdCatchUp,
+	})
+	r.Register(Command{
+		Name:  "conflicts",
+		Usage: "conflicts [-folder <root>] [-clear] | conflicts -folder <folder-id> -policy record|keep-both",
+		Help: "Files where a delivery replaced an edit of yours, and how to get yours back. " +
+			"-clear drops the ones you have already decided.",
+		Handler: cmdConflicts,
+	})
+	r.Register(Command{
+		Name:  "resolve",
+		Usage: "resolve <key> -keep mine|theirs|both  |  resolve --all [-folder <root>] -keep ...",
+		Help: "Decide a conflict. `mine` puts your version back and declines that delivery; " +
+			"`theirs` records the decision; `both` keeps yours beside it.",
+		Handler: cmdResolve,
+	})
+	r.Register(Command{
 		Name:    "forget",
 		Usage:   "forget <peer> | forget --all",
 		Help:    "Drop syncs, offers, authorization and the connection for a peer. Deletes no files.",

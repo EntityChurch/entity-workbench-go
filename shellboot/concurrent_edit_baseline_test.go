@@ -168,12 +168,40 @@ func TestM3Baseline_ConcurrentEditLeavesBothWritesOnTheChain(t *testing.T) {
 	// behind" are the same observation, which is the distinction the
 	// whole milestone turns on.
 	//
+	// **CORRECTED 2026-09-07, and the correction is the important part.**
+	// These two assertions are read at THIS INSTANT, moments after the
+	// delivery, and they are not stable. Shortly afterwards the receiver's
+	// own watcher ingests the file blob_resolve just wrote to disk — same
+	// bytes, but a file entity carries `modified_at` and the watcher reads
+	// the filesystem's mtime rather than the one the write recorded, so
+	// the entity hash differs and a real `local/files:watch` transition
+	// lands on top. Every delivered file ends up with a `watch` head.
+	//
+	// So the position-level provenance is TRUE AND TRANSIENT, and the
+	// obvious detector built on it — read the head operation — flags every
+	// file in a received folder. It did, and the e2e test's anti-vacuity
+	// arm caught it (`shellboot/conflict_e2e_test.go`, which prints both
+	// chains). The question that survives the echo is *who last changed
+	// the BYTES*: `workbench.localEditAwaitsDelivery` walks the run of
+	// consecutive transitions carrying the current content hash and reads
+	// the oldest member's operation.
+	//
+	// These assertions are kept, because what they measure is real and is
+	// what the walk rests on. What is corrected is the conclusion drawn
+	// from them, which lived in a doc comment and in AGENTS.md as if it
+	// were a property of the chain rather than of the moment it was read.
+	//
 	// Known limit, stated because it is invisible from the field name: a
 	// LOCAL caller dispatching local/files:write directly is recorded as
-	// a delivery. Nothing in the shipped flow does that today.
+	// a delivery. Nothing in the shipped flow does that — and `resolve
+	// -keep mine` writes through the filesystem for exactly this reason.
 	if trans[0].Operation != "write" {
 		t.Errorf("the winning position was authored by %s:%s, want local/files:write "+
-			"(the delivered edit)", trans[0].Handler, trans[0].Operation)
+			"(the delivered edit). NOTE: this is read moments after the delivery "+
+			"and the watcher's mtime echo lands a `watch` transition on top "+
+			"shortly after — if this has become flaky, the echo is arriving "+
+			"sooner, not the provenance changing",
+			trans[0].Handler, trans[0].Operation)
 	}
 	if trans[1].Operation != "watch" {
 		t.Errorf("the overwritten position was authored by %s:%s, want "+

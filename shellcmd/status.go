@@ -87,6 +87,10 @@ func (ws *ShellWorkspace) StatusSnapshot() (ReconcileOutcome, error) {
 	st := local.Store()
 	out := ReconcileOutcome{}
 
+	ws.noteSaturation(&out)
+	ws.noteHistoryLimits(&out)
+	ws.noteConflicts(&out)
+
 	devices, devProblems := workbench.LoadDevices(st)
 	folders, folderProblems := workbench.LoadFolders(st)
 	for _, p := range devProblems {

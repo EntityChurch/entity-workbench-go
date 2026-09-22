@@ -693,6 +693,33 @@ public static class Bridge
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusReconcile")]
     public static extern IntPtr StatusReconcile(long peerHandle);
 
+    // StatusCatchUp runs ONE backfill pass over every folder this peer
+    // receives, then returns the same envelope as StatusRender.
+    //
+    // **Not the same hazard as StatusReconcile, and that is why it is a
+    // separate export.** A catch-up uses the sync binding and the pooled
+    // connection: it does not dial, does not mount, does not delete and
+    // does not write policy. It transfers files, though, so it is
+    // I/O-bound and belongs on a thread-pool worker for AP31's reason.
+    //
+    // It is the GUI's half of the `catchup` verb. Until it existed, the
+    // machinery that turns a dropped delivery into a delay rather than a
+    // loss was reachable from the shell and from no pixel — on the one
+    // failure an operator is most likely to meet.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusCatchUp")]
+    public static extern IntPtr StatusCatchUp(long peerHandle);
+
+    // Decide one conflict: keep is "mine", "theirs" or "both". Returns the
+    // same envelope as StatusRender, so the table and the sentence come
+    // from one reading — a note-only reply would leave the resolved row on
+    // screen until the next refresh, which reads as the button doing
+    // nothing.
+    //
+    // Local work, no dial. Thread-pool worker anyway: it writes a file
+    // whose size nobody here chose.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusResolveConflict", CharSet = CharSet.Ansi)]
+    public static extern IntPtr StatusResolveConflict(long peerHandle, string key, string keep);
+
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusPauseDevice", CharSet = CharSet.Ansi)]
     public static extern IntPtr StatusPauseDevice(long peerHandle, string peer, int paused);
 

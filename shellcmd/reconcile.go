@@ -101,9 +101,46 @@ type ReconcileOutcome struct {
 	// table in order to caption it will eventually caption it wrong, and
 	// the wrong caption is the confident one.
 	Reconciled bool
+
+	// Delivery is this peer's subscription-delivery saturation — see
+	// delivery_health.go. Carried on the outcome because a peer that has
+	// dropped notifications is publishing an incomplete folder to
+	// everyone subscribed to it, which is a fact about the WHOLE reading
+	// and not about any one device or folder row.
+	Delivery DeliveryHealth
+
+	// HistoryLimits are the paths whose change recording this peer
+	// STOPPED because their chain outgrew its budget — see
+	// history_budget.go. Carried on the outcome for Delivery's reason: it
+	// is a standing fact about the peer rather than about one row, and it
+	// is the one condition in this whole loop where the system is working
+	// exactly as designed AND an operator has lost something they may
+	// want. Each one is also appended to Problems, so a surface that
+	// renders only the prose still says it.
+	HistoryLimits []workbench.HistoryLimitData
+
+	// Conflicts are the files where a delivery replaced a local edit and
+	// the operator has not decided yet — see conflict_op.go. Carried for
+	// HistoryLimits' reason: a standing state of the peer rather than a
+	// property of one row, and the one condition in this loop where
+	// everything worked exactly as designed and somebody still lost
+	// something they may want back.
+	Conflicts []workbench.ConflictData
+
+	// ConflictHealth is the burst limiter's state. Storming means this
+	// peer has deliberately stopped materializing deliveries, which is
+	// neither healthy nor broken and is said nowhere else.
+	ConflictHealth workbench.ConflictHealth
 }
 
 // Settled reports whether the pass found nothing to do and nothing wrong.
+//
+// Saturation deliberately does NOT make a system unsettled. A drop is a
+// past event on a process counter, not a present divergence between
+// declared and actual, and a peer that dropped a notification an hour ago
+// and has been idle since is settled by every meaning the loop has. It is
+// reported through Problems by the caller that observed it, so it is
+// visible without making "settled" a claim the loop cannot re-derive.
 func (o ReconcileOutcome) Settled() bool {
 	return len(o.Actions) == 0 && len(o.Problems) == 0
 }
@@ -241,6 +278,10 @@ func (ws *ShellWorkspace) Reconcile(ctx context.Context) (ReconcileOutcome, erro
 	local := ws.Local.Peer
 	st := local.Store()
 	out := ReconcileOutcome{Reconciled: true}
+
+	ws.noteSaturation(&out)
+	ws.noteHistoryLimits(&out)
+	ws.noteConflicts(&out)
 
 	devices, devProblems := workbench.LoadDevices(st)
 	folders, folderProblems := workbench.LoadFolders(st)

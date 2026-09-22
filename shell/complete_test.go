@@ -91,8 +91,14 @@ func TestSplitVerb(t *testing.T) {
 func TestCompleter_Verbs(t *testing.T) {
 	app := newTestApp(t)
 
+	// The full `c` set, in registry order. Pinned rather than sampled
+	// because the assertion is that completion enumerates EVERY verb —
+	// a contains-check would pass against a completer that had silently
+	// stopped offering half of them. The cost is that adding a verb
+	// updates this line, which is the intended tradeoff.
 	got := app.completer("c")
-	want := []string{"cat", "cd", "compute", "connect", "continuation", "count", "cp"}
+	want := []string{"cat", "catchup", "cd", "compute", "conflicts", "connect",
+		"continuation", "count", "cp"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("verb completion: got %v, want %v", got, want)
 	}

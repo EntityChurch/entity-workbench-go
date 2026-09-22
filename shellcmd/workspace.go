@@ -40,6 +40,20 @@ type ShellWorkspace struct {
 	// paths to connections.
 	peerMap map[string]string
 
+	// catchUp is the periodic-backfill supervisor's state — see
+	// catchup.go. Not a pointer and not exported: it is process memory
+	// about a loop this workspace owns, and a surface reads it through
+	// LastCatchUp() so "no drops recovered" and "nothing has run yet"
+	// stay distinguishable.
+	catchUp catchUpState
+
+	// historyBudget is the change-recording growth guard's state — see
+	// history_budget.go. Same shape and same reasons as catchUp: process
+	// memory about a watch this workspace owns, read through
+	// HistoryBudget() so "nothing has grown" and "nothing is counting"
+	// stay distinguishable.
+	historyBudget historyBudgetState
+
 	// dialedThisProcess is the set of peers WE have opened an outbound
 	// connection to since this process started. See reconcile.go — it is
 	// what makes "our own connection is derived runtime state, rebuilt at

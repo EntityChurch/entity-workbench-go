@@ -295,6 +295,12 @@ blurb = "Why sharing a folder between two peers is a control loop over declared 
 group = "Direction"
 
 [[doc]]
+path  = "docs/architecture/SYNC-LIMITS-AND-FAILURE-MODES.md"
+title = "Folder sync: measured limits and failure modes"
+blurb = "What folder sync does under load and what breaks: throughput and per-file cost, what a file costs in delivery-queue slots and why that unit is the one that matters, the workloads that are unsafe to share, the failure an operator hits first — a big directory copy that stops part way and says nothing — what happens when two people edit the same file between two syncs, and, for each, what it looks like, why it happens, and what to do about it. Every figure is measured, with the command that produces it named, and the figures this page has previously got wrong are corrected in place rather than replaced."
+group = "Direction"
+
+[[doc]]
 path  = "docs/architecture/FILE-REPLICATION-LANDSCAPE.md"
 title = "File replication: the landscape and what it would take"
 blurb = "Where a content-addressed substrate already sits relative to rsync, Unison, Syncthing and git-annex; what the local-files extension provides today; and the one gap that decides whether this becomes a tool you install — what happens when two machines edit the same file, where the state of the art is still detect-and-defer-to-the-human."

@@ -128,6 +128,124 @@ type statusFolderDTO struct {
 	Peers []statusFolderPeerDTO `json:"peers"`
 }
 
+// statusDeliveryDTO is this peer's subscription-delivery saturation.
+//
+// It reaches a pixel here for the first time. `ReconcileOutcome.Delivery`
+// has been computed on every reading since the load work and this DTO did
+// not declare it, so `System.Text.Json` dropped it in total silence
+// (AP49) — the one number that explains "I copied a big directory in and
+// it stopped part way" was being maintained, carried across the model
+// boundary, and thrown away one field short of the screen.
+type statusDeliveryDTO struct {
+	// Available is false when the peer exposes no subscription engine.
+	// A renderer must say *not measured* rather than drawing a zero:
+	// "no drops" and "nothing counted them" are different claims and the
+	// second one is usually the whole problem.
+	Available bool `json:"available"`
+	// Dropped is the lifetime count of notifications this peer discarded
+	// because a delivery shard was full. A PROCESS counter, reset by a
+	// restart — it says nothing about drops in an earlier run.
+	Dropped uint64 `json:"dropped"`
+	// QueueDepth is the current total depth across delivery shards.
+	QueueDepth int `json:"queueDepth"`
+	// Summary is the operator-facing sentence, or "" when there is
+	// nothing to say. Composed in Go so the shell and the GUI cannot
+	// describe saturation differently.
+	Summary string `json:"summary"`
+}
+
+// statusCatchUpDTO is the periodic backfill supervisor: whether it is
+// running, how fast, and what the last pass did.
+//
+// Also reaching a pixel for the first time. The supervisor is what turns
+// a dropped delivery into a delay instead of a loss, and until now it was
+// reachable from `entity-shell`'s `status` and `catchup` and from nothing
+// in the GUI — which is the frontend the operator who hit the failure was
+// using.
+type statusCatchUpDTO struct {
+	// Running is whether a supervisor is attached in this process. False
+	// means nothing will pass again on its own, and a folder that stopped
+	// part way stays that way.
+	Running bool `json:"running"`
+	// HavePass distinguishes "no files were recovered" from "no pass has
+	// run yet". Rendering the second as the first is how a stalled
+	// supervisor reads as a healthy one.
+	HavePass bool `json:"havePass"`
+	// IntervalSeconds is the CURRENT wait, which is adaptive — it drops
+	// to the floor while passes are recovering files and backs off toward
+	// the ceiling once they stop. "Checked every 5 s because it is still
+	// finding things" and "checked twice an hour because it has been
+	// quiet since Tuesday" are the same table without this.
+	IntervalSeconds float64 `json:"intervalSeconds"`
+	MinSeconds      float64 `json:"minSeconds"`
+	MaxSeconds      float64 `json:"maxSeconds"`
+
+	Folders        int     `json:"folders"`
+	Recovered      int     `json:"recovered"`
+	AlreadyCurrent int     `json:"alreadyCurrent"`
+	Failed         int     `json:"failed"`
+	DurationMillis float64 `json:"durationMillis"`
+	AtMillis       uint64  `json:"atMillis"`
+	Summary        string  `json:"summary"`
+}
+
+// statusHistoryLimitDTO is one path whose change recording was stopped
+// because its chain outgrew its budget.
+type statusHistoryLimitDTO struct {
+	Path        string `json:"path"`
+	Root        string `json:"root"`
+	ConfigName  string `json:"configName"`
+	Transitions uint64 `json:"transitions"`
+	Budget      uint64 `json:"budget"`
+	AtMillis    uint64 `json:"atMillis"`
+	Summary     string `json:"summary"`
+}
+
+// statusRecordingDTO is whether anything is COUNTING recording growth,
+// and what it has seen.
+//
+// The counters matter less than `running`. A guard that is not attached
+// reports no limits and is indistinguishable, on screen, from a peer with
+// no runaway paths — and the difference is a disk that fills overnight.
+type statusRecordingDTO struct {
+	Running     bool                    `json:"running"`
+	Budget      uint64                  `json:"budget"`
+	Paths       int                     `json:"paths"`
+	Transitions uint64                  `json:"transitions"`
+	Tripped     int                     `json:"tripped"`
+	Limits      []statusHistoryLimitDTO `json:"limits"`
+}
+
+// statusConflictDTO is one file where a delivery replaced a local edit.
+type statusConflictDTO struct {
+	Key  string `json:"key"`
+	Path string `json:"path"`
+	Root string `json:"root"`
+	// Recoverable gates the "restore mine" verb. A record whose replaced
+	// version was never kept — the path had no change recording at the
+	// time — is a NOTIFICATION, and offering a restore against it would
+	// offer something that fails.
+	Recoverable  bool   `json:"recoverable"`
+	KeepBothPath string `json:"keepBothPath"`
+	AtMillis     uint64 `json:"atMillis"`
+	Summary      string `json:"summary"`
+}
+
+// statusConflictsDTO is the peer's conflict state: what is waiting for a
+// decision, and whether the burst limiter has stopped delivery.
+type statusConflictsDTO struct {
+	Unresolved []statusConflictDTO `json:"unresolved"`
+	// Storming means this peer has DELIBERATELY stopped materializing
+	// deliveries. Neither healthy nor broken, and said nowhere else — so
+	// a surface that renders only the list would show an operator an
+	// empty table while files stop arriving.
+	Storming      bool    `json:"storming"`
+	Detected      int     `json:"detected"`
+	Refused       int     `json:"refused"`
+	Limit         int     `json:"limit"`
+	WindowSeconds float64 `json:"windowSeconds"`
+}
+
 type statusRenderDTO struct {
 	OK bool   `json:"ok"`
 	Er string `json:"error"`
@@ -151,9 +269,19 @@ type statusRenderDTO struct {
 	Actions  []string          `json:"actions"`
 	Problems []string          `json:"problems"`
 	Settled  bool              `json:"settled"`
+
+	// The three peer-wide facts. Not per-row on purpose: saturation is a
+	// property of the engine every subscription shares, the supervisor
+	// passes over all folders at once, and the recording guard counts
+	// paths across mounts. Attributing any of them to a folder row would
+	// invent an attribution the substrate does not have.
+	Delivery  statusDeliveryDTO  `json:"delivery"`
+	CatchUp   statusCatchUpDTO   `json:"catchUp"`
+	Recording statusRecordingDTO `json:"recording"`
+	Conflicts statusConflictsDTO `json:"conflicts"`
 }
 
-func statusOutcomeToDTO(localPeerID, localAlias string,
+func statusOutcomeToDTO(localPeerID, localAlias string, ws *shellcmd.ShellWorkspace,
 	out shellcmd.ReconcileOutcome) statusRenderDTO {
 
 	dto := statusRenderDTO{
@@ -166,6 +294,15 @@ func statusOutcomeToDTO(localPeerID, localAlias string,
 		Actions:     nz(out.Actions),
 		Problems:    nz(out.Problems),
 		Settled:     out.Settled(),
+		Delivery: statusDeliveryDTO{
+			Available:  out.Delivery.Available,
+			Dropped:    out.Delivery.Dropped,
+			QueueDepth: out.Delivery.QueueDepth,
+			Summary:    out.Delivery.Summary(),
+		},
+		CatchUp:   catchUpToDTO(ws),
+		Recording: recordingToDTO(ws, out),
+		Conflicts: conflictsToDTO(out),
 	}
 	for _, d := range out.Devices {
 		dto.Devices = append(dto.Devices, statusDeviceDTO{
@@ -221,6 +358,98 @@ func statusOutcomeToDTO(localPeerID, localAlias string,
 	return dto
 }
 
+// catchUpToDTO reads the supervisor's state off the workspace.
+//
+// Deliberately NOT off the outcome: `LastCatchUp` and `CatchUpInterval`
+// are process memory about a running loop, and a reconcile pass does not
+// take a catch-up pass. Folding them into ReconcileOutcome would make
+// "the last catch-up" look like something this reading produced.
+func catchUpToDTO(ws *shellcmd.ShellWorkspace) statusCatchUpDTO {
+	dto := statusCatchUpDTO{
+		MinSeconds: shellcmd.MinCatchUpInterval.Seconds(),
+		MaxSeconds: shellcmd.MaxCatchUpInterval.Seconds(),
+	}
+	if ws == nil {
+		return dto
+	}
+	iv, running := ws.CatchUpInterval()
+	dto.Running = running
+	dto.IntervalSeconds = iv.Seconds()
+
+	last, have := ws.LastCatchUp()
+	dto.HavePass = have
+	if !have {
+		return dto
+	}
+	dto.Folders = last.Folders
+	dto.Recovered = last.Recovered
+	dto.AlreadyCurrent = last.AlreadyCurrent
+	dto.Failed = last.Failed
+	dto.DurationMillis = float64(last.Duration.Microseconds()) / 1000
+	dto.AtMillis = last.AtMillis
+	dto.Summary = last.Summary()
+	return dto
+}
+
+// recordingToDTO reads the growth guard's state, plus the durable limits
+// the outcome already carries.
+//
+// The limits come off the OUTCOME and not from a second read, so the
+// table and the `problems:` lines beside it are the same list. Two reads
+// would be two answers the moment a limit trips between them, and the
+// disagreement would look like a bug in the panel.
+func recordingToDTO(ws *shellcmd.ShellWorkspace, out shellcmd.ReconcileOutcome) statusRecordingDTO {
+	dto := statusRecordingDTO{Limits: []statusHistoryLimitDTO{}}
+	if ws != nil {
+		st := ws.HistoryBudget()
+		dto.Running = st.Running
+		dto.Budget = st.Budget
+		dto.Paths = st.Paths
+		dto.Transitions = st.Transitions
+		dto.Tripped = st.Tripped
+	}
+	for _, l := range out.HistoryLimits {
+		dto.Limits = append(dto.Limits, statusHistoryLimitDTO{
+			Path:        l.Path,
+			Root:        l.Root,
+			ConfigName:  l.ConfigName,
+			Transitions: l.Transitions,
+			Budget:      l.Budget,
+			AtMillis:    l.AtMillis,
+			Summary:     l.Summary(),
+		})
+	}
+	return dto
+}
+
+// conflictsToDTO carries the unresolved conflicts and the limiter state.
+//
+// Off the OUTCOME, so the table and the `problems:` lines beside it are
+// the same list — two reads would be two answers the moment a conflict
+// arrives between them, and the disagreement would look like a panel bug.
+func conflictsToDTO(out shellcmd.ReconcileOutcome) statusConflictsDTO {
+	dto := statusConflictsDTO{
+		Unresolved:    []statusConflictDTO{},
+		Storming:      out.ConflictHealth.Storming,
+		Detected:      out.ConflictHealth.Detected,
+		Refused:       out.ConflictHealth.Refused,
+		Limit:         out.ConflictHealth.Limit,
+		WindowSeconds: out.ConflictHealth.WindowSeconds,
+	}
+	for _, c := range out.Conflicts {
+		dto.Unresolved = append(dto.Unresolved, statusConflictDTO{
+			Key:          c.Key(),
+			Path:         c.Path,
+			Root:         c.Root,
+			Recoverable:  c.Recoverable,
+			KeepBothPath: c.KeepBothPath,
+			AtMillis:     c.AtMillis,
+			Summary:      c.Summary(),
+		})
+	}
+	return dto
+}
+
 func nz(in []string) []string {
 	if in == nil {
 		return []string{}
@@ -243,7 +472,7 @@ func StatusRender(peerHandle C.int64_t) (result *C.char) {
 		return marshalReply(statusRenderDTO{Er: err.Error()}, "status render")
 	}
 	return marshalReply(
-		statusOutcomeToDTO(hp.AppPeer.PeerID(), ws.Local.Alias, out),
+		statusOutcomeToDTO(hp.AppPeer.PeerID(), ws.Local.Alias, ws, out),
 		"status render")
 }
 
@@ -278,7 +507,7 @@ func StatusReconcile(peerHandle C.int64_t) (result *C.char) {
 		return marshalReply(statusRenderDTO{Er: err.Error()}, "status reconcile")
 	}
 	return marshalReply(
-		statusOutcomeToDTO(hp.AppPeer.PeerID(), ws.Local.Alias, out),
+		statusOutcomeToDTO(hp.AppPeer.PeerID(), ws.Local.Alias, ws, out),
 		"status reconcile")
 }
 
@@ -291,6 +520,101 @@ type statusActionReplyDTO struct {
 	// composed in the renderer so the two frontends cannot describe the
 	// same action differently.
 	Note string `json:"note"`
+}
+
+// panelCatchUpTimeout bounds one catch-up pass driven from the GUI.
+//
+// Longer than the reconcile timeout because the work is different in
+// kind: a reconcile waits on peers that may be switched off, and a
+// catch-up transfers files from ones that are not. A recovering pass over
+// 2000 files ran ~700 ms and a settled one ~470 ms, so this is generous
+// for anything an operator would recognise as a folder — but a first
+// backfill of a large share is genuinely a transfer and must not be cut
+// off at a number chosen for a status table.
+const panelCatchUpTimeout = 2 * time.Minute
+
+// StatusCatchUp runs ONE catch-up pass over every folder this peer
+// receives, and returns the resulting reading.
+//
+// **Safe from a button and safe from a timer, unlike StatusReconcile** —
+// and the difference is the whole reason this is a separate export. A
+// catch-up uses the sync binding and the pooled connection; it does not
+// dial, does not create a mount, does not delete, and does not write
+// policy. It is a read of what the sender actually has, plus writes into
+// a mount the operator already agreed to.
+//
+// It exists because the machinery that turns a dropped delivery into a
+// delay rather than a loss was reachable from `entity-shell` and from no
+// pixel — on the failure an operator is most likely to meet and least
+// able to diagnose. `catchup` is the shell verb; this is the same call.
+//
+//export StatusCatchUp
+func StatusCatchUp(peerHandle C.int64_t) (result *C.char) {
+	defer recoverToErrorEnvelope("StatusCatchUp", &result)
+	ws, hp, errEnv := shareWorkspace(peerHandle)
+	if errEnv != "" {
+		return C.CString(errEnv)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), panelCatchUpTimeout)
+	defer cancel()
+
+	// RunCatchUpOnce and not CatchUp: it records the pass so the reading
+	// below reports it, and it declines rather than stacking when the
+	// supervisor is already mid-pass. A second concurrent pass over the
+	// same folders would double the transfer and report half of it twice.
+	if _, ran := ws.RunCatchUpOnce(ctx); !ran {
+		// Not an error. A pass was already running, which is the healthy
+		// case — fall through and render, so the panel shows whatever that
+		// pass concludes rather than an alarm about a working supervisor.
+		_ = ran
+	}
+
+	out, err := ws.StatusSnapshot()
+	if err != nil {
+		return marshalReply(statusRenderDTO{Er: err.Error()}, "status catch-up")
+	}
+	return marshalReply(
+		statusOutcomeToDTO(hp.AppPeer.PeerID(), ws.Local.Alias, ws, out),
+		"status catch-up")
+}
+
+// StatusResolveConflict decides one conflict and returns the resulting
+// reading.
+//
+// keep is "mine", "theirs" or "both", and there is deliberately no
+// default at this boundary either: the verb refuses an empty one and so
+// does this, because a panel that silently picked for the operator would
+// be the exact behaviour the whole feature exists to replace.
+//
+// Local work — a reassemble and a file write — so it neither dials nor
+// blocks on another machine. It still goes on a thread-pool worker,
+// because it writes a file whose size nobody here chose.
+//
+//export StatusResolveConflict
+func StatusResolveConflict(peerHandle C.int64_t, key *C.char, keep *C.char) (result *C.char) {
+	defer recoverToErrorEnvelope("StatusResolveConflict", &result)
+	ws, hp, errEnv := shareWorkspace(peerHandle)
+	if errEnv != "" {
+		return C.CString(errEnv)
+	}
+	k := strings.TrimSpace(C.GoString(key))
+	choice := strings.TrimSpace(C.GoString(keep))
+	out, err := ws.ResolveConflict(k, choice)
+	if err != nil {
+		return marshalReply(statusRenderDTO{Er: err.Error()}, "status resolve conflict")
+	}
+
+	// Render afterwards, so the panel's table and the sentence it shows
+	// come from one reading. Returning only a note would leave the row
+	// on screen until the next refresh, which reads as the button having
+	// done nothing.
+	snap, err := ws.StatusSnapshot()
+	if err != nil {
+		return marshalReply(statusRenderDTO{Er: err.Error()}, "status resolve conflict")
+	}
+	dto := statusOutcomeToDTO(hp.AppPeer.PeerID(), ws.Local.Alias, ws, snap)
+	dto.Actions = append(dto.Actions, out.Path+": "+out.Note)
+	return marshalReply(dto, "status resolve conflict")
 }
 
 // StatusPauseDevice pauses or resumes a declared peer.

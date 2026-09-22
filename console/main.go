@@ -56,13 +56,39 @@ func main() {
 	app := newApplication()
 	defer app.manager.ShutdownAll()
 
+	// ReconcileOnStart for a PERSISTENT console, which also starts the
+	// catch-up supervisor (shellboot.Bootstrap defaults the loop off this
+	// flag). The console is frozen for feature work, not for correctness:
+	// it accepts -storage sqlite and -listen, so it can be somebody's
+	// peer, and a peer without the supervisor loses part of a large copy
+	// permanently and silently.
+	//
+	// This is the THIRD instance of AP67's shape on this one flag — the
+	// GUI set it, the REPL forgot it and had to be fixed on 2026-09-07,
+	// and the console had never had it. A step every long-running
+	// frontend needs, left to each of them to remember, is a step one of
+	// them forgets.
+	//
+	// Keyed on sqlite and not on -identity: declarations live in the
+	// tree, so a memory-backed peer has nothing from a previous session
+	// to re-establish however it was keyed.
+	//
+	// LongRunning is UNCONDITIONAL, and that is the gap this used to
+	// record instead of closing. A TUI stays open however its store is
+	// backed, and an in-memory console that accepts a share mid-session
+	// can take a burst and lose files with no next launch to recover them
+	// in. `ReconcileOnStart` means "I have declarations"; the supervisor
+	// needs "am I going to be here", and until 2026-09-07 there was only
+	// one flag for both questions.
 	hA, err := app.manager.Create(shellboot.Config{
-		Identity:    *identity,
-		LocalAlias:  *alias,
-		StorageKind: *storage,
-		StoragePath: *storagePath,
-		ListenAddr:  *listenAddr,
-		OpenAccess:  *openAccess,
+		Identity:         *identity,
+		LocalAlias:       *alias,
+		StorageKind:      *storage,
+		StoragePath:      *storagePath,
+		ListenAddr:       *listenAddr,
+		OpenAccess:       *openAccess,
+		ReconcileOnStart: *storage == "sqlite",
+		LongRunning:      true,
 	})
 	if err != nil {
 		log.Fatalf("entity-console: %v", err)

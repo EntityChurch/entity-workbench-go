@@ -40,6 +40,22 @@ func (a *App) RunREPL(in io.Reader, out, errOut io.Writer) error {
 	// exactly the manual `connect` this removes.
 	a.reconcileForREPL(out)
 
+	// Keep the received folders arriving for as long as the session is
+	// open.
+	//
+	// Started HERE and not off shellboot's ReconcileOnStart, because the
+	// REPL does its reconcile through reconcileForREPL and never sets
+	// that flag — so wiring catch-up to the flag alone left the primary
+	// CLI as the one long-running frontend without it, which is the
+	// per-frontend forgetting the flag was supposed to prevent.
+	//
+	// REPL only, for reconcileForREPL's reason: `entity-shell mounts`
+	// exits in milliseconds and has no business starting a background
+	// loop. The supervisor does not dial, so unlike the reconcile above
+	// it costs nothing when every declared peer is switched off.
+	a.sh.EnableCatchUp(0)
+	defer a.sh.StopCatchUp()
+
 	if useLiner(in) {
 		return a.runLiner(out, errOut)
 	}

@@ -323,10 +323,66 @@ type FolderData struct {
 	// Mode is one of the FolderMode constants.
 	Mode string `cbor:"mode"`
 
+	// Conflict is what happens when a delivery lands on a path this peer
+	// has edited since it last agreed with the sender. One of the
+	// ConflictPolicy constants; empty means ConflictPolicyRecord.
+	//
+	// A DECLARATION and not a setting, like everything else in this
+	// record: the reconciler reads it, the handler acts on it, and no
+	// verb writes the behaviour directly. Set it with
+	// ShellWorkspace.SetFolderConflictPolicy.
+	//
+	// The default is deliberately the one that does not change what is in
+	// the folder — see conflict_record.go for why keep-both is wrong as a
+	// default in a one-way share, which is the topology this product
+	// ships most of.
+	Conflict string `cbor:"conflict,omitempty"`
+
 	// SharedWith is one entry per peer this folder is shared with, in
 	// either direction. For a received folder it holds exactly one entry
 	// — the originating peer — carrying OUR accept/decline state.
 	SharedWith []FolderPeerData `cbor:"shared_with,omitempty"`
+}
+
+// Conflict policies — what a delivery does when it lands on a locally
+// edited path.
+const (
+	// ConflictPolicyRecord converges (the delivered version wins on disk,
+	// which is `DOMAIN-LOCAL-FILES` §1.1a's last-arrival-wins) and writes
+	// a durable record naming the version it replaced, which stays
+	// recoverable from the chain. The default, and empty means this.
+	ConflictPolicyRecord = "record"
+	// ConflictPolicyKeepBoth additionally writes the replaced version to
+	// `{path}.keep-both-{hash8}`, EXTENSION-REVISION §2.3's sibling, so
+	// both versions are PRESENT rather than merely recoverable. The
+	// folder stops converging until an operator acts, which is why it is
+	// opt-in.
+	ConflictPolicyKeepBoth = "keep-both"
+)
+
+// ConflictPolicy is Conflict, defaulted.
+//
+// Absent means ConflictPolicyRecord and never keep-both, for the same
+// reason EffectiveMode's absent case is the pre-S6 behaviour: defaulting
+// to the stronger action starts changing what is in folders an operator
+// set up under the weaker one, and that mistake is not symmetric.
+func (f FolderData) ConflictPolicy() string {
+	if f.Conflict == ConflictPolicyKeepBoth {
+		return ConflictPolicyKeepBoth
+	}
+	return ConflictPolicyRecord
+}
+
+// ParseConflictPolicy accepts the spellings an operator types.
+func ParseConflictPolicy(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case ConflictPolicyRecord, "record-only", "converge", "last-arrival-wins", "lww":
+		return ConflictPolicyRecord, nil
+	case ConflictPolicyKeepBoth, "keepboth", "keep_both", "both":
+		return ConflictPolicyKeepBoth, nil
+	}
+	return "", fmt.Errorf("conflict policy must be %q or %q, got %q",
+		ConflictPolicyRecord, ConflictPolicyKeepBoth, s)
 }
 
 // FolderPeerData is one peer's participation in a folder.

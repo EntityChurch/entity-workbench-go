@@ -1,6 +1,7 @@
 package shellcmd
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -134,6 +135,42 @@ func cmdResync(sh *Shell, args []string) (Result, error) {
 		// identically, and this is the run where they differ.
 		lines = append(lines, "",
 			"everything the remote folder holds is already here — the sync is current.")
+	}
+	return LinesResult(lines), nil
+}
+
+// cmdCatchUp runs one pass over every received folder and reports it.
+//
+// The verb exists for `resync`'s reason: everything this flow
+// establishes is deliberately durable, so a second run is
+// indistinguishable from a stale one unless something reports a positive
+// confirmation. It also gives the supervisor a shipped surface — a loop
+// running in the background that no operator can ask about or trigger is
+// a model with no surface (D23), and here it is worse than usual because
+// the condition it heals is itself invisible.
+func cmdCatchUp(sh *Shell, args []string) (Result, error) {
+	res, err := sh.CatchUp(context.Background())
+	if err != nil {
+		return Result{}, err
+	}
+	lines := []string{res.Summary()}
+	for _, p := range res.Problems {
+		lines = append(lines, "  problem: "+p)
+	}
+	if res.Folders > 0 && res.Recovered > 0 {
+		lines = append(lines, "",
+			fmt.Sprintf("%d file(s) had been silently lost — a burst of changes on the "+
+				"sending peer outran its delivery queue, which drops rather than "+
+				"blocks. Nothing was lost from their disk and nothing is lost from "+
+				"yours; this pass closed the gap.", res.Recovered))
+	}
+	if last, ok := sh.LastCatchUp(); ok && last.AtMillis > 0 {
+		lines = append(lines, "",
+			"the background supervisor is running; its last pass: "+last.Summary())
+	} else {
+		lines = append(lines, "",
+			"no background supervisor is running in this process — this was a "+
+				"one-off pass.")
 	}
 	return LinesResult(lines), nil
 }

@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
@@ -62,10 +63,18 @@ namespace EntityAvalonia.Panels;
 // case that matters: they revoked us and we have not tried since.
 public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
 {
-    // Chrome floor (AP64): identity block + caption + three sections, each
+    // Chrome floor (AP64): identity block + caption + FIVE sections, each
     // with a bounded list. Every panel declares one; a panel that does not
     // claims the 200px default and clips every panel in the stack.
-    public double PreferredSlotMinHeight => 620;
+    //
+    // Raised 620 -> 800 with the delivery/catch-up/recording section and
+    // 800 -> 900 with the conflicts section.
+    // A section added without moving this number is the AP64 bug rebuilt
+    // by hand: the stack sizes its slot to what the panel CLAIMS, so new
+    // chrome under an unchanged floor is chrome nobody can reach — and the
+    // control that falls off the bottom is the newest one, which is the
+    // one nobody has learned to look for yet.
+    public double PreferredSlotMinHeight => 900;
 
     private readonly long _peerHandle;
     private long _wakeRegistration = -1;
@@ -83,6 +92,41 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
     private readonly ObservableCollection<FolderVm> _folders = new();
     private readonly ObservableCollection<string> _problems = new();
     private readonly ObservableCollection<string> _actions = new();
+
+    // The three peer-wide lines and their one verb. Constructed at field
+    // initialization rather than in BuildDeliverySection so Apply() can
+    // write to them before the section is built — Refresh() runs from the
+    // constructor, and a null here would be a NullReferenceException on
+    // the very first render.
+    private readonly SelectableTextBlock _deliveryLine = new()
+    {
+        FontSize = 12,
+        TextWrapping = TextWrapping.Wrap,
+        Foreground = Brushes.Gray,
+    };
+    private readonly SelectableTextBlock _catchUpLine = new()
+    {
+        FontSize = 12,
+        TextWrapping = TextWrapping.Wrap,
+        Foreground = Brushes.Gray,
+    };
+    private readonly SelectableTextBlock _recordingLine = new()
+    {
+        FontSize = 12,
+        TextWrapping = TextWrapping.Wrap,
+        Foreground = Brushes.Gray,
+    };
+    private readonly Button _catchUpBtn = new() { Content = "Catch up now", FontSize = 12 };
+    private readonly ObservableCollection<string> _recordingLimits = new();
+    private readonly ObservableCollection<ConflictVm> _conflicts = new();
+    private readonly TextBlock _conflictsEmpty;
+    private readonly SelectableTextBlock _conflictStorm = new()
+    {
+        FontSize = 12,
+        TextWrapping = TextWrapping.Wrap,
+        Foreground = Brushes.IndianRed,
+        IsVisible = false,
+    };
 
     private readonly TextBlock _devicesEmpty;
     private readonly TextBlock _foldersEmpty;
@@ -150,6 +194,20 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         _foldersEmpty.IsVisible = false;
     }
 
+    // A conflict row without a second peer and a real collision.
+    //
+    // Fills the SAME view-model collection the real ItemTemplate reads, so
+    // the row is built by BuildConflictRow exactly as it is in the app —
+    // which is the part worth gating, because a test that asserts on a
+    // view model passes against a row whose buttons are absent, clipped,
+    // or wired to nothing.
+    internal void SeedConflictForTests(string key, string path, string summary,
+        bool recoverable, string keepBothPath)
+    {
+        _conflicts.Add(new ConflictVm(key, path, summary, recoverable, keepBothPath));
+        _conflictsEmpty.IsVisible = false;
+    }
+
     public SharingStatusPanel(long peerHandle)
     {
         _peerHandle = peerHandle;
@@ -191,11 +249,15 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         _foldersEmpty = Hint("No folders declared yet. Use Shared Folders to offer one, "
             + "or to accept one that has been offered to you.");
         _problemsEmpty = Hint("Nothing is wrong that this peer can see.");
+        _conflictsEmpty = Hint("No file here has had one of your edits replaced by a "
+            + "change from someone else.");
 
         var body = new StackPanel { Orientation = Orientation.Vertical };
         body.Children.Add(BuildIdentitySection());
         body.Children.Add(BuildDevicesSection());
         body.Children.Add(BuildFoldersSection());
+        body.Children.Add(BuildDeliverySection());
+        body.Children.Add(BuildConflictsSection());
         body.Children.Add(BuildProblemsSection());
         _actionsSection = BuildActionsSection();
         body.Children.Add(_actionsSection);
@@ -339,6 +401,171 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
             BorderThickness = new Thickness(0),
             ItemTemplate = Rows.Of<FolderVm>((vm, _) => BuildFolderRow(vm)),
         });
+        return stack;
+    }
+
+    // BuildDeliverySection — the machinery that makes a big copy survive,
+    // which until now was reachable from `entity-shell` and from no pixel.
+    //
+    // # Why this section exists at all
+    //
+    // The failure it describes is the one an operator hits first and can
+    // diagnose least: copy a large directory into a shared folder and the
+    // transfer stops part way, with no error on either side and every row
+    // on this panel green. The cause is on the SENDER — its subscription
+    // engine discards notifications it never put on the wire when the
+    // delivery ring saturates — so the receiving peer is not behind, it
+    // was never told, and there is nothing in its own state to notice.
+    //
+    // Three facts answer it, and each was being computed and thrown away
+    // one field short of the screen:
+    //
+    //	delivery   did THIS peer drop anything it was publishing
+    //	catch-up   is the loop that re-derives the truth running, how
+    //	           fast, and what did the last pass recover
+    //	recording  is anything bounding the growth of the change chain
+    //
+    // # Why the three are peer-wide and not folder rows
+    //
+    // The drop counter belongs to the engine every subscription shares and
+    // the engine does not attribute a drop to a subscription; the
+    // supervisor passes over all folders at once; the recording guard
+    // counts paths across mounts. Putting any of them on a folder row
+    // would invent an attribution the substrate does not have, and the
+    // invented one is confidently wrong exactly when two folders are busy.
+    private Control BuildDeliverySection()
+    {
+        var stack = Section("Delivery, catch-up and change recording");
+
+        stack.Children.Add(_deliveryLine);
+        stack.Children.Add(_catchUpLine);
+        stack.Children.Add(_recordingLine);
+
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            Margin = new Thickness(0, 6, 0, 0),
+        };
+        ToolTip.SetTip(_catchUpBtn,
+            "Ask every peer you receive from what it actually holds, and pull anything "
+            + "missing. Recovers a copy that stopped part way. Uses connections you "
+            + "already have — it does not dial, mount, or delete anything.");
+        _catchUpBtn.Click += (_, _) => _ = CatchUpAsync();
+        AutomationProperties.SetAutomationId(_catchUpBtn, "status.catchup");
+        row.Children.Add(_catchUpBtn);
+        stack.Children.Add(row);
+
+        // The stopped paths, as their own bounded list. They are ALSO in
+        // `problems:` — deliberately, because that is the section an
+        // operator scans when something is wrong — but a limit is a
+        // standing state rather than a fault, and reading it beside the
+        // recording counter is what makes it comprehensible.
+        stack.Children.Add(new ListBox
+        {
+            ItemsSource = _recordingLimits,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            MaxHeight = 120,
+            ItemTemplate = Rows.Of<string>((s, _) => new SelectableTextBlock
+            {
+                Text = s,
+                FontSize = 11,
+                Foreground = Brushes.Goldenrod,
+                TextWrapping = TextWrapping.Wrap,
+            }),
+        });
+        return stack;
+    }
+
+    // BuildConflictsSection — the files where a delivery replaced an edit
+    // of yours, and the two buttons that decide what happens to them.
+    //
+    // # Why this is a section and not a folder-row detail
+    //
+    // A conflict is about ONE FILE, and the folder it is in is the least
+    // interesting thing about it. An operator meeting this asks "which of
+    // my files did that happen to, and can I get it back" — a question a
+    // folder row cannot answer without expanding into a file list, which
+    // is a second file browser inside a status panel.
+    //
+    // # The two buttons ARE the feature
+    //
+    // Everything before them — the detection, the record, the chain — is
+    // machinery for a recoverable loss. A recoverable loss nobody is told
+    // about is an unrecoverable one, and a loss the operator is told about
+    // and cannot undo is barely better. `make reachability` cannot raise
+    // that: it asks whether a model has a surface, and a read-only surface
+    // over a read-write model satisfies it completely (AP57). The tell is
+    // a panel section with no verb in it.
+    private Control BuildConflictsSection()
+    {
+        var stack = Section("Files where a change replaced one of yours");
+        stack.Children.Add(_conflictStorm);
+        stack.Children.Add(_conflictsEmpty);
+        stack.Children.Add(new ListBox
+        {
+            ItemsSource = _conflicts,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            // Bounded (AP64's other half): an unbounded list in a docked
+            // region pushes everything below it out of reach, and a
+            // conflict storm is exactly the case that produces one.
+            MaxHeight = 200,
+            ItemTemplate = Rows.Of<ConflictVm>((vm, _) => BuildConflictRow(vm)),
+        });
+        return stack;
+    }
+
+    private Control BuildConflictRow(ConflictVm vm)
+    {
+        var stack = new StackPanel { Margin = new Thickness(4, 4, 4, 4), Spacing = 1 };
+        stack.Children.Add(new TextBlock
+        {
+            Text = vm.Name,
+            FontWeight = FontWeight.SemiBold,
+            FontSize = 12,
+        });
+        stack.Children.Add(new SelectableTextBlock
+        {
+            Text = vm.Summary,
+            FontSize = 11,
+            Opacity = 0.8,
+            TextWrapping = TextWrapping.Wrap,
+        });
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+        // Offered ONLY when the replaced version was actually kept. A
+        // record whose path had no change recording at the time is a
+        // notification, not a recovery handle, and a button there would
+        // offer something that fails — which is worse than no button,
+        // because it reads as the tool having lost the file twice.
+        if (vm.Recoverable)
+        {
+            buttons.Children.Add(RowButton("Restore mine",
+                "Put your version back on disk and decline that delivery, so a "
+                + "catch-up pass will not undo it. In a folder that only receives, "
+                + "their NEXT change to this file wins again — but you will be told.",
+                () => _ = ResolveConflictAsync(vm.Key, "mine")));
+        }
+        buttons.Children.Add(RowButton("Keep theirs",
+            "Record that you are happy with the version that arrived. Nothing on "
+            + "disk changes; the row goes away.",
+            () => _ = ResolveConflictAsync(vm.Key, "theirs")));
+        if (vm.Recoverable && string.IsNullOrEmpty(vm.KeepBothPath))
+        {
+            buttons.Children.Add(RowButton("Keep both",
+                "Write your version to a second file beside this one, so both are "
+                + "present. The folder will stop matching the other peer until you "
+                + "delete one.",
+                () => _ = ResolveConflictAsync(vm.Key, "both")));
+        }
+        stack.Children.Add(buttons);
         return stack;
     }
 
@@ -584,14 +811,14 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         await ReconcileAsync();
     }
 
-    private void Apply(string reply, string what)
+    private bool Apply(string reply, string what)
     {
         var dto = Decode<RenderEnvelope>(reply, out var err);
         if (dto == null || !dto.Ok)
         {
             SetStatus($"{what} failed: {(dto?.Error is { Length: > 0 } e ? e : err)}",
                 Brushes.IndianRed);
-            return;
+            return false;
         }
 
         _identityLine.Text =
@@ -636,6 +863,11 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         foreach (var a in dto.Actions ?? new List<string>()) _actions.Add(a);
         _actionsSection.IsVisible = _actions.Count > 0;
 
+        ApplyDelivery(dto.Delivery);
+        ApplyCatchUp(dto.CatchUp);
+        ApplyRecording(dto.Recording);
+        ApplyConflicts(dto.Conflicts);
+
         if (dto.Reconciled)
         {
             SetStatus(
@@ -644,7 +876,221 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
                     : $"{_actions.Count} change(s), {_problems.Count} problem(s) — see below.",
                 dto.Settled ? Brushes.DarkSeaGreen : Brushes.Goldenrod);
         }
+        return true;
     }
+
+    // --- The three peer-wide lines ----------------------------------------
+    //
+    // Each one distinguishes MEASURED-ZERO from NOT-MEASURED, which is the
+    // whole discipline in this section. "No drops", "no pass recovered
+    // anything" and "no path hit its budget" are healthy; "nothing counted
+    // drops", "no supervisor is running" and "nothing is watching growth"
+    // are the same words on screen and mean the opposite. Every earlier
+    // version of a status surface in this repo collapsed that pair, and it
+    // is why a stalled supervisor read as a healthy one.
+
+    private void ApplyDelivery(DeliveryDto? d)
+    {
+        if (d is null || !d.Available)
+        {
+            _deliveryLine.Text = "delivery: not measured on this peer — it exposes no "
+                                 + "subscription engine, so a saturated queue would leave no trace here.";
+            _deliveryLine.Foreground = Brushes.Goldenrod;
+            return;
+        }
+        if (d.Dropped > 0)
+        {
+            _deliveryLine.Text = "delivery: " + d.Summary;
+            _deliveryLine.Foreground = Brushes.IndianRed;
+            return;
+        }
+        _deliveryLine.Text = d.QueueDepth > 0
+            ? $"delivery: nothing dropped since this peer started, queue depth {d.QueueDepth}."
+            : "delivery: nothing dropped since this peer started.";
+        _deliveryLine.Foreground = Brushes.Gray;
+    }
+
+    // Two INDEPENDENT facts, said separately: what the last pass did, and
+    // whether anything will pass again on its own.
+    //
+    // An earlier shape folded them — no supervisor meant no report — and
+    // that is precisely backwards. A peer with no supervisor is the one
+    // where a manual pass is the only thing standing between the operator
+    // and a permanently half-copied folder, so its result is MORE worth
+    // printing there, not less.
+    private void ApplyCatchUp(CatchUpDto? c)
+    {
+        _catchUpBtn.IsEnabled = !_busy;
+        if (c is null)
+        {
+            _catchUpLine.Text = "catch-up: not reported by this peer.";
+            _catchUpLine.Foreground = Brushes.Goldenrod;
+            return;
+        }
+
+        // c.Summary already opens with "catch-up", so it is not prefixed
+        // again — the sentence is composed in Go so the shell and the GUI
+        // cannot describe one pass two ways.
+        var text = c.HavePass ? c.Summary : "catch-up: no pass has completed yet";
+
+        if (c.Running)
+        {
+            // The rate is adaptive and the two regimes look identical from
+            // a folder listing: "checked every 5 s because it is still
+            // finding things" and "checked twice an hour because it has
+            // been quiet since Tuesday" are the same table without this.
+            var state = c.IntervalSeconds <= c.MinSeconds + 0.001
+                ? "actively recovering"
+                : "settled";
+            text += $". Next pass in {Describe(c.IntervalSeconds)} ({state}).";
+        }
+        else
+        {
+            text += ". NO supervisor is running in this process — a folder that "
+                    + "stopped part way stays that way until you press Catch up now.";
+        }
+
+        _catchUpLine.Text = text;
+        _catchUpLine.Foreground = (!c.Running || c.Recovered > 0)
+            ? Brushes.Goldenrod
+            : Brushes.Gray;
+    }
+
+    private void ApplyRecording(RecordingDto? r)
+    {
+        _recordingLimits.Clear();
+        if (r is null || !r.Running)
+        {
+            _recordingLine.Text = "change recording: NOT being counted in this process. "
+                                  + "A file something rewrites continuously will grow the tree "
+                                  + "without bound and nothing here will notice.";
+            _recordingLine.Foreground = Brushes.Goldenrod;
+            return;
+        }
+        _recordingLine.Text =
+            $"change recording: {r.Transitions} version(s) across {r.Paths} path(s) this "
+            + $"session, budget {r.Budget} per path.";
+        _recordingLine.Foreground = Brushes.Gray;
+
+        foreach (var l in r.Limits ?? new List<HistoryLimitDto>())
+        {
+            _recordingLimits.Add(l.Summary);
+        }
+        if (_recordingLimits.Count > 0)
+        {
+            _recordingLine.Foreground = Brushes.Goldenrod;
+        }
+    }
+
+    private static string Describe(double seconds)
+    {
+        if (seconds <= 0) return "a moment";
+        if (seconds < 90) return $"{Math.Round(seconds)}s";
+        return $"{Math.Round(seconds / 60)} min";
+    }
+
+    // CatchUpAsync runs ONE backfill pass off the UI thread.
+    //
+    // Not ReconcileAsync's hazard: a catch-up does not dial, mount or
+    // delete. It does transfer files, so it is I/O-bound and goes on a
+    // thread-pool worker for AP31's reason, exactly like the others.
+    public async Task CatchUpAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        _catchUpBtn.IsEnabled = false;
+        SetStatus("catching up — asking each peer what it actually holds…", Brushes.Gainsboro);
+        try
+        {
+            var reply = await Task.Run(() =>
+                Bridge.TakeString(Bridge.StatusCatchUp(_peerHandle)));
+            // The reading Apply just installed IS the report: a catch-up
+            // returns a StatusSnapshot, which is a read and says so, so
+            // there is no second sentence to compose here. Echoing the
+            // line the section already renders keeps the two from
+            // drifting into two descriptions of one pass.
+            if (Apply(reply, "catch-up"))
+            {
+                SetStatus(CatchUpText, Brushes.Gainsboro);
+            }
+        }
+        finally
+        {
+            _busy = false;
+            _catchUpBtn.IsEnabled = true;
+        }
+    }
+
+    // PerformCatchUpForTests is the driver seam, for
+    // PerformRecheckForTests's reason: awaiting the Task on the test
+    // thread deadlocks the headless dispatcher.
+    public Task PerformCatchUpForTests() => CatchUpAsync();
+
+    // Read-only surface for the assertions that are about these lines.
+    public string DeliveryText => _deliveryLine.Text ?? "";
+    public string CatchUpText => _catchUpLine.Text ?? "";
+    public string RecordingText => _recordingLine.Text ?? "";
+    public int RecordingLimitCount => _recordingLimits.Count;
+
+    private void ApplyConflicts(ConflictsDto? c)
+    {
+        _conflicts.Clear();
+        foreach (var x in c?.Unresolved ?? new List<ConflictDto>())
+        {
+            _conflicts.Add(new ConflictVm(x.Key, x.Path, x.Summary, x.Recoverable,
+                x.KeepBothPath));
+        }
+        _conflictsEmpty.IsVisible = _conflicts.Count == 0;
+
+        // The storm banner is the one thing here that is not about a file.
+        // A peer that has hit the burst limit has DELIBERATELY stopped
+        // materializing deliveries — neither healthy nor broken, said
+        // nowhere else, and invisible in a list that is by definition not
+        // growing because the mechanism that would grow it has stopped.
+        var storming = c is { Storming: true };
+        _conflictStorm.IsVisible = storming;
+        if (storming)
+        {
+            _conflictStorm.Text =
+                $"DELIVERIES ARE BEING REFUSED: more than {c!.Limit} conflicts in "
+                + $"{Math.Round(c.WindowSeconds)}s on this peer, so {c.Refused} "
+                + "delivery(ies) have been turned away. Nothing was overwritten. A "
+                + "burst this size is more likely to be a fault here than someone "
+                + "else's editing; delivery resumes by itself once it subsides.";
+        }
+    }
+
+    // ResolveConflictAsync decides one conflict off the UI thread.
+    //
+    // Local work — a reassemble and a file write — so it neither dials nor
+    // waits on another machine, but it writes a file whose size nobody
+    // here chose, so it goes on a thread-pool worker like the rest.
+    public async Task ResolveConflictAsync(string key, string keep)
+    {
+        if (_busy) return;
+        _busy = true;
+        SetStatus($"resolving — keeping {keep}…", Brushes.Gainsboro);
+        try
+        {
+            var reply = await Task.Run(() =>
+                Bridge.TakeString(Bridge.StatusResolveConflict(_peerHandle, key, keep)));
+            if (Apply(reply, "resolve"))
+            {
+                // The reading Apply installed carries the sentence in its
+                // actions list, so the status line is the last of them
+                // rather than a second description composed here.
+                SetStatus(_actions.Count > 0 ? _actions[^1] : "resolved.", Brushes.Gainsboro);
+            }
+        }
+        finally { _busy = false; }
+    }
+
+    // Driver seam, for PerformRecheckForTests' reason: awaiting on the
+    // test thread deadlocks the headless dispatcher.
+    public Task PerformResolveForTests(string key, string keep) => ResolveConflictAsync(key, keep);
+
+    public int ConflictCount => _conflicts.Count;
+    public string ConflictStormText => _conflictStorm.IsVisible ? (_conflictStorm.Text ?? "") : "";
 
     private void SetStatus(string text, IBrush brush)
     {
@@ -726,6 +1172,24 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
     };
 
     // --- View models ------------------------------------------------------
+
+    private sealed record ConflictVm(
+        string Key, string Path, string Summary, bool Recoverable, string KeepBothPath)
+    {
+        // The FILE NAME as the heading, not the tree path. An operator
+        // recognises `notes.md`; `/2KG2Hp…/local/files/shared/notes.md`
+        // is the same fact rendered as an address, and the address is
+        // three quarters peer-id. The full path is in the summary line
+        // underneath, where it is available and not in the way.
+        public string Name
+        {
+            get
+            {
+                var i = Path.LastIndexOf('/');
+                return i >= 0 && i + 1 < Path.Length ? Path[(i + 1)..] : Path;
+            }
+        }
+    }
 
     private sealed record DeviceVm(
         string PeerId, string LabelRaw, string Address, bool Maintained, bool Connected,
@@ -853,6 +1317,81 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         [JsonPropertyName("actions")] public List<string>? Actions { get; set; }
         [JsonPropertyName("problems")] public List<string>? Problems { get; set; }
         [JsonPropertyName("settled")] public bool Settled { get; set; }
+
+        // The three peer-wide facts. Declared here because an undeclared
+        // field is dropped by System.Text.Json in total silence (AP49),
+        // and every one of these means "something you cannot otherwise
+        // see is happening" — a dropped one renders as a healthy peer.
+        [JsonPropertyName("delivery")] public DeliveryDto? Delivery { get; set; }
+        [JsonPropertyName("catchUp")] public CatchUpDto? CatchUp { get; set; }
+        [JsonPropertyName("recording")] public RecordingDto? Recording { get; set; }
+        [JsonPropertyName("conflicts")] public ConflictsDto? Conflicts { get; set; }
+    }
+
+    public sealed class ConflictsDto
+    {
+        [JsonPropertyName("unresolved")] public List<ConflictDto>? Unresolved { get; set; }
+        [JsonPropertyName("storming")] public bool Storming { get; set; }
+        [JsonPropertyName("detected")] public int Detected { get; set; }
+        [JsonPropertyName("refused")] public int Refused { get; set; }
+        [JsonPropertyName("limit")] public int Limit { get; set; }
+        [JsonPropertyName("windowSeconds")] public double WindowSeconds { get; set; }
+    }
+
+    public sealed class ConflictDto
+    {
+        [JsonPropertyName("key")] public string Key { get; set; } = "";
+        [JsonPropertyName("path")] public string Path { get; set; } = "";
+        [JsonPropertyName("root")] public string Root { get; set; } = "";
+        [JsonPropertyName("recoverable")] public bool Recoverable { get; set; }
+        [JsonPropertyName("keepBothPath")] public string KeepBothPath { get; set; } = "";
+        [JsonPropertyName("atMillis")] public ulong AtMillis { get; set; }
+        [JsonPropertyName("summary")] public string Summary { get; set; } = "";
+    }
+
+    public sealed class DeliveryDto
+    {
+        [JsonPropertyName("available")] public bool Available { get; set; }
+        [JsonPropertyName("dropped")] public ulong Dropped { get; set; }
+        [JsonPropertyName("queueDepth")] public int QueueDepth { get; set; }
+        [JsonPropertyName("summary")] public string Summary { get; set; } = "";
+    }
+
+    public sealed class CatchUpDto
+    {
+        [JsonPropertyName("running")] public bool Running { get; set; }
+        [JsonPropertyName("havePass")] public bool HavePass { get; set; }
+        [JsonPropertyName("intervalSeconds")] public double IntervalSeconds { get; set; }
+        [JsonPropertyName("minSeconds")] public double MinSeconds { get; set; }
+        [JsonPropertyName("maxSeconds")] public double MaxSeconds { get; set; }
+        [JsonPropertyName("folders")] public int Folders { get; set; }
+        [JsonPropertyName("recovered")] public int Recovered { get; set; }
+        [JsonPropertyName("alreadyCurrent")] public int AlreadyCurrent { get; set; }
+        [JsonPropertyName("failed")] public int Failed { get; set; }
+        [JsonPropertyName("durationMillis")] public double DurationMillis { get; set; }
+        [JsonPropertyName("atMillis")] public ulong AtMillis { get; set; }
+        [JsonPropertyName("summary")] public string Summary { get; set; } = "";
+    }
+
+    public sealed class RecordingDto
+    {
+        [JsonPropertyName("running")] public bool Running { get; set; }
+        [JsonPropertyName("budget")] public ulong Budget { get; set; }
+        [JsonPropertyName("paths")] public int Paths { get; set; }
+        [JsonPropertyName("transitions")] public ulong Transitions { get; set; }
+        [JsonPropertyName("tripped")] public int Tripped { get; set; }
+        [JsonPropertyName("limits")] public List<HistoryLimitDto>? Limits { get; set; }
+    }
+
+    public sealed class HistoryLimitDto
+    {
+        [JsonPropertyName("path")] public string Path { get; set; } = "";
+        [JsonPropertyName("root")] public string Root { get; set; } = "";
+        [JsonPropertyName("configName")] public string ConfigName { get; set; } = "";
+        [JsonPropertyName("transitions")] public ulong Transitions { get; set; }
+        [JsonPropertyName("budget")] public ulong Budget { get; set; }
+        [JsonPropertyName("atMillis")] public ulong AtMillis { get; set; }
+        [JsonPropertyName("summary")] public string Summary { get; set; } = "";
     }
 
     public sealed class DeviceDto

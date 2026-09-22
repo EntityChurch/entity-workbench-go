@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"go.entitychurch.org/entity-core-go/core/peer"
 
@@ -111,6 +112,67 @@ type Config struct {
 	// answered.
 	ReconcileOnStart bool `json:"reconcile_on_start"`
 
+	// CatchUpInterval starts the periodic backfill supervisor
+	// (shellcmd/catchup.go). Zero means "default off ReconcileOnStart";
+	// negative means OFF explicitly.
+	//
+	// It exists because a delivery this peer was never sent cannot be
+	// detected here: the subscription engine drops on shard saturation at
+	// the PUBLISHER, before anything reaches the wire, so a receiver sees
+	// no error, no retry and no counter move. Measured 2026-09-07 — a
+	// 2000-file directory copy delivered 676 files and stopped, silently
+	// and permanently, with `syncs` healthy throughout. The only way back
+	// is to ask the sender what it actually has, which is what a pass does.
+	//
+	// Opt-in for ReconcileOnStart's FIRST reason and not its second: a
+	// pass does not dial, so it costs no connection budget, but a
+	// one-shot CLI still has no business starting a background loop it
+	// will outlive by milliseconds. A frontend that stays running sets it.
+	//
+	// Stop it with ws.StopCatchUp(); a process-lifetime peer need not.
+	CatchUpInterval time.Duration `json:"catch_up_interval"`
+
+	// LongRunning says this process intends to stay open — a desktop app,
+	// a REPL session, a console. It starts the catch-up supervisor
+	// independently of ReconcileOnStart.
+	//
+	// **It exists because ReconcileOnStart answers the wrong question.**
+	// That flag means *"I have durable declarations to re-establish"*, and
+	// the supervisor needs *"am I going to be around to take another
+	// pass?"* The two coincide for the default configurations and diverge
+	// for in-memory ones — so a peer with an in-memory tree could accept a
+	// share mid-session, take a burst, lose files permanently, and have no
+	// next launch to recover them in. `--ephemeral` on the GUI was exactly
+	// that peer.
+	//
+	// It is a SEPARATE flag rather than a widened meaning for the old one,
+	// and additively so: the supervisor starts if EITHER is set. Making
+	// the loop unconditional would put one behind the several hundred
+	// peers the suites build through Bootstrap and change the load profile
+	// of the whole sweep — and this tree already has load-dependent
+	// failures. Additive means the existing configurations measure exactly
+	// as they did, and the new flag is the control arm for its own change.
+	LongRunning bool `json:"long_running"`
+
+	// HistoryPathBudget is how many recorded versions of ONE path a peer
+	// keeps before it stops recording that path and says so
+	// (shellcmd/history_budget.go). Zero takes
+	// shellcmd.DefaultHistoryPathBudget; a NEGATIVE value turns the guard
+	// off, which is the only way to re-measure the unbounded growth it
+	// exists to stop.
+	//
+	// **Unlike CatchUpInterval this does NOT hang off ReconcileOnStart**,
+	// and the difference is the failure each one addresses. A catch-up
+	// pass is work a peer does on a schedule, so it belongs to a peer that
+	// is going to be around to do it. Unbounded recording is not work — it
+	// is a consequence of a mount existing, it accrues at whatever rate
+	// something else is writing, and a peer that runs for an hour with a
+	// log file in a shared folder has written a gigabyte whether or not it
+	// intended to stay up. The guard costs one prefix watch and a map
+	// increment per recorded transition, so there is no configuration in
+	// which paying for it is worse than not having it.
+	HistoryPathBudget int64 `json:"history_path_budget"`
+
 	// ListenFallback allows an ephemeral port when ListenAddr is already
 	// in use.
 	//
@@ -163,6 +225,39 @@ type Config struct {
 	// the old default did not survive its control — a registry-less peer
 	// accretes at exactly the same rate.
 	DisableRegistry bool `json:"disable_registry"`
+
+	// DeliveryQueueSize is the subscription engine's total async
+	// delivery buffer, in notification slots. Zero takes
+	// entitysdk.DefaultDeliveryQueueSize (4096).
+	//
+	// **This is the knob that decides how big a burst a share can absorb
+	// before it starts losing files.** The queue DROPS when full — it
+	// does not block and it does not fail the write — so exceeding it
+	// costs data on a path where nothing reports an error. Measured on a
+	// 2000-file copy into a shared folder: the sender drops 2327
+	// notifications and the receiver ends up with 676 files, permanently,
+	// with both peers reporting healthy. See
+	// docs/architecture/SYNC-LIMITS-AND-FAILURE-MODES.md §3.
+	//
+	// It existed as a documented mitigation — entitysdk's own doc says
+	// "raise it on a peer that mounts large trees" — reachable from **no
+	// frontend and no config file**, which is D23's shape one layer below
+	// where the reachability sweep looks. A knob nobody can turn is not a
+	// mitigation.
+	//
+	// The cost is memory, allocated eagerly at StartDelivery and never
+	// released (core-go's `subscription.Engine` has no Stop): core-go's
+	// own 65536 default measures ~20.3 MB per peer. So this is a
+	// per-deployment call, not a global one — right for a desktop peer
+	// holding one identity, wrong for a process holding a hundred.
+	//
+	// Raising it buys TIME, not throughput. If writes outrun delivery for
+	// long enough, any finite queue fills; the catch-up supervisor is
+	// what makes that a delay rather than a loss.
+	// Zero takes shellboot's DefaultDeliveryQueueSize; a NEGATIVE value
+	// takes entitysdk's library default instead, which is the way to ask
+	// for the small ring deliberately.
+	DeliveryQueueSize int `json:"delivery_queue_size"`
 
 	// ExtraPeerOptions forwards raw peer options to entitysdk for
 	// frontend-specific tuning (e.g. additional handlers, sync hooks).
@@ -261,6 +356,14 @@ func Bootstrap(ctx context.Context, cfg Config) (*entitysdk.AppPeer, *shellcmd.S
 	// Config.DisableRegistry for why this is on by default and what it costs.
 	if !cfg.DisableRegistry {
 		peerCfg.Extensions.Registry = &entitysdk.RegistryConfig{}
+	}
+	if q := cfg.DeliveryQueueSize; q >= 0 {
+		if q == 0 {
+			q = DefaultDeliveryQueueSize
+		}
+		peerCfg.Extensions.Subscription = &entitysdk.SubscriptionConfig{
+			DeliveryQueueSize: q,
+		}
 	}
 	if cfg.Identity != "" {
 		peerCfg.Identity = &entitysdk.IdentityBindingConfig{Name: cfg.Identity}
@@ -435,8 +538,86 @@ func Bootstrap(ctx context.Context, cfg Config) (*entitysdk.AppPeer, *shellcmd.S
 	ws.NotificationIngest = ingestHandler
 	ws.BlobResolve = blobResolveHandler
 
+	// Started HERE and not by each frontend, for BringUpListener's
+	// reason (listener.go, AP67): a step every long-running frontend
+	// needs, left to each of them to remember, is a step one of them
+	// forgets — and the forgetting is invisible, because a share that
+	// silently stops part way looks exactly like one that is idle.
+	// ReconcileOnStart is already the "I am a long-running frontend"
+	// signal, and a frontend that wants its relationships re-established
+	// wants its folders to finish arriving. Defaulting off that flag
+	// means the GUI, the console and the REPL each get this without a
+	// per-frontend line to forget — which is the whole argument, and it
+	// is AP67's: a step every frontend needs, left to each of them to
+	// remember, is a step one of them forgets, and here the forgetting is
+	// invisible because a share that stopped part way looks idle.
+	//
+	// A negative interval turns it off explicitly, so a caller that wants
+	// reconcile-on-start WITHOUT the loop can say so.
+	//
+	// EITHER flag starts it, and LongRunning is the one that actually
+	// names the property the loop needs — see Config.LongRunning for why
+	// ReconcileOnStart answers a different question and why the two are
+	// or'd rather than the old one being redefined.
+	interval := cfg.CatchUpInterval
+	if interval == 0 && (cfg.LongRunning || cfg.ReconcileOnStart) {
+		interval = shellcmd.DefaultCatchUpInterval
+	}
+	if interval > 0 {
+		ws.EnableCatchUp(interval)
+	}
+
+	// The recording growth guard, for EVERY peer — see
+	// Config.HistoryPathBudget for why this one does not hang off
+	// ReconcileOnStart the way the supervisor above does.
+	if cfg.HistoryPathBudget >= 0 {
+		ws.EnableHistoryBudget(uint64(cfg.HistoryPathBudget))
+	}
+
 	return ap, ws, nil
 }
+
+// DefaultDeliveryQueueSize is the subscription delivery ring shellboot
+// gives a peer when the caller names no size, and it deliberately
+// differs from entitysdk's.
+//
+// **This is the same call shellboot already makes about the registry
+// extension, for the same reason** (see Config.DisableRegistry):
+// entitysdk is a *library* surface and must be frugal because it does
+// not know how many peers its embedder will hold; shellboot is the
+// *application* tier and knows the answer is "one, or a handful". So
+// where the SDK keeps 4096 slots (~1.2 MB/peer), a shellboot-hosted
+// frontend takes core-go's own 65536 (~20.3 MB/peer, allocated eagerly
+// at StartDelivery and not released on close).
+//
+// # Why 65536 and not more, given that more is measurably better
+//
+// Measured, catch-up supervisor off, `make loadtest ARGS="-run
+// TestLoad_QueueDepthSweep"`:
+//
+//	files    4096      16384       65536      262144
+//	 2000   675 ✗   2000 ✓ 3.0s   2000 ✓     2000 ✓
+//	10000     —     2949 ✗       9100 ✗    10000 ✓ 5.9s
+//
+// Two things fall out. **The 4096 we shipped was our own bad
+// arithmetic**: it was justified as core-go's stated "sized for
+// 1000+-file mount bursts" plus 4× margin, but that counted FILES and
+// the queue counts NOTIFICATIONS — a mounted file produces the
+// watcher's file entity, the ingest chain's document and the blob
+// bindings. Bracketing the two rows above puts peak demand at **6.5 to
+// 8.2 slots per file**, so the "4× margin" was short by most of an
+// order of magnitude.
+//
+// **And no finite value fixes it.** core-go's own 65536 still loses 900
+// of 10,000. The cliff moves with the ring and never goes away, because
+// the producer is a person with a file manager and nothing here can slow
+// them down. So this is not sized to win an arms race — it is sized so
+// that the bursts an operator produces by hand mostly complete at live
+// speed (~3 s for 2000 files) instead of waiting on a catch-up pass, and
+// the supervisor covers the rest. Raising it further trades memory for a
+// cliff nobody reaches by hand; the honest fix is upstream and is routed
+// (reviews/SUBSCRIPTION-SATURATION-AND-THE-LAYER-BOUNDARY-2026-09-07.md).
+const DefaultDeliveryQueueSize = 65536
 
 // DefaultIdentityName is the identity a persistent peer uses when the
 // operator named none.
