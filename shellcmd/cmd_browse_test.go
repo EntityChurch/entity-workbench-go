@@ -58,6 +58,18 @@ func pinArgs(origin string) []string {
 // consume side needs no peer, and building one here would hide that.
 func browseShell(t *testing.T) *Shell {
 	t.Helper()
+	// Two things, both of which would otherwise leave the tree.
+	//
+	// The start-up pin is a NETWORK FETCH against the public registry,
+	// and no suite in this repo may reach the public internet — a suite
+	// whose result depends on a remote host is not measuring this tree.
+	prior := BrowseAutoPin
+	BrowseAutoPin = false
+	t.Cleanup(func() { BrowseAutoPin = prior })
+	// `registry pin` now WRITES ~/.entity/browser.json, and these tests
+	// pin a fixture origin. Without this they would overwrite the
+	// developer's real pin with a `127.0.0.1:<random>` one.
+	t.Setenv("HOME", t.TempDir())
 	return &Shell{ShellWorkspace: &ShellWorkspace{}}
 }
 

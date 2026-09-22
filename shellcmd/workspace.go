@@ -85,6 +85,13 @@ type ShellWorkspace struct {
 	// dispatches anything.
 	Browser *workbench.BrowseModel
 
+	// browseAutoPinTried records that the start-up pin has been
+	// attempted for this workspace, so a failed one (no network, a
+	// withholding origin) is not retried on every browse verb. Attempted,
+	// not succeeded: retrying would put a network round trip behind
+	// `registry show`, which is a read.
+	browseAutoPinTried bool
+
 	// mountSubs holds the source-prefix subscription per mounted root
 	// (keyed by root name) so `unmount` can cancel it. Without this,
 	// unmount left the subscription live and the subscription engine

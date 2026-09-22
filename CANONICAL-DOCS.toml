@@ -295,6 +295,12 @@ blurb = "Why sharing a folder between two peers is a control loop over declared 
 group = "Direction"
 
 [[doc]]
+path  = "docs/architecture/LIVE-PEER-DIRECTION.md"
+title = "Reading a site from a live peer, and from a static origin, with one verification stack"
+blurb = "A published site can be reached two ways — fetched from a static origin over HTTP, or read directly from the peer that authored it — and this is the argument for building both. Why a laptop and a CDN cover each other's blind spots, where the seam between 'where the bytes came from' and 'what makes them trustworthy' has to fall so there is only ever one trust argument, why an authenticated connection proves who you are talking to and nothing about what they hand you, what publishing from a running peer costs in terms of who is authorized to read it, and which obligations in the social-content conventions cannot be tested at all without a second live participant."
+group = "Direction"
+
+[[doc]]
 path  = "docs/architecture/SYNC-LIMITS-AND-FAILURE-MODES.md"
 title = "Folder sync: measured limits and failure modes"
 blurb = "What folder sync does under load and what breaks: throughput and per-file cost, what a file costs in delivery-queue slots and why that unit is the one that matters, the workloads that are unsafe to share, the failure an operator hits first — a big directory copy that stops part way and says nothing — what happens when two people edit the same file between two syncs, and, for each, what it looks like, why it happens, and what to do about it. Every figure is measured, with the command that produces it named, and the figures this page has previously got wrong are corrected in place rather than replaced."

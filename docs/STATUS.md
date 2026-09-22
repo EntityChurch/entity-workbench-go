@@ -2,12 +2,29 @@
 
 _Updated: 2026-09-10 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
-> **PICKING THIS UP AFTER THE BROWSER-RUST DETOUR? Read
-> `docs/status/HANDOFF-2026-09-10-file-sync-closeout.md` first** — it splits every open item
+> **STARTING WORK? Read
+> `docs/status/HANDOFF-2026-09-10-d-the-live-peer-implementation-plan.md`** — its §0 is the
+> scorecard (what is built, what is not, and which suite failures are ours), and §2 is the work in
+> the order it has to happen. The architecture it assumes is
+> `docs/architecture/LIVE-PEER-DIRECTION.md` §4.
+>
+> **CONTINUING THE FEED WORK? Read
+> `docs/status/HANDOFF-2026-09-10-c-the-pivot-to-the-social-vocabulary.md` first** — its §0 is the
+> scorecard of what is and is not built (**one of six pieces**), and §2 carries the forced build order
+> plus the four encodings that must be matched rather than re-derived.
+>
+> **For the file-sync worklist, read
+> `docs/status/HANDOFF-2026-09-10-file-sync-closeout.md`** — but note its §2.1 has been
+> **corrected** — it splits every open item
 > into ours / waiting-on-architecture / waiting-on-core-go, in the order to do them, with the
 > one piece of work that is deliberately sequenced behind somebody else named as such.
 >
-> **Start here:** **§28 — it worked on two real machines, and the first surface
+> **Start here:** **§30 — the pin died with the process, and the whole consume path
+> points at static origins** (and the plan that came out of it,
+> `docs/architecture/LIVE-PEER-DIRECTION.md`), then
+> **§29 — the social vocabulary starts here, and three findings
+> had been fixed and never delivered**, then
+> **§28 — it worked on two real machines, and the first surface
 > to read the failures was lying**, then
 > **§27 — sharing was dead all morning, and the directory names
 > never had to match**, then
@@ -62,7 +79,154 @@ _Updated: 2026-09-10 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
 
-## §28 NEW (2026-09-10) — it worked on two real machines, and the first surface to read the failures was lying
+## §30 NEW (2026-09-10) — the pin died with the process, and the whole consume path points at static origins
+
+**Written after running the product instead of reading it**, which is the only reason any of this
+is here.
+
+**The journey works, live, and it is the strongest thing we ship.** One session against the public
+federation: `registry pin` → TOFU pin, labelled as origin-nominated, layout re-based onto it;
+`registry ls` → five names from the **walk** of a signed root; `open billslab.com` → ten chain
+steps, 51 CHAMP nodes, 966 committed keys, the page. Every step says what it proves.
+
+**And the pin did not survive the command that made it.** Measured in two invocations with the same
+`HOME` and `-storage sqlite`: `registry pin` printed four lines of success, and the next command
+printed *"nothing pinned"*. `ShellWorkspace.Browser` is process state; **nothing in this tree wrote
+`~/.entity/browser.json`** (zero writers, measured) and the file was read only by the GUI. So the
+one fact the consume design says the operator supplies out of band was the one fact discarded at
+exit, and the shell and the desktop app could not share a trust decision either. That is D26/AP62 —
+derived state re-established at open — landing on the single most important durable fact on the
+consume side, in a repo that has now hit that shape four times.
+
+Fixed: `workbench.SaveBrowseConfig` is the writer, `registry pin` persists origin and key (never a
+`-pin-*` layout — a hand-tuned probe must not become the durable default), `registry unpin`
+persists `auto_pin: false` so the verb does not reverse itself at the next launch, and the shell
+applies the start-up pin lazily on the first browse verb, the same as the Browser panel.
+`BrowseAutoPin` is an in-process flag for `AutoPinOnOpen`'s reason — a start-up pin is a network
+fetch and no suite here may reach the public internet. **The gates cross the file boundary rather
+than asserting on a model**, because a test that keeps the model alive passes against the broken
+build; the unpin arm is the one the obvious implementation fails.
+
+**The larger finding is what the whole path points at.** `fetch.Layout` is built from an http-poll
+profile, `OriginFor` refuses a binding committing to no usable http-poll transport, and the only
+remote `ContentResolver` is constructed from a completed **static** walk. There is also **no
+`publish` verb** — 40-odd shell verbs, none of them publishes, and the GUI has no panel; publishing
+is a separate binary that reads a store off disk. So this seat currently *reads what somebody else
+emitted, and agrees*. That is the smaller half of what a running peer can do, and it duplicates the
+web tier instead of complementing it.
+
+`docs/architecture/LIVE-PEER-DIRECTION.md` is what came out of it: the two modes side by side, the
+five obligations in the published conventions that **cannot be exercised without a second live
+participant** — `FEED` §2.2.2's rows 2/3/4 behind the `FEED-R7` MUST, §3's grant-scoped reply route,
+`app/feed/follow` as a real subscription, §7.1's second source, §7.3/§7.5's
+unpublication-is-not-erasure — and the architecture that lets both modes share one trust argument.
+
+**Three design calls are made there and should not be re-litigated.** The seam goes **under the byte
+source and nowhere else**: `fetch.Consumer` keeps verification, the seq floor, the walk and the
+cache, and `Source` has two methods, so a live read gets the identical hash check. **An
+authenticated connection proves WHO, not WHAT** — so a live read is *also* checked against the
+publisher's signed root, or "live" is a downgrade in trust wearing an upgrade in freshness. And
+**publishing is one act with two projections** — the site lives in the tree either way; static emit
+and live serve are what you do with it.
+
+**The implementation plan is
+`docs/status/HANDOFF-2026-09-10-d-the-live-peer-implementation-plan.md`** — seven work items in
+forced order with their gates, five open questions with who answers each, and the traps. W0 is the
+ref-grammar fix above; the naming question blocks none of it and **nothing gets renamed here until
+arch rules**.
+
+**Suite state for this change, measured rather than inferred.** `workbench` green (14.5 s).
+`shellcmd` **16 failures, and all sixteen are the E1 stranding §27 already records** — confirmed
+not ours by stashing this diff and re-running three of them at `e44337b~1`, where they fail
+identically. The browse and registry tests are green with the diff. Verified live across four
+separate processes: pin in one, `registry ls` in the next, `open billslab.com` in a third with no
+pin command in it, `registry unpin` persisting into a fourth.
+
+**And the word "embed" names three things.** `Embed`/`embed-node` (EMBED §3/§3.1), the `::embed`
+directive (SITE §3.2, whose grammar the *site* convention owns), and `app/site-asset` (SITE §4,
+declared yesterday). We implemented the third, named the code after the first, and a handoff of ours
+attributed the lowering MUST to EMBED §3 when it is SITE §3.2's. Our `AssetNameFromRef` admits one
+ref form and refuses `://` and a leading `/` — which also refuses `entity+ref://`, `site:` and
+root-absolute-within-the-site, three of the four forms `APP-CONVENTION-REFERENCE` §3.4 says MUST
+resolve, while reporting a security property. Ours to fix. The naming call is routed as ask A-21.
+
+## §29 (2026-09-10) — the social vocabulary starts here, and three findings had been fixed and never delivered
+
+File sync is closed out (§28) and the next build is the **application-tier social vocabulary** —
+the reference atom, embeds, and feeds. This section is the pivot: what was answered, what was
+found on the way in, and what is being built.
+
+**One of the six pieces is built, and the count belongs in the first sentence.** The reference atom
+is done: `APP-CONVENTION-REFERENCE` §2.1's atom and §3's string form, with all **eleven** of §6.2's
+required checks exercised, one test named after each. **The embed vocabulary and every feed type are
+untouched — zero lines, zero tests**, so an external vocabulary census still reports this repository
+at zero on feeds, and that reading is correct. What changed is that the atom the other two import now
+exists, which is the piece that unblocks writing them. The atom mints no entity type; it is one shape
+for *"this points at that"* that the other conventions carry inside their own types.
+**The build order is forced rather than chosen:** the embed convention's child-payload arm carries a
+reference, and the feed convention's entry body is an embed node, so reference → embed → feed is the
+only sequence that compiles. The peer application tier had already measured the sizing trap and told
+us: *the site convention imports no atoms and the feed convention imports two*, so pricing the feed
+work by analogy with the site work is wrong. That warning saved the estimate.
+
+**Where the specification is deliberately silent, we matched the other implementation instead of
+deriving an answer.** The losslessness rule names no encoding for the hint list, for the anchor
+fragment, or for query-parameter **order**. They shipped first, so their choices are the baseline —
+not because they are better, but because whatever publishes first becomes the corpus, and two seats
+each picking reasonably is how a format family diverges with nothing to catch it. Their pinned
+literals are transcribed into our tests verbatim; a failure there is **routed, not locally
+corrected**, because correcting it here would turn a disagreement into a divergence with our name on
+it.
+
+**One thing we will not use: the standard library's URL type.** Its query escaper spells a space as
+`+`, its path escaper leaves sub-delimiters literal, and its serializer **lowercases the host** — and
+the authority component here is a peer id, which is case-sensitive. The specification calls that the
+single most likely implementation error, and the failure mode is why: a peer id that survives a
+host-normalizing parser names a **different peer**, so it fails as a clean *not found* at a
+well-formed address rather than as a parse error. The highest-value vector in the set exists for
+exactly that, and the test fixture asserts it is genuinely mixed-case so a normalizing build cannot
+pass it.
+
+**Two defects found by answering other people's questions rather than by testing our own code.**
+
+*A persisted per-window state entity was being handed to the wrong window.* The workbench guide makes
+it a MUST: persist per-window state only if you can tell at startup which window each entity belongs
+to, by keeping an index or by sweeping the directory before allocating an id. We did neither, and the
+console's window counter starts at zero every launch — so every session's first window read back the
+**previous** session's first window, including a display setting bound by ordinal. That is the guide's
+own third case: *persisting, restoring, and silently restoring the wrong thing.* The sweep now lives
+in the SDK rather than in the renderer, so any frontend taking the persist arm gets it, and the
+seeding **refuses and logs** if a window already exists rather than moving the counter under a live
+one — ordering is the whole correctness argument. It does not make the state restorable and does not
+pretend to; an old bundle is orphaned rather than mis-read.
+
+*Our reader called another implementation's public share malformed.* The share convention has two
+types — a record with an audience and an audience-less publication — and we knew only the first, so a
+conformant publication was rejected as *"unexpected type"* and filed as a **problem** against the
+peer that sent it. A diagnosis pointing at the wrong party is the expensive direction, and they had
+no way to see it from their side. The trap in the fix is the interesting part: the obvious
+implementation decodes a publication into a record with an empty audience, and an empty audience
+already means *authored, with no members yet* — self-only. **Those are opposites**: one is fetchable
+by nobody and the other by everybody. So the two are separate types, separate structs, and the
+"public" flag is read from the type and never derived from the audience length, with an explicit
+assertion that the two forms are distinguishable at all so a later simplification cannot quietly
+collapse them.
+
+**And the process finding, which cost nine days.** Three conformance findings against our source
+arrived on 2026-09-01. Two were fixed the same day. **None was ever delivered back**, and the other
+seat's own notes recorded them as delivered on the grounds that they were on our tracker — they were
+not, and never had been, because that tracker did not exist until eight days later and nobody added
+them when it did. So the one file either side would consult said nothing, in both directions at once.
+**A packet is not delivered by the recipient having a tracker; it is delivered when it appears on
+one, and the sender cannot establish that from their own side.** Third instance in four days, third
+direction.
+
+The same shape, one layer down, is why a retraction now starts at the tracker row: the correction of
+a false security claim reached five documents on the day it was found and survived as the **premise of
+an open question** pointed at the specification seat, because a tracker row reads as an index entry
+rather than as prose making an assertion.
+
+## §28 (2026-09-10) — it worked on two real machines, and the first surface to read the failures was lying
 
 An operator shared a folder between two of their own machines, in the GUI, by pressing buttons,
 and the files arrived. Both directions. Then a directory. **That is the first time this product

@@ -41,7 +41,55 @@ import (
 // **trust decision**, and a trust decision that quietly differed between
 // two shells in one workspace would be a very good way to confuse
 // someone about which authority answered.
+// BrowseAutoPin controls whether the first browse verb of a session
+// applies the operator's start-up pin (`~/.entity/browser.json`, or the
+// built-in default when there is no file).
+//
+// TRUE in the shipped binary — the browser opens pre-pinned, the same as
+// the Avalonia Browser panel, so `entity-shell registry ls` works in one
+// command instead of requiring a pin the previous command threw away.
+//
+// FALSE in tests, and it has to be an in-process flag for the reason
+// `BrowserPanel.AutoPinOnOpen` does: Go captures its environment at
+// process start, so a test setting WB_NO_AUTOPIN in-process never
+// reaches `os.Getenv`. No suite in this repo may reach the public
+// internet, and a start-up pin is a network fetch.
+var BrowseAutoPin = true
+
+// browserOf returns the workspace's browser, applying the start-up pin
+// on first use.
+//
+// The pin is applied LAZILY rather than at workspace construction: a
+// session that never types a browse verb should not dial an origin, and
+// most sessions never do.
 func browserOf(sh *Shell) *workbench.BrowseModel {
+	b := bareBrowserOf(sh)
+	if !BrowseAutoPin || sh.browseAutoPinTried || b.Registry() != "" {
+		return b
+	}
+	sh.browseAutoPinTried = true
+	cfg, err := workbench.LoadBrowseConfig()
+	if err != nil {
+		// A browser.json that exists and does not parse is an error and
+		// not a silent fallback (AP33) — but it is reported by the verb
+		// that needed it, not by swallowing the session. The pin simply
+		// does not happen, and every read verb below already says
+		// "nothing pinned" with the command to fix it.
+		return b
+	}
+	if !cfg.ShouldAutoPin() {
+		return b
+	}
+	// A failure here is ordinary: no network, an origin that is down, a
+	// nomination we refuse. The verb reports the unpinned state.
+	_ = b.PinRegistry(context.Background(), cfg.RegistryOrigin, cfg.RegistryPeer, nil)
+	return b
+}
+
+// bareBrowserOf returns the workspace's browser with no start-up pin.
+// `registry pin` uses this: auto-pinning first would dial one origin in
+// order to immediately replace it with the one the operator typed.
+func bareBrowserOf(sh *Shell) *workbench.BrowseModel {
 	if sh.Browser == nil {
 		sh.Browser = workbench.NewBrowseModel(nil)
 	}
@@ -98,8 +146,26 @@ func cmdRegistry(sh *Shell, args []string) (Result, error) {
 		return cmdRegistryRevoke(sh, args[1:])
 	case "unpin":
 		sh.Browser = nil
-		return MessageResult("registry unpinned — names will not resolve until one is pinned again, " +
-			"and a browser must not invent a name authority"), nil
+		sh.browseAutoPinTried = true
+		lines := []string{"registry unpinned — names will not resolve until one is pinned again, " +
+			"and a browser must not invent a name authority"}
+		// Unpinning has to persist too, or the start-up pin below puts
+		// the authority straight back at the next launch and the verb
+		// reads as broken. `auto_pin: false` is the file's existing way
+		// of saying "begin with no name authority"; the origin and key
+		// are kept so `registry pin` with no arguments is not needed to
+		// get back.
+		no := false
+		cfg, _ := workbench.LoadBrowseConfig()
+		cfg.AutoPin = &no
+		if path, serr := workbench.SaveBrowseConfig(cfg); serr == nil {
+			lines = append(lines, "recorded in "+path+" (auto_pin: false) — the next session "+
+				"and the desktop app also open unpinned")
+		} else {
+			lines = append(lines, fmt.Sprintf("NOT recorded (%v) — the next session will open "+
+				"pinned again", serr))
+		}
+		return LinesResult(lines), nil
 	case "help", "-h", "--help":
 		return MessageResult(registryUsage), nil
 	default:
@@ -163,7 +229,8 @@ func cmdRegistryPin(sh *Shell, args []string) (Result, error) {
 			"it is the key every signature is checked against, so there is no useful pin without it")
 	}
 
-	b := browserOf(sh)
+	b := bareBrowserOf(sh)
+	sh.browseAutoPinTried = true
 	var perr error
 	if pinned {
 		perr = b.PinRegistry(context.Background(), origin, peerID, &ep)
@@ -193,6 +260,30 @@ func cmdRegistryPin(sh *Shell, args []string) (Result, error) {
 	} else {
 		lines = append(lines, "layout   PINNED by you — this origin serves no transport-profile, "+
 			"so a wrong pin and a withholding origin look the same from here")
+	}
+	// Persist AFTER the pin succeeded, and never a pinned layout.
+	//
+	// The layout flags are a per-invocation reach into an origin that
+	// serves no transport-profile; writing one to the operator's file
+	// would make a hand-tuned probe the durable default, and a wrong
+	// stored layout is indistinguishable from a withholding origin.
+	// What persists is the trust decision — origin and key.
+	if !pinned {
+		if path, serr := workbench.SaveBrowseConfig(workbench.BrowseConfig{
+			RegistryOrigin: out.RegistryOrigin,
+			RegistryPeer:   out.Registry,
+		}); serr != nil {
+			// Not fatal: the pin is live in this session either way, and
+			// saying so is better than failing a command that worked.
+			lines = append(lines, fmt.Sprintf("saved    NOT SAVED (%v) — this pin lasts until "+
+				"the process exits", serr))
+		} else {
+			lines = append(lines, fmt.Sprintf("saved    %s — this pin is what the next session "+
+				"and the desktop app open on", path))
+		}
+	} else {
+		lines = append(lines, "saved    NOT SAVED — a pinned layout is per-invocation; "+
+			"re-pin without -pin-* flags to make the origin and key durable")
 	}
 	lines = append(lines, "", "Nothing has been verified yet: a pin is a key, not a claim about an "+
 		"origin. Run `registry ls` to walk what it has signed.")

@@ -145,3 +145,53 @@ func LoadBrowseConfig() (BrowseConfig, error) {
 	}
 	return cfg, nil
 }
+
+// SaveBrowseConfig writes the operator's pin to ~/.entity/browser.json.
+//
+// # Why the pin belongs in a FILE and not in the tree
+//
+// The rule this repo works to is that a file holds what you need in
+// order to find the tree, and the tree holds everything else. A registry
+// pin looks like tree material and is not: the browser **holds no peer**
+// (see the note on `ShellWorkspace.Browser`). A Mode A2 consumer reading
+// a static origin never dispatches anything, so there is no tree to read
+// the pin out of at the moment the pin is needed, and a peer-id-keyed
+// record would key the operator's trust decision to whichever identity
+// happened to be loaded. The pin is a pre-peer fact, so it is a file.
+//
+// # Why this exists at all
+//
+// Until 2026-09-10 nothing in this tree wrote this file — it was read by
+// the GUI at start-up, read by nothing else, and written by no one. The
+// consequence was measured: `registry pin` reported four lines of
+// success, and the next one-shot command in the same HOME reported
+// *"nothing pinned"*, because the model behind it was process state on
+// the workspace. The one fact the whole consume design says you supply
+// out of band was the one fact we discarded at exit — and because the
+// shell had no writer and the GUI had no other reader, the two surfaces
+// could not share a trust decision either.
+//
+// Written 0600: it is not a secret, but it is a security-relevant
+// declaration in the operator's home directory and the file mode should
+// say who it belongs to.
+func SaveBrowseConfig(cfg BrowseConfig) (string, error) {
+	path, err := BrowseConfigPath()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	// Source is display-only and must never round-trip into the file;
+	// it is `json:"-"`, so this is a statement of intent rather than a
+	// filter, and the test asserts a written file re-reads as itself.
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	b = append(b, '\n')
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
