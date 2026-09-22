@@ -410,13 +410,32 @@ the tell that the map was short a row rather than that the bug was exotic.
   them drove the model, not the input.
 - **Discipline:** D13 (observability surface), D19 (measure, don't argue), D24 (name the
   instrument's region), AP34, AP35.
-- **Status:** **mitigated, not fully explained.** The UI thread now installs a 1 MB altstack
-  at startup (`CrashDiagnostics.EnlargeAltStack`, `WB_ALTSTACK_BYTES=0` restores stock).
-  A/B on the click fuzz: **6/8 seeds crash at 16 KB, 0/8 at 1 MB**, same binary, same seeds.
-  **Every other managed thread still runs the stock 16 KB**, and *what* consumes more than
-  16 KB remains unidentified — nested delivery is the leading candidate, with Go's async
-  preemption (`GODEBUG=asyncpreemptoff=1`), `DOTNET_gcConcurrent=0` and
-  `DOTNET_TieredCompilation=0` all ruled out as the trigger.
+- **Status (2026-09-06): explained and mitigated process-wide.** Every thread now gets a 1 MB
+  altstack, installed by **`altstack-preload.c`** — an `LD_PRELOAD` interposer on
+  `sigaltstack(2)` — because the per-thread managed installs could only ever reach the two
+  threads managed code runs on. `WB_ALTSTACK_BYTES=0` restores stock, in the interposer and in
+  `CrashDiagnostics` alike, so the A/B still works.
+
+  **What consumes more than 16 KB is no longer unknown, and it is not nesting.** Two
+  independent coredumps, measured from their `PT_LOAD` headers:
+
+  | | |
+  |---|---|
+  | usable altstack | **12,288 bytes** (the PAL maps 16 KiB and guards the low 4 KiB) |
+  | consumed at the fault | **13,088 bytes** — 800 into the guard page, *identical in both cores* |
+  | the largest frame | **6,960 bytes** (`rbp-rsp = 0x1b30`), one frame, *identical in both* |
+  | return addresses on the whole stack | **3** — so not a recursion and not nesting |
+  | `si_code` / `si_addr` | 128 (SI_KERNEL) / 0 — the kernel's `force_sigsegv`, not a re-raise |
+
+  The remaining term is the **CPU**, not the runtime. On this AVX-512 host the kernel's XSAVE
+  signal frame is much larger than the PAL's compile-time `SIGSTKSZ` (8192) assumed;
+  `sysconf(_SC_MINSIGSTKSZ)` reports **3376** against a compile-time `MINSIGSTKSZ` of 2048.
+  So the overflow is **deterministic** — any signal on a stock-altstack thread dies — and only
+  *whether a signal arrives* is intermittent. That is why it read as rare for a month.
+
+  Earlier exclusions stand and remain worth not re-running: Go async preemption
+  (`GODEBUG=asyncpreemptoff=1`), `DOTNET_gcConcurrent=0`, `DOTNET_TieredCompilation=0`, mesa
+  (0 GPU modules), and the Go bridge (0 `libbridge.so` frames) are none of them the trigger.
 
 ---
 
@@ -441,12 +460,18 @@ The invariants the model establishes. Every change is checked against these.
 12. **HiDPI multiplies cross-render workload ~3-4×.** Every per-render workload bound on the X11 backend must be reverified under HiDPI before being declared safe. Today this is the strongest amplifier for the open #4 compositor-retention bug.
 13. **SkiaSharp finalizers don't reach old text-blob wrappers when they're upstream-pinned.** A native handle whose managed wrapper is GC-eligible is released on the finalizer thread; but if the wrapper is held by Avalonia's compositor / layout retention (which it is, between renders), GC never marks it eligible at all. Forcing `GC.Collect()` + `WaitForPendingFinalizers()` between renders reclaims nothing in this case. **Do NOT add forced-GC barriers between renders** without a measurement-driven justification; we tried and it made the crash worse by racing the compositor.
 14. **Render-priority and Background-priority work can interleave.** Avalonia's dispatcher drains highest priority first per tick, but a Background-priority callback can be running when a Render-priority measure pass starts. Mutations to visual *structure* (Add/Remove children) during a Background-priority callback race the paint pipeline. Mutations to `Inlines` on already-attached blocks are safe. (This is the structural rationale for the P1 adaptive-emit pattern.)
-15. **The alternate signal stack is a bounded resource, and 16 KB of it is not enough.** The
-    PAL default is 16384 bytes per thread; handlers nest on it; exhaustion presents as a
-    SIGSEGV that is indistinguishable from a null dereference *after* CoreCLR re-raises it.
-    The UI thread now runs a 1 MB altstack. **Do not "clean up" that startup call**, and do
-    not read `si_addr` on any .NET Linux crash without checking `si_code` first — 128
-    (SI_KERNEL) means the signal was re-raised and the register context is the handler's.
+15. **The alternate signal stack is a bounded resource, 16 KB of it is not enough, and the
+    shortfall applies to EVERY thread.** The PAL default is 16384 bytes per thread, of which
+    12288 is usable; CoreCLR's handler needs 13,088 on an AVX-512 host, so the overflow is
+    deterministic rather than rare. Coverage is process-wide via the `sigaltstack(2)`
+    interposer (`altstack-preload.c`, `LD_PRELOAD`), **not** per-thread managed installs —
+    those reach only the UI and render threads, and a crash landed on a third thread twice in
+    one day while both were correctly covered. **Do not "clean up" the startup calls or the
+    preload**, and do not read `si_addr` on any .NET Linux crash without checking `si_code`
+    first — 128 (SI_KERNEL) has two causes, and `rsp` in a `PROT_NONE` page below a small
+    rw- region means the kernel could not build a frame, not that anything was re-raised.
+    When a fix is per-instance, the gate must sample the **population**: start a thread and
+    ask the kernel what it got.
 16. **A driver that calls the model method under a control cannot exercise the control.** No
     amount of `NavigateForTests`-style coverage reaches input dispatch, hit-testing or focus
     transfer. Real input needs real input (`make -C avalonia smoke-xvfb-click`). A negative

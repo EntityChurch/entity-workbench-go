@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
@@ -268,6 +269,7 @@ public sealed class PeerConnectionsPanel : UserControl, IDisposable, IPanelPrefe
                         VerticalAlignment = VerticalAlignment.Center,
                     };
                     btn.Click += (_, _) => DoConnectFromNearby(vm);
+                    AutomationProperties.SetAutomationId(btn, "conn.nearby.connect");
                     trailing = btn;
                 }
                 Grid.SetColumn(trailing, 1);
@@ -453,6 +455,7 @@ public sealed class PeerConnectionsPanel : UserControl, IDisposable, IPanelPrefe
                         VerticalAlignment = VerticalAlignment.Center,
                     };
                     btn.Click += (_, _) => DoDisconnect(vm.Alias);
+                    AutomationProperties.SetAutomationId(btn, "conn.pool.disconnect");
                     trailing = btn;
                 }
                 Grid.SetColumn(trailing, 2);
@@ -468,6 +471,21 @@ public sealed class PeerConnectionsPanel : UserControl, IDisposable, IPanelPrefe
         inputs.Children.Add(_addressInput);
         inputs.Children.Add(_aliasInput);
         inputs.Children.Add(_connectButton);
+
+        // AutomationIds — this panel is where a two-machine session
+        // BEGINS, so it is the first thing an outside driver has to be
+        // able to operate. `Button:Connect` would match the typed-address
+        // button and every Nearby row's button at once, and UiDriver
+        // refuses an ambiguous selector rather than guessing, so without
+        // these there is no way to press either one.
+        AutomationProperties.SetAutomationId(_addressInput, "conn.address");
+        AutomationProperties.SetAutomationId(_aliasInput, "conn.alias");
+        AutomationProperties.SetAutomationId(_connectButton, "conn.connect");
+        AutomationProperties.SetAutomationId(_statusLine, "conn.status");
+        AutomationProperties.SetAutomationId(_listenLine, "conn.listen");
+        AutomationProperties.SetAutomationId(_nearbyPlaceholder, "conn.nearby.empty");
+        AutomationProperties.SetAutomationId(_nearbyList, "conn.nearby.list");
+        AutomationProperties.SetAutomationId(_connList, "conn.pool.list");
         inputs.Children.Add(_statusLine);
 
         var top = new StackPanel { Orientation = Orientation.Vertical };

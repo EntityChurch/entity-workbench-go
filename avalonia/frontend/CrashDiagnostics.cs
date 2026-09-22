@@ -252,6 +252,22 @@ public static class CrashDiagnostics
             Console.Error.WriteLine("entity-avalonia: alt signal stack = " + outcome);
         }
         catch { }
+
+        // Then the question the line above does NOT answer: is every
+        // OTHER thread covered? The 2026-09-06 crash was on a thread
+        // this class never touches, so "the UI thread is enlarged" was
+        // a true sentence beside a fatal gap. Measured, not assumed —
+        // see ProbeAltStackCoverage.
+        try
+        {
+            var cov = ProbeAltStackCoverage();
+            Panels.PanelLog.Write("altstack", "coverage: " + cov.Detail);
+            Console.Error.WriteLine("entity-avalonia: alt signal stack coverage: " + cov.Detail);
+        }
+        catch (Exception ex)
+        {
+            Panels.PanelLog.Write("altstack", "coverage probe threw: " + ex.Message);
+        }
     }
 
     // AltStackWantBytes is the one place the size is decided, so the UI
@@ -727,6 +743,201 @@ public static class CrashDiagnostics
         {
             return "sigaltstack query threw: " + ex.Message;
         }
+    }
+
+    // ---- coverage: is EVERY thread protected, or only the two we
+    //      can reach from managed code? ------------------------------
+    //
+    // MEASURED 2026-09-06, two independent coredumps from
+    // `make twopeer-gui`. The process died on a thread that was neither
+    // the UI thread nor the render thread — the two this class can
+    // reach — with rsp 800 bytes inside the PROT_NONE guard page below
+    // a 12 KiB usable alternate signal stack. Both cores were the same
+    // shape to the byte: same rip (libcoreclr+0x3af3da), same frame
+    // (rbp-rsp = 0x1b30 = 6,960 bytes), same 13,088 bytes used against
+    // 12,288 available, same si_code 128 / si_addr 0.
+    //
+    // Sixteen threads in each core still carried the PAL's stock
+    // 16 KiB, and three had already taken a signal on it.
+    //
+    // sigaltstack is per-thread and must be called ON the thread it
+    // covers, and there is no managed hook that runs on a fresh
+    // thread-pool, finalizer, timer, tiered-compilation or diagnostics
+    // thread. So the coverage gap cannot be closed from here at all;
+    // it is closed by libaltstack.so, an LD_PRELOAD interposer on
+    // sigaltstack(2) that catches every thread at the moment the PAL
+    // installs its own. run-with-dump.sh loads it.
+    //
+    // WHY THIS PROBE EXISTS RATHER THAN A PRINTED FLAG. Whether the
+    // preload is actually in effect depends on the launch path, the
+    // image contents and LD_PRELOAD surviving into the process — three
+    // things that fail silently and all of which have failed before in
+    // this repo (AP41: an instrument nothing calls is indistinguishable
+    // from an instrument you do not have). So the app MEASURES it: it
+    // starts one ordinary thread and asks the kernel what alternate
+    // signal stack that thread actually got. A count is bookkeeping; a
+    // thread the runtime made, asked directly, is evidence (D25).
+    public readonly struct AltStackCoverage
+    {
+        // The symbol resolved. This is NOT the same as interposing, and
+        // conflating the two produced a confidently wrong diagnostic the
+        // first time this was written: DllImport("libaltstack.so")
+        // dlopen's the file, which sits beside the binary with
+        // LD_LIBRARY_PATH=. — so the symbol resolves happily in a
+        // process that never preloaded it, and the report said
+        // "IS loaded but did not enlarge — investigate" about a process
+        // whose only fault was a missing LD_PRELOAD.
+        //
+        // **A dlopen'd library does not interpose.** Symbol interposition
+        // is decided at load order, and a library brought in later by
+        // dlopen is behind libc in every lookup that already resolved.
+        public bool InterposerSymbolResolved { get; init; }
+
+        // The interposer is actually in the sigaltstack path — derived
+        // from its own call counter, not from the symbol resolving.
+        public bool InterposerActive { get; init; }
+
+        public long ProbeThreadBytes { get; init; }
+        public long WantBytes { get; init; }
+        public bool AllThreadsCovered { get; init; }
+        public string Detail { get; init; }
+    }
+
+    private static AltStackCoverage? _coverage;
+
+    // Coverage is the last probe result, or null before Install() ran.
+    public static AltStackCoverage? Coverage => _coverage;
+
+    // AltStackSizeHere returns the CALLING thread's alternate signal
+    // stack size in bytes, or -1 if the query failed.
+    public static long AltStackSizeHere()
+    {
+        try
+        {
+            var buf = Marshal.AllocHGlobal(Marshal.SizeOf<StackT>());
+            try
+            {
+                if (sigaltstack(IntPtr.Zero, buf) != 0) return -1;
+                return Marshal.PtrToStructure<StackT>(buf).ss_size.ToInt64();
+            }
+            finally { Marshal.FreeHGlobal(buf); }
+        }
+        catch { return -1; }
+    }
+
+    [DllImport("libaltstack.so", EntryPoint = "wb_altstack_present")]
+    private static extern int wb_altstack_present();
+
+    [DllImport("libaltstack.so", EntryPoint = "wb_altstack_enlarged")]
+    private static extern ulong wb_altstack_enlarged();
+
+    // The discriminator between "preloaded and interposing" and "merely
+    // dlopen'd by the P/Invoke above". If the library is in the
+    // sigaltstack path at all it has counted the runtime's own calls,
+    // which happen long before this probe; if it was pulled in late by
+    // DllImport it has counted none.
+    [DllImport("libaltstack.so", EntryPoint = "wb_altstack_calls")]
+    private static extern ulong wb_altstack_calls();
+
+    // ProbeAltStackCoverage starts one thread and reads back the
+    // alternate signal stack the runtime gave it. A freshly created
+    // thread is the right sample precisely because it is the population
+    // the crash came from: not the UI thread, not the render thread,
+    // covered by nothing this class installs.
+    public static AltStackCoverage ProbeAltStackCoverage()
+    {
+        long want = AltStackWantBytes();
+
+        bool resolved;
+        ulong enlarged = 0, calls = 0;
+        try
+        {
+            resolved = wb_altstack_present() == 1;
+            if (resolved)
+            {
+                enlarged = wb_altstack_enlarged();
+                calls = wb_altstack_calls();
+            }
+        }
+        catch
+        {
+            // DllNotFoundException / EntryPointNotFoundException — the
+            // interposer is simply not on disk. That is a real and
+            // reportable state, not an error.
+            resolved = false;
+        }
+
+        // Interposing, as opposed to merely present. The runtime installs
+        // an alternate signal stack on every thread it creates, so by the
+        // time this runs a preloaded interposer has counted many calls
+        // and a dlopen'd one has counted none.
+        bool active = resolved && calls > 0;
+
+        long probed = -1;
+        try
+        {
+            var t = new Thread(() => probed = AltStackSizeHere())
+            {
+                IsBackground = true,
+                Name = "altstack-coverage-probe",
+            };
+            t.Start();
+            if (!t.Join(TimeSpan.FromSeconds(10))) probed = -2;
+        }
+        catch (Exception ex)
+        {
+            _coverage = new AltStackCoverage
+            {
+                InterposerSymbolResolved = resolved,
+                InterposerActive = active,
+                ProbeThreadBytes = -1,
+                WantBytes = want,
+                AllThreadsCovered = false,
+                Detail = "probe thread failed: " + ex.Message,
+            };
+            return _coverage.Value;
+        }
+
+        // want <= 0 means WB_ALTSTACK_BYTES=0 — the control arm. Stock
+        // size is then the CORRECT outcome, and reporting it as covered
+        // would make the A/B meaningless.
+        bool covered = want > 0 && probed >= want;
+
+        string detail = probed switch
+        {
+            -2 => "probe thread did not finish within 10s",
+            -1 => "probe thread could not query sigaltstack",
+            _ when want <= 0 =>
+                $"DISABLED by WB_ALTSTACK_BYTES=0 — probe thread has {probed} bytes (stock; the crashing config)",
+            _ when covered =>
+                $"coverage=ALL-THREADS probe-thread={probed} bytes, "
+                + $"interposer={(active ? "active" : "NOT-ACTIVE")}, calls={calls}, enlarged={enlarged}",
+            _ =>
+                $"coverage=UI-AND-RENDER-ONLY probe-thread={probed} bytes (want {want}); "
+                + (!resolved
+                    ? "libaltstack.so is not present at all — is it in the image, beside the binary?"
+                    : calls == 0
+                        // The case that produced a wrong diagnosis the
+                        // first time round. Name the cause, not the
+                        // symptom: the file is findable, so it resolves,
+                        // and that says nothing about interposition.
+                        ? "libaltstack.so resolved but has seen 0 sigaltstack calls — it was dlopen'd "
+                          + "by this P/Invoke rather than LD_PRELOAD'd, and a dlopen'd library does "
+                          + "not interpose. Set LD_PRELOAD (run-with-dump.sh does)."
+                        : $"libaltstack.so IS interposing (calls={calls}, enlarged={enlarged}) but the "
+                          + "probe thread still came back short — investigate the interposer itself."),
+        };
+
+        _coverage = new AltStackCoverage
+        {
+            InterposerSymbolResolved = resolved,
+            InterposerActive = active,
+            ProbeThreadBytes = probed,
+            WantBytes = want,
+            AllThreadsCovered = covered,
+            Detail = detail,
+        };
+        return _coverage.Value;
     }
 
     // EnlargeAltStack installs a bigger alternate signal stack for the

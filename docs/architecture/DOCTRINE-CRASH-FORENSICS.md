@@ -101,8 +101,8 @@ from a signal-stack one), and `info threads`.
 
 **Lever: what kind of fault is this actually?**
 
-**CoreCLR re-raises any fault it cannot classify.** The signal that lands
-in a coredump is then the *second* one, carrying:
+**CoreCLR re-raises any fault it cannot classify.** When it does, the
+signal that lands in the coredump is the *second* one, carrying:
 
 ```
 si_code = 128 (SI_KERNEL),  si_addr = 0,  registers = the handler's
@@ -111,13 +111,57 @@ si_code = 128 (SI_KERNEL),  si_addr = 0,  registers = the handler's
 Read naively that is a null dereference. It is not; it is an artefact.
 This misreading is AP34 and it cost this repo the initial diagnosis.
 
+**But that signature has a second cause, and reading it as the first one
+cost a further month.** Do not stop at `si_code` — the box below says
+how to tell them apart, and it takes one query.
+
 | Observation | Means |
 |---|---|
-| `si_code 128` (SI_KERNEL), `si_addr 0` | **re-raised.** The dump tells you nothing about the fault site. Go to §2. |
+| `si_code 128` (SI_KERNEL), `si_addr 0` | **two causes, and they are opposite.** See the box below — resolve it before doing anything else |
 | `si_code 1` (SEGV_MAPERR) | genuinely unmapped address — a real wild pointer |
 | `si_code 2` (SEGV_ACCERR) | **permission**, not absence — guard page. Almost always a stack overflow |
 | `si_addr == rsp - 8`, rip on a `call` | the pushed return address hit a guard page: **stack overflow, confirmed** |
 | `rsp` inside a `PROT_NONE` mapping | same, and the mapping's neighbours tell you *which* stack |
+
+**`si_code 128` / `si_addr 0` has TWO causes and the discriminator is
+`rsp`** (earned 2026-09-06, after this table's single reading cost a
+second month):
+
+1. **CoreCLR re-raised** a fault it could not classify. The registers
+   are the handler's and the dump tells you nothing. This is AP34.
+2. **The kernel could not build a signal frame at all**, so
+   `force_sigsegv()` fired. This is what an alternate-signal-stack
+   overflow looks like from the outside, and here **the registers ARE
+   the fault site.**
+
+Tell them apart by asking which mapping `rsp` is in:
+
+| `rsp` is in | Means |
+|---|---|
+| a `PROT_NONE` page directly below a small rw- region | **case 2** — alt-stack overflow. The rw- region's size is the stack that blew |
+| the thread's own stack (just below its `fs_base`) | **case 1** — ordinary re-raise |
+| a registered alt stack, mid-region | **case 1** — the handler was running normally |
+
+A cheap corroborator: on every thread EXCEPT the faulting one, `rsp`
+sits a few hundred bytes below that thread's `fs_base`. If the faulting
+thread is the only one where those two are in unrelated regions, you are
+looking at case 2.
+
+**And read `PT_LOAD`, not `info proc mappings`** (AP75). `info proc
+mappings` on a core is served from the `NT_FILE` note, which lists only
+**file-backed** mappings — so every stack, heap and guard page is absent
+from it by construction and the tool answers *"not present in core"*
+about memory the core records perfectly well. That reads exactly like a
+wild pointer and is not. The authoritative record is the core's own
+`PT_LOAD` program headers: `p_vaddr`/`p_memsz` for what was mapped,
+`p_filesz` for what was dumped, `p_flags` for the permissions. Note
+`p_filesz == 0` means *"mapped, contents not dumped"* — normal for every
+file-backed executable page — and never *"absent"*.
+
+The 2026-09-06 diagnosis was one `PT_LOAD` query: `rsp` 800 bytes into a
+4 KiB `PROT_NONE` page, immediately below a 12 KiB rw- region, in both
+cores, at the same offset. The session before it had read the same two
+files with `info proc mappings` and recorded *"not a stack overflow"*.
 
 Then ask **which stack**: if `rsp`'s region is a small (~16 KB) anonymous
 mapping with a guard page, adjacent to libc/libpthread rather than to the
@@ -208,9 +252,43 @@ one variable:
 lands, it is the only way anyone can re-measure the bug — and a mitigation
 whose effect cannot be re-demonstrated becomes folklore in one session.
 
-State the residue in the same breath as the fix: here, *what* consumes
-more than 16 KB is still unidentified, and **only the UI thread is
-protected** — every other managed thread still runs the stock size.
+**A PER-INSTANCE MITIGATION NEEDS A POPULATION GATE** (AP74, and this is
+the expensive lesson of the whole alt-stack arc). The 2026-08-21 fix
+covered the UI thread. On 2026-09-02 the render thread crashed and was
+added. On 2026-09-06 the process died twice on a *third* thread, with
+sixteen per core still on the stock size. Each fix was correct, each
+gate was green, and each gate's subject was **the threads somebody had
+enumerated** rather than the process. When you cannot enumerate the
+population, stop enumerating: `altstack-preload.c` interposes
+`sigaltstack(2)` itself, so every thread is covered at the moment the
+runtime creates it. The gate starts one ordinary thread and asks the
+kernel what it got — a sample of the population, not a count of installs.
+
+**What consumes more than 16 KB is no longer unidentified**, and the
+answer generalises. Measured on both 2026-09-06 cores: the kernel signal
+frame plus CoreCLR's handler prologue is ~6.1 KiB, then **one** frame of
+6,960 bytes (`rbp-rsp = 0x1b30`, identical in both) — not a recursion,
+three return addresses on the whole stack. Total 13,088 bytes against
+12,288 usable. The reason it does not fit is the **CPU**: on an AVX-512
+host the XSAVE signal frame is far larger than the PAL's compile-time
+`SIGSTKSZ` assumed. Check it before assuming this is a .NET bug:
+
+```bash
+grep -o 'avx512[a-z]*' /proc/cpuinfo | sort -u          # is the wide state there?
+getconf -a 2>/dev/null | grep -i sigstksz               # or sysconf(_SC_MINSIGSTKSZ)
+```
+
+On this machine: compile-time `SIGSTKSZ` 8192, `MINSIGSTKSZ` 2048,
+`sysconf(_SC_MINSIGSTKSZ)` **3376**. When those disagree that badly, the
+stock alt stack is undersized for every signal the process takes.
+
+**A 40-line reproducer beats the coredump here**, and it is worth
+writing before shipping the fix: mmap 16 KiB, `mprotect` the low page
+`PROT_NONE`, install it with `sigaltstack`, install a `SA_ONSTACK`
+handler with a ~7 KiB frame, dereference NULL. It dies with `rsp` in the
+guard page — the same structural signature as the production cores — and
+it survives under the interposer, same binary. That A/B is what turns
+"the mechanism is inferred" into "the mechanism is demonstrated".
 
 ---
 
@@ -241,7 +319,12 @@ protected** — every other managed thread still runs the stock size.
    instrument reach it? If not, **build one** — that is the task.
 2. Reproduce. Seed it, log every event, sweep seeds, report the **rate**.
 3. Catch the **first** signal under gdb with `nopass`.
-4. `si_code` before `si_addr`. Identify **which stack** `rsp` is in.
+4. `si_code` before `si_addr`. Identify **which stack** `rsp` is in —
+   from the core's **`PT_LOAD` headers**, never from `info proc
+   mappings`, which cannot see anonymous memory and will call a mapped
+   guard page absent (AP75). `PROT_NONE` immediately below a small rw-
+   region is an alternate signal stack, and `si_code 128` over it means
+   the kernel could not build a frame, not that anything was re-raised.
    Then run `make -C avalonia crash-stack` and read the GEOMETRY before
    believing any classification — a frame count from `coredumpctl info`
    is a lower bound, not a depth (D25/AP55).

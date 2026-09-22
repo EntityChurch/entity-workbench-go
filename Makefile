@@ -74,7 +74,7 @@ export GOTOOLCHAIN ?= go1.25.1
 # includes the same file and uses the caps on every podman build/run.
 include caps.mk
 
-.PHONY: crossimpl-go twopeer-sync consume-live workbench-test console-build console-run test test-each test-each-native test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native lint-perfreview fmt-native
+.PHONY: crossimpl-go twopeer-sync threepeer-sync gui-drive twopeer-gui consume-live workbench-test console-build console-run test test-each test-each-native test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native lint-perfreview fmt-native
 
 # ============================================================
 # make + podman — bare-box entry points
@@ -143,6 +143,10 @@ help:
 	@echo "    make reachability  D23: every bridge export consumed, every model surfaced"
 	@echo "    make crossimpl-go  LIVE cross-impl: consume entity-core-go's signed root (podman)"
 	@echo "    make consume-live  LIVE public federation: walk a registry, resolve, follow (network)"
+	@echo "    make twopeer-sync  the SHARE flow, two containers, real TCP + grants (entity-shell)"
+	@echo "    make threepeer-sync  fan-out + chain across THREE peers (the topologies 2 cannot express)"
+	@echo "    make gui-drive     press buttons in the REAL Avalonia app and read the window back"
+	@echo "    make twopeer-gui   the SHARE flow, two REAL GUI apps, two containers, real grants"
 	@echo "    make fmt         gofmt -w over the tree (writes)"
 	@echo "    make check       lint + test (the green gate)"
 	@echo
@@ -316,7 +320,11 @@ check: lint test
 .PHONY: textual
 textual:
 	@echo "==> textual sweep (no raw control bytes in tracked sources)"
-	@git ls-files -z -- '*.go' '*.cs' '*.md' '*.toml' '*.csproj' '*.sh' '*.py' \
+	@# *.c/*.h joined the sweep on 2026-09-06 with altstack-preload.c. They
+	@# had been outside it since bridge_smoke.c, and AP51 is not a C#
+	@# problem — it is a "git decides a tracked source is binary" problem,
+	@# and a C file is exactly as capable of going silently undiffable.
+	@git ls-files -z -- '*.go' '*.cs' '*.c' '*.h' '*.md' '*.toml' '*.csproj' '*.sh' '*.py' \
 	    'Makefile' '*/Makefile' \
 	  | xargs -0 python3 scripts/no-control-bytes.py \
 	  || { echo "  -> see scripts/no-control-bytes.py for why escapes are the fix."; exit 1; }
@@ -683,6 +691,95 @@ crossimpl-go:
 # It found two shipped defects on its first run.
 twopeer-sync:
 	bash scripts/twopeer-sync.sh
+
+# threepeer-sync — the topologies two peers cannot express.
+#
+# Two peers are one edge, so every sharing gate in this repo has been
+# blind to the question that begins "and then the third machine…".
+# This runs three peers in three containers on one real TCP network and
+# asks three of them:
+#
+#   FAN-OUT  one folder, two receivers — does `share ... with c` leave
+#            the row `share ... with b` wrote intact? The per-peer
+#            policy row is a union with exactly one writer (AP68), and
+#            this is the first time two declarations touch two rows in
+#            one reconcile pass. The assertion that catches a clobber is
+#            a change reaching B *after* C was added.
+#   CHAIN    A -> B -> C — does a file that ARRIVED at B propagate
+#            onward from it? B forwards by publishing its own mount, not
+#            by republishing A's folder (which is mode=receive), so the
+#            forward is an operator act rather than an emergent one.
+#            PHASE 4 asserts the safety half: a write at B must not
+#            travel back to A.
+#   LOOP     Mode: both across a network — MEASURED, NOT ASSERTED.
+#            It is shipped and has never been exercised two-way, so this
+#            records what happens rather than encoding today's behaviour
+#            as the requirement. The one assertion is CONVERGENCE.
+#
+# Every file assertion is on BYTES ON DISK at the far end. Outside
+# `test-native` for twopeer-sync's reason: podman, minutes, and a sweep
+# that can go red for the container runtime teaches people to ignore it.
+#
+#   PHASE=fanout|chain bash scripts/threepeer-sync.sh   # stop early
+#   KEEP_UP=1 ...                                       # leave them up
+threepeer-sync:
+	bash scripts/threepeer-sync.sh
+
+# gui-drive — press buttons in the REAL Avalonia app from outside the
+# process, and read back what the window says.
+#
+# THE GAP THIS CLOSES. `twopeer-sync` above drives **entity-shell**. The
+# operator opens the **GUI**. Everything above the bridge call — the
+# cgo/JSON boundary (AP49's home, shipped twice), the panel layer, the
+# app's process lifecycle, its default peer configuration — had no gate
+# of any kind, because nothing could command the running app and observe
+# it. `SmokeDriver` is compiled in, fires once, reports an exit code and
+# calls the model methods UNDER the controls; the headless xunit suite
+# presses real buttons but has no X11, no render thread and wildcard
+# grants.
+#
+# There is no Selenium for this stack and it is measured, not assumed:
+# Avalonia 11.2.3's X11 backend ships no AT-SPI bridge, so the
+# accessibility tree dogtail/pyatspi would drive does not exist.
+# `avalonia/frontend/UiDriver.cs` is the answer — the app resolves a
+# NAMED control to a screen rectangle and xdotool does the pressing, so
+# the input is the real X server's and never a fabricated event.
+#
+# This target is the DRIVER's proof, not the flow's: one peer, one
+# container, no network, no grants, no restart. `scripts/twopeer-gui.sh`
+# is what owes those and does not exist yet.
+#
+# Outside `test-native` for twopeer-sync's reason: podman, ~1 minute.
+#   SKIP_BUILD=1 reuses avalonia/dist-native · KEEP_UP=1 leaves it running
+gui-drive:
+	bash scripts/gui-drive.sh
+
+# twopeer-gui — the sharing flow performed by PRESSING BUTTONS in two real
+# Avalonia apps, on two containers, over one real TCP network.
+#
+# This is `twopeer-sync` aimed at the binary the operator actually opens.
+# The business logic underneath is shared (avalonia/bridge/share.go is a
+# thin envelope), so what this adds over the shell harness is everything
+# ABOVE the bridge call: the cgo/JSON boundary where an undeclared field
+# is dropped in silence (AP49, shipped twice), the panel layer and the
+# prose on it, the app's process lifecycle, and its default peer config.
+#
+# The address is TYPED into the Connections panel with real keystrokes;
+# the share and the accept are real clicks on the buttons an operator
+# clicks. No `--open-access`: a wildcard grant deletes the permission
+# stage from the run entirely (AP63) while everything downstream stays
+# green, which is why the in-process panel test says nothing about
+# authorization. Assertions are on BYTES ON DISK on the receiving side.
+#
+# The known-open restart defect (FIRST-CHANGE-AFTER-RESTART-IS-LOST) is
+# waived by NAME and reported separately, and the waiver announces itself
+# loudly if the check ever starts passing.
+#
+# Outside `test-native`: podman, two GUI containers, several minutes.
+#   PHASE=connect|share|accept|backfill|live stops early
+#   SKIP_BUILD=1 reuses dist-native · KEEP_UP=1 leaves both apps running
+twopeer-gui:
+	bash scripts/twopeer-gui.sh
 
 # consume-live — drive our consumer at the LIVE public federation:
 # enumerate a registry by walking its signed root, resolve every name

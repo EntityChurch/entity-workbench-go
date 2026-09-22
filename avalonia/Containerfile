@@ -69,6 +69,26 @@ RUN --mount=type=cache,target=/root/go/pkg/mod \
         -ldflags "-X main.buildStamp=${BUILD_STAMP}" \
         -o /build/libbridge.so .
 
+# ---- libaltstack.so: the sigaltstack interposer ------------
+#
+# LD_PRELOAD'd by run-with-dump.sh so EVERY thread gets an alternate
+# signal stack large enough for CoreCLR's handler chain on an AVX-512
+# host. See altstack-preload.c for the two coredumps that measured the
+# need; the short version is that the PAL gives each thread 12 KiB of
+# usable alt stack, the handler chain needs 13,088 bytes on this
+# hardware, and the 800-byte overrun is an unrecoverable process kill.
+#
+# CrashDiagnostics can only reach the UI thread and the render thread —
+# sigaltstack must be called ON the thread it covers, and no managed
+# hook runs on a fresh thread-pool, finalizer or timer thread. Sixteen
+# threads were still on the stock size when the crash was measured.
+#
+# Built here rather than vendored so it always matches the image's glibc.
+RUN gcc -shared -fPIC -O2 -Wall -Wextra \
+        -o /build/libaltstack.so \
+        /src/entity-workbench-go/avalonia/altstack-preload.c \
+        -ldl -lpthread
+
 # ---- Avalonia self-contained publish -----------------------
 WORKDIR /src/entity-workbench-go/avalonia/frontend
 RUN --mount=type=cache,target=/root/.nuget/packages \
@@ -78,8 +98,9 @@ RUN --mount=type=cache,target=/root/.nuget/packages \
         -o /build/dist
 
 # Drop the bridge into the .NET runtime directory so the loader
-# finds it adjacent to the host executable.
-RUN cp /build/libbridge.so /build/dist/
+# finds it adjacent to the host executable. Same for the alt-stack
+# interposer, which run-with-dump.sh names by relative path.
+RUN cp /build/libbridge.so /build/libaltstack.so /build/dist/
 
 # Install dotnet-dump for managed crash analysis. Ship it inside
 # /build/dist so `make crash` on the host can run it via the
@@ -103,6 +124,11 @@ RUN --mount=type=cache,target=/root/.nuget/packages \
 FROM builder AS tester
 WORKDIR /src/entity-workbench-go/avalonia/tests/Workbench.Headless.Tests
 ENV LD_LIBRARY_PATH=/build
+# The test process runs under the same alt-stack interposer the app does,
+# so AltStackCoverageTests measures the shipped configuration rather than
+# a second one that only the suite ever sees. Its control arm is in
+# run-xvfb-smoke.sh, where WB_ALTSTACK_BYTES=0 can be set per run.
+ENV LD_PRELOAD=/build/libaltstack.so
 RUN --mount=type=cache,target=/root/.nuget/packages \
     dotnet test -c Release --logger "console;verbosity=normal"
 

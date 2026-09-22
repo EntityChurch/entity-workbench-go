@@ -100,10 +100,42 @@ fi
 export WB_SMOKE_EXIT_AFTER_SEC="$SECONDS_TO_RUN"
 export WB_PANEL_LOG=1
 export DOTNET_EnableDiagnostics=1
+# PERF MAP, and it is not optional here any more.
+#
+# `crash-stack-report.py` names managed frames through /tmp/perf-<pid>.map
+# and says so in capitals when the map is absent. run-with-dump.sh has set
+# this since 2026-09-01; THIS script never did — so every crash caught by
+# the xvfb harness, which is the instrument most likely to catch one,
+# arrived with geometry only and no managed frame names. Measured on
+# 2026-09-06: a SIGSEGV under real keystrokes, 32 threads, no mesa frames,
+# no bridge frames, not a stack overflow — and nothing that could say
+# which managed method was on the stack.
+export DOTNET_PerfMapEnabled=1
 export DOTNET_DbgEnableMiniDump=1
 export DOTNET_DbgMiniDumpType=4
 export DOTNET_DbgMiniDumpName="$OUT_DIR/managed.%d.dmp"
 export LD_LIBRARY_PATH=.
+# ALT SIGNAL STACK FOR EVERY THREAD — and note this script arms itself
+# by DUPLICATING run-with-dump.sh rather than sourcing it, so anything
+# added there has to be added here too. That duplication is exactly how
+# the perf map above went two months missing from this harness.
+#
+# libaltstack.so interposes sigaltstack(2), so every thread the PAL
+# creates gets a 1 MiB alternate signal stack instead of the stock
+# 16 KiB (12 KiB usable). On 2026-09-06 two coredumps from
+# `make twopeer-gui` both faulted on a thread neither CrashDiagnostics
+# nor AltStackProbe covers, 800 bytes into the guard page. The gate at
+# the bottom of this script asserts the coverage the app measures.
+#
+# WB_ALTSTACK_BYTES=0 is honoured by the interposer as well as by
+# CrashDiagnostics, so the documented control arm still restores the
+# crashing configuration in full.
+if [ -f ./libaltstack.so ]; then
+    export LD_PRELOAD="./libaltstack.so${LD_PRELOAD:+:$LD_PRELOAD}"
+else
+    echo "==> WARNING: ./libaltstack.so missing — threads other than UI/render will"
+    echo "    run on the stock 16 KB alt stack (the 2026-09-06 crashing config)."
+fi
 # Keep the crash record inside the run's artifact dir rather than the
 # default ~/.entity/crash, so a harness run is self-contained.
 export WB_CRASH_DIR="$OUT_DIR/crash"
@@ -113,6 +145,27 @@ export WB_CRASH_DIR="$OUT_DIR/crash"
 # the app reads them. See SmokeDriver.cs.
 if [ -n "${WB_SMOKE_INGEST:-}" ]; then
     echo "    smoke driver: WB_SMOKE_INGEST=$WB_SMOKE_INGEST cycles=${WB_SMOKE_CYCLE_PATHS:-50} gap=${WB_SMOKE_CYCLE_GAP_MS:-150}ms"
+fi
+
+# WB_SMOKE_APP_ARGS — the app's OWN flags (--identity / --storage-path /
+# --listen / --advertise), word-split into argv.
+#
+# Every launch through this script used to be the bare default, which
+# meant no harness here could stand up a peer with a known identity, a
+# known store or a known listen address — i.e. none of the configuration
+# a two-machine scenario is made of. `make host-run` had ARGS= for
+# exactly this reason and the container path did not.
+read -ra APP_ARGS <<< "${WB_SMOKE_APP_ARGS:-}"
+if [ ${#APP_ARGS[@]} -gt 0 ]; then
+    echo "    app args: ${APP_ARGS[*]}"
+fi
+
+# WB_UI_DRIVER, if set, is inherited by the app from this environment and
+# makes it accept automation commands on a socket. Announced here as well
+# as by the app, because a run log that does not say the session was
+# driven is a run log that will be misread later.
+if [ -n "${WB_UI_DRIVER:-}" ]; then
+    echo "    UI DRIVER: enabled on $WB_UI_DRIVER (this run is under automation)"
 fi
 
 # Launch the app in the background so we can capture screenshots
@@ -150,10 +203,10 @@ if [ -n "${WB_SMOKE_GDB:-}" ]; then
         -ex "echo \n===== STACK EXTENT =====\n" \
         -ex "info proc mappings" \
         -ex "dump binary memory $OUT_DIR/stack.bin \$rsp \$rsp+2097152" \
-        --args ./entity-avalonia > "$LOG" 2>&1 &
+        --args ./entity-avalonia "${APP_ARGS[@]}" > "$LOG" 2>&1 &
     APP_PID=$!
 else
-    ./entity-avalonia > "$LOG" 2>&1 &
+    ./entity-avalonia "${APP_ARGS[@]}" > "$LOG" 2>&1 &
     APP_PID=$!
 fi
 
@@ -318,6 +371,18 @@ if [ "$EXIT_CODE" -ne 0 ]; then
         [ -e "$dmp" ] || continue
         echo "==> managed minidump present: $dmp"
     done
+    # THE PERF MAP LIVES IN THE CONTAINER'S /tmp AND DIES WITH IT.
+    #
+    # DOTNET_PerfMapEnabled writes /tmp/perf-<pid>.map, where <pid> is the
+    # pid INSIDE this namespace — and `make crash-stack` looks for it on
+    # the host under the host's pid. So without copying it out, enabling
+    # the perf map buys nothing for a containerised crash: the map is
+    # deleted with the container and the name would not have matched
+    # anyway. Copied under both names so the host can find it either way.
+    for m in /tmp/perf-*.map /tmp/perfinfo-*.map; do
+        [ -e "$m" ] || continue
+        cp "$m" "$OUT_DIR/" 2>/dev/null && echo "==> perf map saved: $OUT_DIR/$(basename "$m")"
+    done
     exit 2
 fi
 
@@ -349,6 +414,33 @@ if [ "${WB_ALTSTACK_BYTES:-}" != "0" ]; then
         echo "    Look at AltStackProbe: it reaches the render thread through an"
         echo "    ICustomDrawOperation, and a custom draw op that is culled, never"
         echo "    scheduled, or attached outside the visual tree runs zero times."
+        grep -i "altstack" "$LOG" | tail -10 || true
+        exit 3
+    fi
+
+    # And the OTHER threads — every thread-pool, finalizer, timer and
+    # tiered-compilation thread in the process. The check above passes
+    # with those completely unprotected, and on 2026-09-06 that is
+    # exactly the configuration that killed peer-a twice in four
+    # `make twopeer-gui` runs: the faulting thread was neither the UI
+    # thread nor the render thread, and sixteen threads per core were
+    # still on the PAL's stock 16 KiB.
+    #
+    # The app measures this itself by starting a probe thread and asking
+    # the kernel what that thread got (CrashDiagnostics.ProbeAltStack-
+    # Coverage), so this gate reads a MEASUREMENT rather than inferring
+    # coverage from the presence of a preload. A missing libaltstack.so,
+    # an LD_PRELOAD that did not survive into the process, and an
+    # interposer that loaded but did nothing are three different bugs
+    # and the line distinguishes them.
+    if grep -q "coverage=ALL-THREADS" "$LOG"; then
+        echo "    all-thread altstack: $(grep -m1 -o 'coverage=ALL-THREADS.*' "$LOG")"
+    else
+        echo "==> FAIL: threads other than UI/render are on the stock alternate signal stack."
+        echo "    That is the configuration measured on 2026-09-06: two coredumps, both"
+        echo "    faulting on a thread neither CrashDiagnostics nor AltStackProbe covers,"
+        echo "    rsp 800 bytes into the guard page below a 12 KiB usable alt stack."
+        echo "    libaltstack.so (LD_PRELOAD, set by run-with-dump.sh) is what closes it."
         grep -i "altstack" "$LOG" | tail -10 || true
         exit 3
     fi

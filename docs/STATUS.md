@@ -1,8 +1,12 @@
 # entity-workbench-go — status
 
-_Updated: 2026-09-04 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
+_Updated: 2026-09-06 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
-> **Start here:** **§10 — the validation audit: we are not testing the thing being tested**, then
+> **Start here:** **§14 — three peers**, then
+> **§13 — the SIGSEGV, named**, then
+> **§12 — the two-peer flow, by pressing buttons**, then
+> **§11 — the GUI can be driven now**, then
+> **§10 — the validation audit: we are not testing the thing being tested**, then
 > **§0Z — the L5 review, and the ladder that never runs**, then
 > **§0Y — the flow, run; and the capability surface**, then
 > **§0X — one folder, one panel, no refresh buttons**, then
@@ -27,7 +31,316 @@ _Updated: 2026-09-04 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
 
-## §10 NEW (2026-09-05) — we are not testing the thing being tested
+## §14 NEW (2026-09-06) — three peers: fan-out and a chain work, `Mode: both` does not run backwards
+
+Two peers are one edge, so every sharing gate here has been blind to the question that begins
+*"and then the third machine…"*. **`make threepeer-sync` — 27 checks, 0 failed**, three peers in
+three containers on one real TCP network, every file assertion on **bytes on disk at the far end**.
+
+**FAN-OUT works.** One folder, one publisher, two receivers. The mechanism under test is the
+per-peer policy row: `system/capability/policy/{peer}` is a union with exactly one writer (AP68),
+and this is the first time two declarations touch two rows in one reconcile pass. The assertion
+that would catch a clobber is not "both receivers got the backfill" — it is **a change reaching B
+*after* C was added**, because a second share overwriting the first peer's row makes the *first*
+receiver go quiet. It does not.
+
+**CHAIN works.** A → B → C. A file peer-b never authored reaches peer-c, and a change at the
+origin traverses both hops. B forwards by **publishing its own mount**, not by republishing A's
+folder — which is `mode=receive` and deliberately does not republish — so a forward is an explicit
+operator act rather than an emergent property of receiving. The safety half holds too: **a write
+at the middle does not travel back to the origin.**
+
+**`Mode: both` does not run receiver → owner.** Shipped, and never exercised two-way over a
+network until today. Measured three ways:
+
+| arm | result |
+|---|---|
+| one side declares `both` | b's own write reaches c; c's does not come back |
+| **both** sides declare `both` | c's write still does not come back |
+| both sides, **symmetric root names** | still does not come back |
+
+The third arm is the discriminator and it **refutes the obvious hypothesis.** A received folder
+has two root names — the sender's keys the binding and the folder id, the local directory is the
+receiver's choice — and that trap survives any test whose two peers happen to agree on a name. It
+is *not* the cause here: asymmetric and symmetric behave identically.
+
+Which leg is missing is recorded rather than guessed: **`direction` takes** (the owner reports
+`mode=both` for its own folder) and **the owner holds no sync binding naming the receiver**, so
+the owner-side receive leg is never established. `receiveFromPeers` (`shellcmd/reconcile.go`) says
+a local folder that `Receives()` should pull from every peer whose state is `Accepted`, so that is
+where the next session starts. Measured with `note()`, never `ok()` — **a measurement dressed as a
+check is how an undesigned behaviour gets recorded as a passing requirement.**
+
+One thing that landed on the operator surface: `direction` takes a folder-id of
+`{owner-peer-id}.{sender-root}`, so an operator who accepted into a directory of their own
+choosing sees an id built from a root they never typed. The first version of the harness looked up
+the local name and found nothing.
+
+**Still untested:** four or more peers, and a triangle.
+
+### Coordination — the packet that was owed
+
+`APP-CONVENTION-SHARE` §5 marks `[OPEN-CONVENTION-1]` and says arch will not rule it: whether
+retrieval is a term of the cross-impl contract *"has a real answer and this document does not know
+it"*, to be resolved by the implementing peers. We had built the retrieval leg and never answered.
+
+`reviews/APP-TIER-FILE-SHARING-PATTERN-2026-09-06.md` answers it: **retrieval is follower-local**
+— a publisher does nothing differently for a closure-pull follower than for a diff follower, which
+the fan-out and the chain both demonstrate — **but our form has a precondition the convention's own
+floor permits a peer to lack**: a subscription engine, and file entities at a pattern-matchable
+prefix. So the cross-impl term is a *publisher capability*, not the follower's `strategy`. The
+packet also carries the four mutual-authorization facts (AP63), which are properties of the kernel
+rather than of our app and which every seat building file sharing will meet.
+
+**Two delivery findings, both ours:**
+
+- **`dev` was six commits behind `origin`** — spanning the previous two sessions. Pushed. An
+  artifact that exists only in a working tree does not exist, and this file has said so for weeks.
+- **AC-2 was filed and never delivered.** Our `localfiles.Handler.Load` finding is written and
+  committed (`586661d`) and a subject search of `entity-core-go`'s tree finds **no trace of it**.
+  Filing is not routing. Arch's row reads *"the review packet is theirs and is not yet written"*
+  — half right, and the half that is wrong is the half that matters.
+- **OP-1 closed on our side.** Routed to us 2026-09-03 and not started: five non-test sites
+  emitting `400 unknown_operation` are now `501 unsupported_operation`. The status is the half
+  that matters — 400 tells a caller to fix its request, 501 tells it to degrade. **The cross-impl
+  validator was widened, not switched**: it accepts both spellings, because narrowing it on the
+  day we moved our own emitters would report every peer that had not yet moved as failing to
+  implement the operation — a confident wrong answer about somebody else's conformance, produced
+  by our own release timing.
+
+## §13 (2026-09-06) — the SIGSEGV, named: every thread but two was on a 16 KB signal stack
+
+**§12 left one open item and called it the most valuable thing on the list. It is closed.**
+The crash is an **alternate-signal-stack overflow on a thread nothing covered**, it is
+**deterministic rather than rare**, and the reason it read as rare for a month is that only
+*whether a signal arrives* was ever the random part.
+
+### What the two cores actually say
+
+Both crashes from §12 were still on disk. Read from the cores' own **`PT_LOAD` program
+headers**, they are the same event to the byte:
+
+| | core 726963 | core 1053759 |
+|---|---|---|
+| faulting `rip` | `libcoreclr+0x3af3da` | `libcoreclr+0x3af3da` |
+| `rbp - rsp` | `0x1b30` (6,960 bytes) | `0x1b30` (6,960 bytes) |
+| `rsp` vs the usable base | **800 bytes below** | **800 bytes below** |
+| consumed / available | **13,088 / 12,288** | **13,088 / 12,288** |
+| `si_code` / `si_addr` | 128 (SI_KERNEL) / 0 | 128 (SI_KERNEL) / 0 |
+| PAL-shaped stock 16 KiB alt stacks still present | **15** | **16** |
+
+`rsp` sits inside a 4 KiB `PROT_NONE` guard page immediately below a 12 KiB `rw-` region —
+the shape of the PAL's per-thread alternate signal stack, which maps 16 KiB and guards the
+low page. The chain on it is **three return addresses**, so it is not a recursion and not
+nested delivery: it is **one 6,960-byte frame** (CoreCLR building a `CONTEXT`) landing when
+~6.1 KiB had already gone to the kernel signal frame and the handler prologue.
+
+**The missing term was the CPU.** This host is an AVX-512 machine, where the kernel's XSAVE
+signal frame is far larger than the PAL's compile-time `SIGSTKSZ` assumed:
+
+    compile-time SIGSTKSZ    = 8192
+    compile-time MINSIGSTKSZ = 2048
+    sysconf(_SC_MINSIGSTKSZ) = 3376
+
+So on this hardware **any** signal taken on a stock-alt-stack thread overflows, by exactly
+800 bytes, every time. Which also retires three artifacts that had gone unexplained since
+2026-08-21: `createdump` produces nothing (no stack left to run it on), the dump carries
+`si_code 128`/`si_addr 0` (the kernel's `force_sigsegv` when it cannot build a frame — a
+**second** cause of that signature, and the opposite of a re-raise), and there is no
+`overflowed sigaltstack` line in the journal (that message is printed at frame setup; this
+overflow happens inside an already-running handler).
+
+### Why every gate was green while this was live
+
+The mitigation had been applied **per thread**: the UI thread on 2026-08-21, the render
+thread on 2026-09-02 after the render thread crashed. Both were correctly covered, both were
+asserted, and both assertions were true. The 2026-09-06 fault landed on a **third** thread —
+one no managed hook can reach, because `sigaltstack` must be called on the thread it covers
+and nothing runs on a fresh thread-pool, finalizer or timer thread.
+
+**The check's subject was the mitigation, not the process.** That is AP74, and the file's own
+header had already written the gap down as prose (*"Other managed threads are still
+uncovered"*) — D27's shape, a dismissal recorded where review never re-reads it.
+
+### The fix, and how it is held
+
+`avalonia/altstack-preload.c` interposes **`sigaltstack(2)` itself** under `LD_PRELOAD`, so
+every thread gets 1 MB at the moment the runtime creates it — no enumeration, no list to keep
+current. It only ever enlarges, never fails a call the real one would have satisfied, and
+frees its mapping at thread exit so a long-lived GUI does not leak address space.
+
+**The gate samples the population rather than counting installs**: the app starts one ordinary
+thread and asks the kernel what that thread actually got
+(`CrashDiagnostics.ProbeAltStackCoverage`). `AltStackCoverageTests` asserts on it,
+`run-xvfb-smoke.sh` exits 3 without `coverage=ALL-THREADS`, and `WB_ALTSTACK_BYTES=0` still
+restores the crashing configuration in full — in the interposer as well as in the managed
+installs, so the A/B is of one variable.
+
+Measured, same binary, three arms:
+
+| arm | a fresh thread's alt stack |
+|---|---|
+| no preload (every launch before this) | **16,384 bytes** — the crashing config |
+| interposer | **1,048,576 bytes** |
+| `WB_ALTSTACK_BYTES=0` | 16,384 bytes — control arm restores the bug |
+
+And the mechanism is **demonstrated, not inferred**: a 40-line reproducer builds the PAL's
+exact stack shape, installs an `SA_ONSTACK` handler with the measured 6,960-byte frame, and
+dies with `rsp` in the guard page — the same structural signature as both production cores.
+Same binary under the interposer: survives.
+
+### Two things to carry that are not about signals
+
+- **`info proc mappings` on a coredump cannot see a stack.** It is served from the `NT_FILE`
+  note, which lists only *file-backed* mappings, so every stack, heap and guard page reads as
+  *"not present in core"* — which looks exactly like a wild pointer. Reading the `PT_LOAD`
+  table instead turned "rsp points at nothing" into the whole diagnosis in one query. The
+  previous session's *"not a stack overflow"* was taken with an instrument that could not see
+  one (AP75).
+- **A dlopen'd library does not interpose.** The first version of the coverage report said
+  *"libaltstack.so IS loaded but did not enlarge — investigate"* about a process that had
+  simply never preloaded it: `DllImport` had `dlopen`'d the file sitting beside the binary.
+  A confidently wrong diagnostic pointed at the wrong layer. The check is now the interposer's
+  own call counter, and the message names the actual cause.
+
+### Still open
+
+`4 of 3 files readable` and the asymmetric-restart first-change loss are both unchanged from
+§12 — this session did not touch either.
+
+## §12 (2026-09-06) — the two-peer sharing flow, by pressing buttons
+
+**`make twopeer-gui`: 74 checks, 0 failed, 1 known-open.** Two real Avalonia binaries, two
+containers, one real TCP network, real capability grants — connected by an address **typed into a
+text box**, a folder shared by **pressing Share**, accepted by **pressing Accept** on the card that
+appeared, then create / modify / delete propagating, then both peers restarted on the same stores,
+then one peer restarted alone. Every file assertion is on **bytes on disk on the receiving side**.
+No `--open-access`, so the permission stage is real (AP63).
+
+That closes §0 of the validation audit. The operator's own path now has a gate.
+
+### Three product defects it found, all fixed
+
+- **`--identity NAME` demanded an identity that already existed, while the app's own `--help` said
+  it was "created on first launch".** `ensureDefaultIdentity` only ever ran for the name `default`;
+  any other name failed with a 404. In the shell that is an inconvenience with a documented next
+  step (`identity create`); **in the GUI it is a dead end**, because the bridge fails to
+  initialise and no surface exists from which to create the identity that would let the app start.
+  Fixed with a **second flag** — `--new-identity NAME` — rather than by making `--identity`
+  permissive: loading names a peer that exists, creating brings a new one into being, and since the
+  tree is peer-id-namespaced a typo under create-if-absent would silently abandon every entity,
+  mount and grant the intended peer owns, including the ones other machines wrote naming it.
+  Refusing an unknown name was right; having no way to say *"yes, a new one"* was the defect.
+  Gated three ways in `shellboot/named_identity_test.go`, including that the refusal still refuses
+  and that creating never overwrites.
+- **The share form offered no peers.** Connect to a machine, press "Share a folder…", get an empty
+  dropdown and *"Which peer?"* — with no control anywhere that would populate it, so the only escape
+  is restarting the app. The panel is wake-driven and has no Refresh button by design, but the wake
+  watches the **declaration** prefixes, and connecting deliberately writes no declaration
+  (`RememberDeviceAddress` updates, never creates). So nothing wakes and the list stays as it was at
+  panel-open: empty. **This is AP73 in the mirror** — that rule says a Refresh button on tree data
+  is a missing subscription; the converse is that state which is *not* in the tree cannot be
+  subscribed to, so a surface reading it must re-read at the moment of use. Opening the form is that
+  moment.
+- **The receiving operator was never told anything.** Same shape, worse: an offer *to* us lives in
+  **their** tree, so no local subscription can ever fire on it. peer-a shared a folder, peer-a's
+  panel confirmed it, and peer-b's Sync panel — open the whole time, on the machine the share was
+  addressed to — stayed empty indefinitely. AP73's own text names this as the single honest
+  exception, so the panel now polls known peers every 15s while open. It is a **read** over an
+  existing connection, never a pass: a reconcile dials and writes, and an operator leaving a panel
+  open overnight must not turn their window into a dialer. The rebuild is gated on a signature,
+  because the offer card holds a TextBox the operator types a path into and an unconditional
+  15-second rebuild would discard it mid-typing (AP49's second half, at a timer's tempo).
+
+### What is open, and precisely how open
+
+- **The GUI SIGSEGVs.** Twice in four full runs, both times on peer-a, both times with the
+  breadcrumb trail ending in Peer Connections render churn (`NearbyRender` / `LivenessRender`)
+  rather than in an input handler. Two cores captured. Not the Go bridge (0 `libbridge.so` frames),
+  not the mesa driver (0 GPU modules), **not a stack overflow** (every repeated-address run has a
+  *mixed* stride, and per D25 a mixed stride is not a recursion), and no `overflowed sigaltstack` in
+  the kernel log. `createdump` again produced nothing. It is intermittent and it is real, and it is
+  the most valuable thing on the list.
+- **`4 of 3 files readable`** on the publisher's own folder row after a delete. The source layer
+  drops the file and the ingested document survives, so the panel prints a count that is nonsense on
+  its face. Both sides of a lossy stage are reported on purpose (AP59) — this is the other half of
+  that being wrong.
+- **The asymmetric restart still loses the first change**, now reproduced *in the GUI*: restart the
+  receiver alone, the next file changed never arrives, the one after it does. It is waived by name
+  in phase 12 and nowhere else — phase 11 restarts **both**, which is the case documented to work,
+  and waiving it there would have hidden a real regression behind somebody else's defect.
+
+### And a note on the instruments, because three of them lied
+
+Every one of these was found by running the thing, and each is a shape worth recognising. **A
+harness printed its green banner after a fatal abort** — zero checks, zero failures, and a sentence
+claiming two peers had shared a folder; an empty result set satisfying "nothing failed" is the
+oldest way a harness lies. **A failed redirection on `exec` is fatal to a non-interactive shell**,
+so an `if exec 3<>/dev/tcp/…; then` retry loop cannot retry — it killed the harness mid-line with
+the container still running and no verdict, which from outside reads as the *app* hanging. And
+**`exec 3<&- 2>/dev/null` closes fd 3 and then permanently gags the shell's stderr**, because `exec`
+with no command makes its redirections permanent: the run executed its whole restart phase, reached
+its verdict, printed nothing, and exited 0. That one read exactly like a crash and was the opposite
+— a clean green run that had silenced itself.
+
+## §11 (2026-09-05) — the GUI can be driven now
+
+§10 said the top of the list was a harness that drives the app an operator actually opens. It
+exists: **`make gui-drive`** presses a named button in the real Avalonia binary, under a real X
+server with a window manager and a real render thread, and reads back what the window then says.
+Fifteen checks, green, in about a minute.
+
+**There is no Selenium for this stack, and that is measured rather than assumed.** Avalonia 11.2.3's
+X11 backend ships **no AT-SPI bridge** — `strings Avalonia.X11.dll | grep -ci atspi` is 0, and
+`Avalonia.FreeDesktop` carries none either — so the accessibility tree that `dogtail`/`pyatspi`
+would drive on any GTK or Qt application does not exist to be driven. Appium and FlaUI are
+Windows-only. Writing the driver is the standard answer for this toolkit on Linux, not a
+workaround for having failed to find the tool.
+
+**The division of labour is the design, and it is what makes the result trustworthy.**
+`avalonia/frontend/UiDriver.cs` is an automation server inside the app that **resolves and reads**;
+it does not synthesise input. It turns *"the Share button"* into a screen rectangle — the one thing
+an outside harness cannot work out for itself — and **xdotool does the pressing, through the same
+real X server the click fuzz uses.** A fabricated pointer event would be cheaper and would skip the
+dispatch, hit-test and capture layers where the 2026-08-21 SIGSEGV actually landed, i.e. it would
+be the thing under test lying about itself. If xdotool is missing the command **fails**; it never
+falls back to invoking the handler, because a harness that silently stops testing input keeps
+passing while covering nothing.
+
+Controls are addressed by `AutomationProperties.AutomationId` — real accessibility metadata rather
+than a private test channel, so the same names become useful the day a bridge exists. Text
+selectors work against a frontend that has none, which is what makes adoption incremental instead
+of a fifty-file prerequisite. **An ambiguous selector is refused, never guessed at**: `Button:Share`
+matches both "Share a folder…" and "Share", and a driver that quietly takes the first match makes
+a scenario's meaning depend on visual-tree order — that refusal is itself one of the fifteen checks.
+
+**Three defects the spike found in its own instruments**, which is the point of running a thing
+rather than reasoning about it:
+
+- **A prose assertion was reading text nobody can see.** The first `alltext` walked the whole
+  subtree, so it read the Sync panel's *"nothing is being offered to you right now"* out of a
+  section that is deliberately hidden until an offer arrives. That is not a weaker assertion, it is
+  a wrong one — it would pass against a panel that had stopped displaying the thing entirely. The
+  walk now skips any subtree that is not effectively visible.
+- **A failed redirection on `exec` is fatal to a non-interactive shell**, so the harness's
+  `if exec 3<>/dev/tcp/…; then` retry loop could not retry: the first refused connection killed the
+  script mid-line, with the container still running and no verdict printed. From outside it looked
+  like the *app* hanging. Rootless podman accepts a connection on a published port before anything
+  inside is listening, so that race is the normal case, not a rare one. The probe now runs in a
+  subshell and is only believed when a `ping` comes back.
+- **Artifacts were being written where the next build deletes them** (AP54 again). The run log,
+  frames and crash record defaulted into `dist-native/`, and `extract` — which every build target
+  runs — does `rm -rf` on it. The run directory is now bind-mounted into `avalonia/run-logs/`.
+
+**What a green run claims:** the real shipped binary, driven by real pointer and keyboard input at
+coordinates it reported for named controls; panel state changing as a result; the operator's prose
+read back out of the process; and a clean shutdown through the window's own `Closing` handler
+afterwards. **What it does not claim:** two peers, a network, permissions, a restart, or anything
+whatsoever about sharing. This is the *driver's* proof, not the flow's — `scripts/twopeer-gui.sh`
+owes those and does not exist yet. Four of §10's uncovered layers are now reachable; none of them
+are yet covered.
+
+## §10 (2026-09-05) — we are not testing the thing being tested
 
 **`make twopeer-sync` exercises `entity-shell`. The operator opens the GUI.** That is the audit in
 one line. The new harness runs two peers in two containers on a real TCP network with real grants

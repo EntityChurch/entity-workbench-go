@@ -224,7 +224,7 @@ func (h *NotificationIngestHandler) Manifest() types.HandlerManifestData {
 // ingest pipeline. Operation MUST be "receive"; other ops 400.
 func (h *NotificationIngestHandler) Handle(_ context.Context, req *handler.Request) (*handler.Response, error) {
 	if req.Operation != "receive" {
-		return handler.NewErrorResponse(400, "unknown_operation",
+		return handler.NewErrorResponse(501, "unsupported_operation",
 			fmt.Sprintf("notification-ingest does not support operation %q", req.Operation))
 	}
 	hctx := req.Context

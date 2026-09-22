@@ -82,11 +82,45 @@ export WB_PANEL_LOG=1
 
 export LD_LIBRARY_PATH=.
 
+# ---- 4. the alternate signal stack, for EVERY thread ------------------
+#
+# Measured 2026-09-06 on two independent coredumps from `make twopeer-gui`:
+# the process died on a thread that was neither the UI thread nor the
+# render thread, with rsp 800 bytes inside the PROT_NONE guard page below
+# a 12 KiB usable alternate signal stack. Both cores identical — same
+# rip, same rbp-rsp (0x1b30), same overshoot.
+#
+# CrashDiagnostics covers the UI thread (Install runs there) and the
+# render thread (AltStackProbe's draw operation runs there). It cannot
+# cover any other thread, because sigaltstack must be called ON the
+# thread it covers and no managed hook runs on a fresh thread-pool,
+# finalizer, timer or tiered-compilation thread. Sixteen threads were
+# still on the PAL's stock 16 KiB when the crash was measured.
+#
+# libaltstack.so interposes sigaltstack(2) itself, so every thread is
+# covered at the moment the PAL installs its own — no enumeration, no
+# list to keep current. WB_ALTSTACK_BYTES=0 disables it, which is the
+# control arm and the only way to re-measure the bug.
+#
+# A dlopen'd library does not interpose, which is why this is LD_PRELOAD
+# and not a constructor inside libbridge.so. If the file is missing we
+# say so loudly rather than launching quietly unprotected: an absent
+# preload and a working one are otherwise indistinguishable from outside.
+if [ -f ./libaltstack.so ]; then
+    export LD_PRELOAD="./libaltstack.so${LD_PRELOAD:+:$LD_PRELOAD}"
+else
+    echo "==> WARNING: ./libaltstack.so is missing — every thread except the UI"
+    echo "    and render threads will run on the PAL's stock 16 KB alternate"
+    echo "    signal stack, which is the configuration that crashed on 2026-09-06."
+    echo "    Rebuild the image (make -C avalonia build && make -C avalonia extract)."
+fi
+
 echo "==> entity-avalonia diagnostics armed:"
 echo "    DOTNET_DbgEnableMiniDump=$DOTNET_DbgEnableMiniDump  type=$DOTNET_DbgMiniDumpType"
 echo "    DOTNET_DbgMiniDumpName=$DOTNET_DbgMiniDumpName"
 echo "    WB_CRASH_DIR=$WB_CRASH_DIR  (crash log + breadcrumb trail + minidump)"
 echo "    DOTNET_PerfMapEnabled=$DOTNET_PerfMapEnabled  -> /tmp/perf-<pid>.map"
+echo "    LD_PRELOAD=${LD_PRELOAD:-<none>}  (alt signal stack for every thread)"
 echo "    PWD=$(pwd)"
 echo ""
 

@@ -37,7 +37,7 @@ D12–D27 here are ours, earned on the eight crash-hunt commits, two feedback ep
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP71, and the promotion
+  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP75, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -191,6 +191,42 @@ one — name the recurring cycle first, then let each step own one lever of it.
   outside its reach — and the 2026-09-01 SIGSEGV happened on the render thread during a
   scrollbar drag, i.e. in the one region neither this harness nor the headless drag tests
   covered. `DRAG_PCT=0` is the control arm.
+- **`make gui-drive` presses a NAMED button in the real app and reads the window back** — the
+  rung between the click fuzz (real input, random coordinates, no assertions) and the headless
+  suite (assertions, no X11, no render thread). `scripts/gui-drive.sh` runs the shipped binary
+  under Xvfb + openbox and drives it over a socket; `avalonia/frontend/UiDriver.cs` is the
+  automation server, enabled only by `WB_UI_DRIVER` and announced on stderr when it is.
+  **There is no Selenium for this stack and it is measured, not assumed**: Avalonia 11.2.3's X11
+  backend ships no AT-SPI bridge (`strings Avalonia.X11.dll | grep -ci atspi` = 0), so the
+  accessibility tree `dogtail`/`pyatspi` would drive does not exist; Appium and FlaUI are
+  Windows-only. **The driver RESOLVES and READS; it does not synthesise input** — it turns
+  *"the Share button"* into a screen rectangle and **xdotool** does the pressing, through the same
+  X server the fuzz uses, because a fabricated pointer event skips the dispatch/hit-test/capture
+  layers where the 2026-08-21 SIGSEGV landed. A missing xdotool is an **error**, never a fallback
+  to invoking the handler. Address controls by `AutomationProperties.AutomationId` (real
+  accessibility metadata, not a test channel); text selectors work without them, so adoption is
+  incremental. **An ambiguous selector is refused rather than resolved to the first match** —
+  `Button:Share` matches both "Share a folder…" and "Share", and guessing would make a scenario's
+  meaning depend on visual-tree order. Two rules the spike earned the hard way: a subtree-text
+  read must **skip what is not effectively visible**, or a prose assertion passes on text nobody
+  can see (it did, on a section the Sync panel hides until an offer arrives); and a failed
+  redirection on `exec` is **fatal** to a non-interactive shell, so `if exec 3<>/dev/tcp/…` cannot
+  be retried in a loop — probe in a subshell, and believe the port only when a `ping` comes back,
+  because rootless podman accepts a connection on a published port before anything is listening.
+  **What a green run does NOT claim: two peers, a network, permissions, a restart, or anything
+  about sharing.** That is `scripts/twopeer-gui.sh`, which is owed and does not exist.
+- **`make twopeer-gui` is the SHARING GATE FOR THE BINARY THE OPERATOR OPENS** — `twopeer-sync`
+  aimed at the GUI. Two real Avalonia apps, two containers, one real TCP network, real grants (no
+  `--open-access`; a wildcard deletes the permission stage while everything downstream stays green,
+  AP63). The address is **typed** into the Connections panel, the share and the accept are **real
+  clicks**, and every file assertion is on **bytes on disk on the receiving side**. 74 checks.
+  Three rules it earned: **pin the layout** (`WB_LAYOUT` takes a *path* to a layout file) so the
+  panels under test are not below the fold — a scrolled-out control still has layout and still
+  reports a screen coordinate, so an unguarded driver clicks the chrome at that pixel and says
+  `ok`; **scope a waiver to the instance** — phase 11 restarts BOTH peers, which is the case
+  documented to *work*, so the first-change waiver belongs only to phase 12's asymmetric restart,
+  and `known_ok` shouts if it ever starts passing; and **say when the thing under test died** —
+  a peer that SIGSEGVs mid-run otherwise presents as a dozen unrelated panel bugs.
 - **For anything above the platform, the headless suite can drive real input too, and it is
   much cheaper** (added 2026-08-21). `Avalonia.Headless`'s `MouseDown` / `MouseUp` /
   `KeyPressQwerty` run the genuine route — hit test, capture, class **and** instance handlers —
@@ -427,6 +463,28 @@ one — name the recurring cycle first, then let each step own one lever of it.
   "createdump produces nothing for this fault class" from an untested hypothesis into a
   measurement. Note the tid there is the **thread**, not the pid — if they differ, the fault is
   not on the main thread and every per-thread mitigation you installed at startup missed it.
+  **That kernel line is not reliable, though — its absence proves nothing.** The 2026-09-06
+  crashes were the same fault class with no journal line at all, because the message is printed
+  at signal-frame setup and this overflow happened *inside* an already-running handler.
+- **EVERY thread now gets a 1 MB alt stack, and the mechanism is an `LD_PRELOAD` interposer —
+  not the managed installs** (`avalonia/altstack-preload.c`, loaded by `run-with-dump.sh` and
+  `run-xvfb-smoke.sh`). The per-thread managed installs reach the UI thread and the render
+  thread and **cannot reach anything else**, because `sigaltstack` must be called ON the thread
+  it covers and no managed hook runs on a fresh thread-pool, finalizer or timer thread. On
+  2026-09-06 the GUI died twice in four `make twopeer-gui` runs on exactly such a thread, with
+  **16 PAL-shaped stock 16 KiB alt stacks still present per core** while both enumerated threads were correctly
+  covered and every gate was green (AP74). Measured from the cores' `PT_LOAD` headers: 12,288
+  bytes usable, **13,088 consumed**, 800 into the guard page, one 6,960-byte frame, *identical
+  in both cores*. The extra demand is the **CPU** — this AVX-512 host reports
+  `sysconf(_SC_MINSIGSTKSZ)` 3376 against a compile-time `SIGSTKSZ` of 8192 — so the overflow
+  is **deterministic** and only the arrival of a signal is intermittent. `WB_ALTSTACK_BYTES=0`
+  disables the interposer *and* the managed installs, which keeps the A/B honest.
+  **The gate is a population sample, not an install count**: the app starts one ordinary thread
+  and asks the kernel what it got (`CrashDiagnostics.ProbeAltStackCoverage`);
+  `AltStackCoverageTests` asserts on it, and `run-xvfb-smoke.sh` exits 3 without
+  `coverage=ALL-THREADS`. **A dlopen'd library does not interpose** — `DllImport` resolves
+  `libaltstack.so` happily in a process that never preloaded it, so "the symbol is there" is not
+  the check; the interposer's own call counter is.
 - **A derived UI property is not a completion signal** (AP32). A headless test that settles on
   "the button re-enabled" returns in the window between the bridge call returning and the
   goroutine entering the operation, and then asserts against an empty view — green, measuring
@@ -444,7 +502,7 @@ one — name the recurring cycle first, then let each step own one lever of it.
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
 - The project measures everything against the **27 disciplines (D1–D27)**, ten review
-  questions, and anti-pattern catalog (AP1–AP71) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+  questions, and anti-pattern catalog (AP1–AP75) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A model with no shipped surface is not shipped** (D23). Landing a renderer-neutral model
   is half a feature; the other half is a verb, panel, or menu entry a user can reach, in the
   same session. Three times now — the name arc, the handler browser, `PeerLiveness` — every
@@ -529,6 +587,29 @@ one — name the recurring cycle first, then let each step own one lever of it.
   folders an operator only ever *accepted*, over a grant that already exists, and that
   mistake is not symmetric. Set it through `ShellWorkspace.SetFolderMode` (verb: `direction`;
   panel: the Sync row's one button), never by writing the field.
+  **`Mode: both` DOES NOT RUN RECEIVER → OWNER, measured 2026-09-06 by `make threepeer-sync`.**
+  Three arms — one side declaring it, both sides declaring it, and both sides with *symmetric*
+  root names — and the receiver's write comes back in none of them. The third arm is the
+  discriminator and it **refutes** the obvious hypothesis: the two-root-names trap is not the
+  cause, because asymmetric and symmetric behave identically. The declaration *takes* (the owner
+  reports `mode=both`) and **the owner holds no sync binding naming the receiver**, so the
+  owner-side receive leg is never established. `receiveFromPeers` (`shellcmd/reconcile.go`) says a
+  local folder that `Receives()` pulls from every peer whose state is `Accepted` — start there.
+  Note the verb takes a folder-id of `{owner-peer-id}.{sender-root}`, so an operator who accepted
+  into a directory of their own choosing sees an id built from a root they never typed.
+- **`make threepeer-sync` runs the topologies two peers CANNOT EXPRESS.** Two peers are one edge,
+  so the whole class of *"and then the third machine…"* questions had never been asked. Three
+  containers, one real TCP network, every file assertion on bytes on disk at the far end.
+  **Fan-out** (one folder, two receivers) reaches the per-peer policy row under a second writer —
+  and the assertion that catches a clobber is **a change reaching B *after* C was added**, not
+  "both got the backfill", because a second share overwriting the first row makes the *first*
+  receiver go quiet. **Chain** (A→B→C) reaches whether an *ingested* file is observable to the
+  receiving peer's own watcher; B forwards by publishing **its own mount**, never by republishing
+  A's folder, so a forward is an operator act rather than an emergent property of receiving, and
+  the safety half (a write at the middle must not reach the origin) is asserted. Both green.
+  **`Mode: both` is measured with `note()`, never `ok()`** — a measurement dressed as a check is
+  how an undesigned behaviour gets recorded as a passing requirement. Four peers and a triangle
+  are still untested.
 - **A REFRESH BUTTON ON TREE DATA IS A BUG REPORT ABOUT A MISSING SUBSCRIPTION** (AP73).
   Measured 2026-09-04: 12 of 15 panels held a tree subscription, and the 3 that did not were
   the 3 sharing panels — the only ones with Refresh buttons. `share.go` had nine exports and

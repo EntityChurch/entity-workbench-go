@@ -66,7 +66,7 @@ func (h *Handler) RegisterTypes(r *types.TypeRegistry) {}
 
 func (h *Handler) Handle(ctx context.Context, req *handler.Request) (*handler.Response, error) {
 	if req.Operation != "eval" {
-		return handler.NewErrorResponse(400, "unknown_operation",
+		return handler.NewErrorResponse(501, "unsupported_operation",
 			"axis1-compute supports eval only, got: "+req.Operation)
 	}
 	return h.handleEval(ctx, req)

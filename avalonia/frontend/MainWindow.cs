@@ -244,6 +244,13 @@ public class MainWindow : Window
             {
                 driveTimer.Stop();
                 SmokeDriver.MaybeStart(this, _peerTabs[0].View);
+                // The UI driver is the other half of the same idea and the
+                // opposite shape: SmokeDriver runs a canned scenario and
+                // reports an exit code, while UiDriver lets something
+                // OUTSIDE the process find a control, press it, and read
+                // what the window then says. Both are off unless their env
+                // var is set; see UiDriver.cs for why this exists at all.
+                UiDriver.MaybeStart(this, _peerTabs[0].View);
             };
             driveTimer.Start();
         }

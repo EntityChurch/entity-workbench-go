@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
 using Avalonia.Layout;
@@ -235,6 +236,24 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
         _shareForm.Children.Add(_sharePeer);
         _shareForm.Children.Add(shareGo);
 
+        // AutomationIds — a stable name for every control an outside
+        // driver has to press, so a scenario reads `#sync.share.go`
+        // rather than `Button:Share`, which also matches "Share a
+        // folder…" and would silently press the wrong one.
+        //
+        // These are `AutomationProperties`, not a private test channel:
+        // the same metadata a screen reader consumes. Avalonia 11.2 ships
+        // no AT-SPI bridge on X11 so nothing reads them today, but that
+        // is a gap in the toolkit rather than a reason to invent a
+        // parallel vocabulary we would have to migrate off later.
+        AutomationProperties.SetAutomationId(_identity, "sync.identity");
+        AutomationProperties.SetAutomationId(_note, "sync.note");
+        AutomationProperties.SetAutomationId(_shareBtn, "sync.share.begin");
+        AutomationProperties.SetAutomationId(_shareForm, "sync.share.form");
+        AutomationProperties.SetAutomationId(_shareDir, "sync.share.dir");
+        AutomationProperties.SetAutomationId(_sharePeer, "sync.share.peer");
+        AutomationProperties.SetAutomationId(shareGo, "sync.share.go");
+
         _offersEmpty = Muted("nothing is being offered to you right now");
         _foldersEmpty = Muted("no shared folders yet — press “Share a folder…” to start");
 
@@ -265,7 +284,53 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
         };
 
         OpenWake();
-        if (AutoLoadOnOpen) _ = RefreshAsync(fetchOffers: true);
+        if (AutoLoadOnOpen)
+        {
+            _ = RefreshAsync(fetchOffers: true);
+            StartOffersPoll();
+        }
+    }
+
+    // OffersPollInterval — how often the panel asks known peers what they
+    // are offering us, while it is open.
+    //
+    // A POLL, in a panel whose defining feature is that it does not need
+    // Refresh buttons. The distinction is the one AP73 draws: everything
+    // else this panel shows is OUR tree, so it is watched. A peer's offer
+    // TO US lives in THEIR tree, and reading it is a dispatched remote
+    // read (AP11) that no local subscription can ever fire on. AP73's own
+    // text names this as the single honest exception.
+    //
+    // Without it the receiving operator is told nothing, ever. Measured
+    // by scripts/twopeer-gui.sh on 2026-09-06 with two real GUIs on a
+    // real network: peer-a shares a folder, peer-a's panel confirms it,
+    // and peer-b's Sync panel — open the whole time, on the machine the
+    // share was addressed to — stays empty indefinitely, because nothing
+    // in peer-b's tree moved. The share had worked; the only surface
+    // that could say so never asked.
+    //
+    // Fifteen seconds because it is a READ over a connection that already
+    // exists, not a dial: `ShareOffers` dispatches to a pooled peer and a
+    // peer that is not reachable simply fails and is skipped. That is why
+    // this is safe where wiring RECONCILE to a timer would not be — a
+    // pass dials every declared device and writes to the tree, and an
+    // operator leaving this panel open overnight must not turn their
+    // window into a dialer.
+    private const int OffersPollIntervalSeconds = 15;
+    private DispatcherTimer? _offersTimer;
+
+    private void StartOffersPoll()
+    {
+        _offersTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(OffersPollIntervalSeconds),
+        };
+        _offersTimer.Tick += (_, __) =>
+        {
+            if (_closed || _busy) return;
+            _ = RefreshAsync(fetchOffers: true);
+        };
+        _offersTimer.Start();
     }
 
     // --- Reactivity --------------------------------------------------------
@@ -298,6 +363,8 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         _closed = true;
+        _offersTimer?.Stop();
+        _offersTimer = null;
         if (_wakeRegistration >= 0)
         {
             Bridge.TakeString(Bridge.SharingUnregisterWake(_peerHandle, _wakeRegistration));
@@ -422,11 +489,32 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
         }
         if (_closed) return;
 
+        // REBUILD ONLY ON A REAL CHANGE. The offers list is now polled
+        // every OffersPollIntervalSeconds, and each row carries a TextBox
+        // the operator types their receiving directory into — so an
+        // unconditional rebuild would silently discard a half-typed path
+        // every fifteen seconds, on the one control in this panel where
+        // the operator is expected to type something long.
+        //
+        // This is AP49's second half at a timer's tempo: an unconditional
+        // redraw is a correctness surface, not a cosmetic one. The same
+        // reasoning already gates BrowserPanel's three lists.
+        var keys = new List<string>(found.Count);
+        foreach (var o in found) keys.Add(o.PeerId + "/" + o.Root);
+        var signature = string.Join(" ", keys);
+        if (signature == _offersSignature) return;
+        _offersSignature = signature;
+
         _offers.Clear();
         foreach (var o in found) _offers.Add(o);
         _offersEmpty.IsVisible = _offers.Count == 0;
         _offersSection.IsVisible = _offers.Count > 0;
     }
+
+    // The offer set as last rendered. "" is not the same as "no offers":
+    // the empty SET has a signature of "" too, which is correct — both
+    // mean the rendered list is already right.
+    private string _offersSignature = "";
 
     private bool HaveFolderFrom(string peerId, string root)
     {
@@ -447,6 +535,40 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
     {
         _shareForm.IsVisible = !_shareForm.IsVisible;
         if (!_shareForm.IsVisible) return;
+        _ = BeginShareAsync();
+    }
+
+    // BeginShareAsync RE-READS THE REACHABLE PEERS before offering the
+    // list, and that read is the fix for a dead end an operator cannot
+    // escape.
+    //
+    // This panel is wake-driven and holds no Refresh button on purpose —
+    // but the wake watches the DECLARATION prefixes, and connecting to a
+    // peer is deliberately not a declaration (`RememberDeviceAddress`
+    // updates, never creates: dialling a machine to look at its tree must
+    // not enroll it in a relationship the loop then maintains). So a
+    // connection writes nothing to the tree, nothing wakes, and the peer
+    // list stays exactly as it was when the panel opened.
+    //
+    // Which is empty, on every fresh launch. Measured by
+    // scripts/twopeer-gui.sh on 2026-09-06: open the app, connect to a
+    // peer in the Connections panel, press "Share a folder…" — the
+    // combo is empty and the panel answers "Which peer?", with no
+    // control anywhere that would populate it. The operator's only way
+    // out is to restart the app, and the flow the product is named after
+    // is unreachable until they work that out.
+    //
+    // This is AP73 in the mirror. That rule says a Refresh button on tree
+    // data is a bug report about a missing subscription; the converse is
+    // that state which is NOT in the tree — the connection pool, mDNS —
+    // cannot be subscribed to, so a surface reading it must re-read at
+    // the moment of use. Opening this form is that moment. It is a read
+    // (`StatusRender` + `ShareRender`), never a pass: no dial, no write.
+    private async Task BeginShareAsync()
+    {
+        await RefreshAsync(fetchOffers: false);
+        if (_closed || !_shareForm.IsVisible) return;
+
         _sharePeers.Clear();
         foreach (var d in _knownDevices) _sharePeers.Add(d);
         _sharePeer.SelectedIndex = _sharePeers.Count > 0 ? 0 : -1;
@@ -457,6 +579,18 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
                 + "with a machine, so there has to be a machine.", isError: false);
         }
     }
+
+    // BeginShareForTests drives the button's OWN handler, including the
+    // re-read. `ShareForTests` below deliberately does not: it injects a
+    // peer straight into the combo, which is why the empty-list defect
+    // survived a two-peer panel test that exercised everything after it.
+    internal Task BeginShareForTests()
+    {
+        _shareForm.IsVisible = true;
+        return BeginShareAsync();
+    }
+
+    internal int SharePeerChoiceCountForTests => _sharePeers.Count;
 
     // ShareAsync is ONE gesture over two substrate steps: bridging the
     // directory into the tree (a mount) and offering it to a peer.
@@ -697,6 +831,14 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
         var accept = new Button { Content = "Accept" };
         accept.Click += (_, __) => _ = AcceptAsync(row, dir.Text ?? "");
 
+        // Per-ROW ids are not unique, and that is correct: a driver
+        // addresses the nth card as `#sync.offer.accept[0]`. Naming them
+        // per-peer would make a scenario's selector depend on a peer-id
+        // it cannot know before the run.
+        AutomationProperties.SetAutomationId(title, "sync.offer.title");
+        AutomationProperties.SetAutomationId(dir, "sync.offer.dir");
+        AutomationProperties.SetAutomationId(accept, "sync.offer.accept");
+
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -753,6 +895,10 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
         };
         cycle.Click += (_, __) => _ = SetDirectionAsync(row, row.NextDirection);
         stack.Children.Add(cycle);
+
+        AutomationProperties.SetAutomationId(head, "sync.folder.head");
+        AutomationProperties.SetAutomationId(sub, "sync.folder.detail");
+        AutomationProperties.SetAutomationId(cycle, "sync.folder.direction");
 
         return stack;
     });

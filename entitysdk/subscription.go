@@ -715,7 +715,7 @@ type channelInboxHandler struct {
 // ChangeEvent on out.
 func (h *channelInboxHandler) Handle(ctx context.Context, req *handler.Request) (*handler.Response, error) {
 	if req.Operation != "receive" {
-		return handler.NewErrorResponse(400, "unknown_operation",
+		return handler.NewErrorResponse(501, "unsupported_operation",
 			"sdk-inbox-channel supports only receive")
 	}
 

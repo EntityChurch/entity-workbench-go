@@ -185,6 +185,27 @@ type outcome struct {
 	resp   *entitysdk.Response
 }
 
+// opUnrecognized reports whether an outcome means "the remote peer has a
+// handler at that path but does not implement that operation".
+//
+// TWO SPELLINGS, ON PURPOSE. The cohort is mid-transition from
+// `400 unknown_operation` to `501 unsupported_operation` (arch OP-1,
+// routed 2026-09-03). The status is the half that matters: 400 tells a
+// caller to fix its request, 501 tells it to degrade.
+//
+// A VALIDATOR MUST TOLERATE BOTH FOR AS LONG AS ANY SEAT EMITS EITHER,
+// and it is the emit side that is the flag day, never this one. If this
+// predicate were narrowed to the new spelling on the day we changed our
+// own emitters, every peer that had not yet moved would be reported as
+// *not implementing the operation* — which is a confident wrong answer
+// about somebody else's conformance, arrived at by our own release
+// timing. Widen the tolerance first; narrow it only when the cohort is
+// measured to have converged, not when we have.
+func opUnrecognized(o outcome) bool {
+	return (o.status == 400 && o.code == "unknown_operation") ||
+		(o.status == 501 && o.code == "unsupported_operation")
+}
+
 func observe(resp *entitysdk.Response, err error) outcome {
 	if err != nil {
 		var sdkErr *entitysdk.Error
@@ -316,7 +337,7 @@ func (p *crossImplProbe) checkFetchDiffZeroBase() crossImplResult {
 	ent, _ := req.ToEntity()
 	o := observe(p.executeOnRemote("system/revision", "fetch-diff", ent))
 	if o.status < 200 || o.status >= 300 {
-		if o.status == 400 && (o.code == "invalid_params" || o.code == "unknown_operation") {
+		if (o.status == 400 && o.code == "invalid_params") || opUnrecognized(o) {
 			return ciFail(fmt.Sprintf("peer does NOT recognize `revision:fetch-diff` (v3.4 §4.4.19 unimplemented): status=%d code=%q msg=%q",
 				o.status, o.code, o.msg))
 		}
@@ -439,7 +460,7 @@ func (p *crossImplProbe) checkFetchDiffNoLocalState() crossImplResult {
 //
 // The remote impl is conformant when:
 //   - `system/revision:pull` is in its handler manifest (not 400
-//     unknown_operation).
+//     unknown_operation / 501 unsupported_operation).
 //   - Missing `remote` is rejected 400 invalid_params.
 //
 // Full end-to-end DAG-advancement validation (the remote peer actually
@@ -452,7 +473,8 @@ func (p *crossImplProbe) checkFetchDiffNoLocalState() crossImplResult {
 func (p *crossImplProbe) checkPullOpRecognized() crossImplResult {
 	// Dispatch revision:pull at the remote. Pass remote=p.local.PeerID
 	// so the remote's pull handler tries to pull FROM us. If the op
-	// isn't implemented, we expect 400 unknown_operation. If it IS
+	// isn't implemented, we expect the op-unrecognized pair (either
+	// spelling — see opUnrecognized). If it IS
 	// implemented, we expect some non-unknown-op response (either
 	// success if the remote could actually pull back, or a transport-
 	// shaped error if it tries — both confirm op recognition).
@@ -462,7 +484,7 @@ func (p *crossImplProbe) checkPullOpRecognized() crossImplResult {
 	}
 	ent, _ := req.ToEntity()
 	o := observe(p.executeOnRemote("system/revision", "pull", ent))
-	if o.status == 400 && o.code == "unknown_operation" {
+	if opUnrecognized(o) {
 		return ciFail(fmt.Sprintf("peer does NOT recognize `revision:pull` (§4.4.8 unimplemented): status=%d code=%q msg=%q",
 			o.status, o.code, o.msg))
 	}
@@ -486,7 +508,7 @@ func (p *crossImplProbe) checkPullMissingRemote() crossImplResult {
 	if o.status == 400 && o.code == "invalid_params" {
 		return ciPass("rejected 400 invalid_params for missing remote (workbench Go impl convention)")
 	}
-	if o.status == 400 && o.code == "unknown_operation" {
+	if opUnrecognized(o) {
 		return ciFail("peer does NOT recognize `revision:pull` (§4.4.8 unimplemented)")
 	}
 	return ciFail(fmt.Sprintf("expected 400 invalid_params; got status=%d code=%q msg=%q",

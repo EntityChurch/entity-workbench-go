@@ -46,6 +46,27 @@ type Config struct {
 	// cannot see. See Bootstrap.
 	Identity string `json:"identity"`
 
+	// CreateIdentity makes a NAMED identity create-if-absent instead of
+	// load-or-fail. Off by default, and it must stay that way.
+	//
+	// Until 2026-09-06 only DefaultIdentityName was ever created, so
+	// `-identity alice` on a machine that had never run `identity create
+	// alice` failed with a 404 — while the Avalonia frontend's own usage
+	// text said a named identity was "created on first launch". In the
+	// GUI that was a dead end rather than an inconvenience: the bridge
+	// fails to init, so no surface exists from which to create the
+	// identity that would let it start.
+	//
+	// The fix is a SECOND FLAG rather than making -identity permissive,
+	// because the two operations are not variants of one another.
+	// Loading names a peer that exists; creating BRINGS A NEW PEER INTO
+	// BEING, and the tree is peer-id-namespaced, so a typo under
+	// create-if-absent silently abandons every entity, mount, offer and
+	// capability grant the intended peer owns — including the ones other
+	// machines wrote naming it. Refusing an unknown name is the correct
+	// behaviour; having no way to say "yes, a new one" was the defect.
+	CreateIdentity bool `json:"create_identity"`
+
 	// LocalAlias is the alias under which the in-process peer is
 	// registered in the shell workspace. Empty means: derive from
 	// Identity when set, otherwise fall back to "self". "local" is
@@ -204,10 +225,16 @@ func Bootstrap(ctx context.Context, cfg Config) (*entitysdk.AppPeer, *shellcmd.S
 	// nothing survives the process either way, so there is no state for
 	// a stable id to be the key to.
 	if cfg.StorageKind == "sqlite" && cfg.Identity == "" {
-		if err := ensureDefaultIdentity(); err != nil {
+		if err := ensureIdentity(DefaultIdentityName); err != nil {
 			return nil, nil, err
 		}
 		cfg.Identity = DefaultIdentityName
+	} else if cfg.Identity != "" && cfg.CreateIdentity {
+		// The operator said the dangerous thing out loud. See
+		// Config.CreateIdentity for why it has to be said.
+		if err := ensureIdentity(cfg.Identity); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	// SQLite path derivation: when -storage=sqlite and -storage-path
@@ -421,8 +448,15 @@ func Bootstrap(ctx context.Context, cfg Config) (*entitysdk.AppPeer, *shellcmd.S
 // name it in a later `-identity default`, and delete it.
 const DefaultIdentityName = "default"
 
-// ensureDefaultIdentity creates the default identity if it is absent,
-// and is a no-op when it exists.
+// ensureIdentity creates the named identity if it is absent, and is a
+// no-op when it exists.
+//
+// Named rather than default-only since 2026-09-06: the logic was always
+// general and was reachable for exactly one value, which is why
+// `-identity alice` on a fresh machine failed with a 404 that the GUI's
+// own usage text said could not happen. WHICH names reach it is the
+// caller's decision (Config.CreateIdentity) and deliberately not this
+// function's.
 //
 // **Create-if-absent, never overwrite.** A keypair is the peer's
 // identity: regenerating one over an existing file would orphan every
@@ -434,20 +468,20 @@ const DefaultIdentityName = "default"
 // starting at once both see "absent" and both create; one wins, and the
 // loser must use the winner's keypair rather than fail. Returning an
 // error there would make concurrent startup a coin flip.
-func ensureDefaultIdentity() error {
-	if _, err := entitysdk.LoadIdentity(DefaultIdentityName); err == nil {
+func ensureIdentity(name string) error {
+	if _, err := entitysdk.LoadIdentity(name); err == nil {
 		return nil
 	} else if !entitysdk.IsNotFound(err) {
 		// A bundle directory, a permissions problem, a corrupt file —
 		// anything that is not "absent" is a real failure, and creating
 		// over it is exactly what must not happen.
-		return fmt.Errorf("shellboot: load the default identity: %w", err)
+		return fmt.Errorf("shellboot: load identity %q: %w", name, err)
 	}
-	if _, err := entitysdk.CreateIdentity(DefaultIdentityName); err != nil {
+	if _, err := entitysdk.CreateIdentity(name); err != nil {
 		if entitysdk.IsConflict(err) {
 			return nil // lost the race; the winner's keypair is the one to use
 		}
-		return fmt.Errorf("shellboot: create the default identity: %w", err)
+		return fmt.Errorf("shellboot: create identity %q: %w", name, err)
 	}
 	return nil
 }

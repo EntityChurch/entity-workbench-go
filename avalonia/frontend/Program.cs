@@ -38,8 +38,16 @@ offer and share from the previous session named a peer that no longer
 existed.
 
 Flags:
-  --identity NAME      Use named identity from ~/.entity/identities/
-                       (default: ""default"", created on first launch)
+  --identity NAME      Use an EXISTING named identity from
+                       ~/.entity/identities/. Startup FAILS if there is no
+                       such identity — a peer-id is what every grant, mount
+                       and offer on another machine names, so a typo must
+                       not quietly become a different peer.
+                       With no flag: ""default"", created on first launch.
+  --new-identity NAME  Same, but create it if it does not exist. This
+                       brings a NEW PEER into being, with a new peer-id
+                       and an empty tree; nothing the old one owned
+                       follows it.
   --alias NAME         Alias for the in-process peer in the shell
                        (default: --identity name, or ""self"")
   --storage KIND       Storage backend: ""sqlite"" (default) or ""memory""
@@ -173,6 +181,11 @@ Flags:
                     if (!TakeValue(args, ref i, a, out var ident)) { remaining = Array.Empty<string>(); return false; }
                     Config.Identity = ident;
                     break;
+                case "--new-identity":
+                    if (!TakeValue(args, ref i, a, out var newIdent)) { remaining = Array.Empty<string>(); return false; }
+                    Config.Identity = newIdent;
+                    Config.CreateIdentity = true;
+                    break;
                 case "--alias":
                     if (!TakeValue(args, ref i, a, out var alias)) { remaining = Array.Empty<string>(); return false; }
                     Config.Alias = alias;
@@ -287,6 +300,14 @@ public class BridgeConfig
 {
     [System.Text.Json.Serialization.JsonPropertyName("identity")]
     public string Identity { get; set; } = "";
+
+    // Create the named identity if it does not exist. Set only by
+    // --new-identity, never by --identity: loading names a peer that
+    // exists, creating brings a new one into being, and the tree is
+    // peer-id-namespaced so a typo under create-if-absent abandons
+    // everything the intended peer owns. See shellboot.Config.
+    [System.Text.Json.Serialization.JsonPropertyName("create_identity")]
+    public bool CreateIdentity { get; set; }
 
     [System.Text.Json.Serialization.JsonPropertyName("alias")]
     public string Alias { get; set; } = "";

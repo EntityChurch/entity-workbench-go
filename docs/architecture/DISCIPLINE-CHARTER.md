@@ -81,7 +81,7 @@ L0-L3's actual behavior gets documented forensically.
 
 ---
 
-## 2. The 26 disciplines
+## 2. The 27 disciplines
 
 D1-D11 are inherited verbatim from the entity-OS discipline charter
 (originating in godot-entity-core-rust, ratified by egui-entity-core-rust).
@@ -668,7 +668,7 @@ Short enough to run on every change. Six inherited, four substrate-native.
 
 ---
 
-## 4. The anti-pattern catalog (AP1-AP73)
+## 4. The anti-pattern catalog (AP1-AP75)
 
 Each a real defect that shipped or a claim that was routed, diagnosed, and
 is now pinned by a regression test.
@@ -935,6 +935,29 @@ one mount and silently static for every one chosen afterwards.
 
 | AP72 | `workbench/desired_state.go` + `shellcmd/declare.go`, shipped from S2 (2026-09-03) until S6 (2026-09-04) — found by an operator using it, not by any test | **Two peers each held a correct record about the same shared thing, and the records had no field in common.** `share` wrote `app/workbench/folders/{root}`; `accept` wrote `app/workbench/folders/{owner}.{their-root}`. Different ids, different roots, different paths, no shared name, **nothing joining them** — so "this folder" was not an object either side could name, and every downstream surface had to re-infer the relationship by guessing. The operator's words were *"bilateral transfer to different locations, but they don't have the same understanding"*, which is an exact description of the records rather than the UI complaint it sounds like. It presented as five separate confusions (sources and destinations not lining up, bidirectional not working, two rows for one folder) that were one defect. **Nothing could catch it**: both records were written correctly, both round-tripped, both rendered, and every test asserted within ONE peer's tree — a cross-peer identity claim is not expressible in a single-peer assertion, so the entire class was invisible however many tests ran. The fix is that the id is DERIVED from facts both sides already hold (`FolderID(owner, root)`), so it cannot be typed twice and cannot drift; minting one and copying it over the wire would have been a cross-impl coordination for no benefit. Two rules. **When a record describes a relationship, ask what string BOTH parties hold** — if the answer is none, there is no shared object, only two private opinions. And **gate it with a two-peer test that asserts the id is shared AND that the old form is gone**, because the positive assertion alone is satisfied by a build that writes both. | D19, D24, D26 |
 | AP73 | `avalonia/bridge/share.go` + `status.go` + three panels, from the sharing feature's first commit until 2026-09-04 — reported by an operator as *"why am I the one clicking refresh"* | **A feature that never adopted the platform's reactive mechanism grows manual controls instead, and the manual control then reads as a design choice rather than as the missing subscription it is.** Measured: **12 of 15 panels held a tree subscription; the 3 that did not were the 3 sharing panels**, and they were the only ones with Refresh buttons. `share.go` had nine exports and no `RegisterWake`; `status.go` had four and none. `SharePanel`'s only wake was one it *borrowed from the peer-connections model* for its discovery list — so the single thing that updated itself on that panel was the one thing not about sharing. **We did not lack the mechanism**: seven models in `workbench/` already used `OnPrefixChange`, and everything behind these panels is ordinary watchable tree state. Each button was locally reasonable at the moment it was added; the sum was a feature the operator had to hand-crank while the rest of the app was live. Two rules. **A Refresh button on data that lives in the tree is a bug report about a missing subscription** — before adding one, name the prefix and say why it cannot be watched. And **when a capability is near-universal in a codebase, measure the exceptions as a set rather than per-site**: three panels each missing a subscription looks like three small omissions, and the count is what shows it is one feature that never adopted it. | D19, D24 |
+
+| AP74 | `avalonia/frontend/CrashDiagnostics.cs` + `AltStackProbe.cs`, from the 2026-08-21 mitigation until 2026-09-06 — found by reading two coredumps the previous session had already read and classified as "not a stack overflow" | **A mitigation installed PER-THREAD covers exactly the threads somebody enumerated, and the uncovered ones are invisible in every green run.** The alt-stack fix landed on 2026-08-21 for the UI thread, was extended to the render thread on 2026-09-02 when the render thread crashed, and on 2026-09-06 the process died twice on a *third* thread — one that is neither, and that no managed hook can reach, because `sigaltstack` must be called ON the thread it covers. Measured in each core: **16 threads still on the PAL's stock 16 KiB**, 3 of them having already taken a signal. Every gate was green and two of them (`run-xvfb-smoke.sh`'s exit-3, the startup `altstack:` lines) asserted *truthfully* that the two enumerated threads were covered — which is the trap: **the check's subject was the mitigation, not the process.** The file's own header had even written the gap down (*"Other managed threads are still uncovered"*) and left it as prose, which is D27's shape exactly. Two rules. **When a fix is per-instance, the gate must measure the POPULATION, not the instances you fixed** — here that is one probe thread asking the kernel what it actually got, which is why `ProbeAltStackCoverage` starts a thread rather than counting installs. And **when you cannot enumerate the population, stop enumerating**: interposing `sigaltstack(2)` itself (`altstack-preload.c`, LD_PRELOAD) covers every thread at the moment the runtime creates it, with no list to keep current. | D24, D25, D27 |
+| AP75 | this session's own forensics, 2026-09-06 — caught before it became a finding, but only just | **`info proc mappings` on a coredump reads the `NT_FILE` note, which by construction lists only FILE-BACKED mappings — so every stack, heap and guard page in the process is absent from it, and the tool reports them as "not present in core".** Asked which mapping the faulting `rsp` was in, gdb answered with a confident *nearest below / nearest above* pair of DLL mappings, which reads exactly like "this address was never mapped" — a wild pointer. It was nothing of the kind: the address was in a 4 KiB `PROT_NONE` guard page that the core records perfectly well, in its `PT_LOAD` program headers. **The authoritative record of what memory a core contains is its PT_LOAD table** (`p_vaddr`/`p_memsz` for what was mapped, `p_filesz` for what was dumped), and reading it turned "rsp points at nothing" into "rsp is 800 bytes into the guard page below a 12 KiB alt stack" — the whole diagnosis, from the same file, in one query. This is **AP55/D25 in the forensic layer**: a field that prints is not a field that answers, and the previous session's *"not a stack overflow"* was taken with an instrument that could not see a stack. Note also `p_filesz == 0` means "mapped, contents not dumped" and not "absent" — executable file-backed pages are always 0 there, which is normal and says nothing. | D25, D24 |
+
+*Enforcement (AP74):* `avalonia/tests/.../AltStackCoverageTests.cs` starts
+an ordinary thread and asserts the kernel gave it ≥ 1 MiB — the
+population assertion, not an install count. Its
+`Stock_Alt_Stack_Is_Still_Too_Small_On_This_Host` clause is the
+anti-vacuity arm, asserting the hazard is still real so the file cannot
+pass because the numbers moved. `run-xvfb-smoke.sh` exits 3 unless the
+app's own probe reports `coverage=ALL-THREADS`, and the A/B control arm
+(`WB_ALTSTACK_BYTES=0`, honoured by the interposer as well as by
+`CrashDiagnostics`) restores the crashing configuration in full. The
+interposer is A/B'd directly by a 40-line reproducer that builds the
+PAL's exact stack shape and dies on it — see the doctrine's §3.
+
+*Enforcement (AP75):* `DOCTRINE-CRASH-FORENSICS` §3 now says to read
+`PT_LOAD` rather than `info proc mappings`, and gives the two
+discriminators (`p_filesz == 0` is not absence; `PROT_NONE` immediately
+below a small rw- region is an alt stack). There is no automated gate —
+it is a procedure, and the enforcement point is the doctrine being
+opened at the start of a crash investigation, which is what it exists
+for.
 
 *Enforcement (AP72):* `shellboot/folder_identity_e2e_test.go` — two real
 peers, one folder, asserting that the shared id is present on **both**

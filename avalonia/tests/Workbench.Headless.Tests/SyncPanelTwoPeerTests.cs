@@ -172,6 +172,53 @@ public class SyncPanelTwoPeerTests : IDisposable
         finally { bw.Close(); aw.Close(); }
     }
 
+    // A peer connected AFTER the panel opened must appear in the share
+    // form. This is the first gesture's dead end, and it shipped.
+    //
+    // The panel is wake-driven and has no Refresh button, by design. But
+    // the wake watches the DECLARATION prefixes, and connecting to a peer
+    // writes no declaration — `RememberDeviceAddress` updates, never
+    // creates, precisely so that dialling a machine to look at its tree
+    // does not enroll it in a maintained relationship. So nothing wakes,
+    // and the peer list stays as it was when the panel opened: empty.
+    //
+    // The operator's experience, measured by scripts/twopeer-gui.sh on
+    // 2026-09-06 against two real GUIs on a real network: connect to the
+    // other machine, press "Share a folder…", get an empty dropdown and
+    // "Which peer?", with no control on the surface that would fill it.
+    // Restarting the app is the only escape, and the flow the product is
+    // named after is unreachable until you guess that.
+    //
+    // WHY THE TEST ABOVE COULD NOT SEE IT: `ShareForTests` injects the
+    // peer straight into the combo and calls ShareAsync. It drives the
+    // second half of gesture one and skips the half that was broken —
+    // which is exactly the shape AP61 names, a test that drives data to
+    // the row and never selects one. This test drives the BUTTON'S own
+    // handler instead.
+    [AvaloniaFact]
+    public async Task A_Peer_Connected_After_The_Panel_Opened_Is_Offered_In_The_Share_Form()
+    {
+        SyncPanel.AutoLoadOnOpen = false;
+
+        var (aw, ap) = Open(_alice);
+        try
+        {
+            // The panel is open and current BEFORE any peer exists — the
+            // ordinary case, since the app restores its layout at startup
+            // and the operator connects afterwards.
+            await ap.ReadForTests(fetchOffers: false);
+
+            Connect(_alice, _bob, "bob");
+
+            await ap.BeginShareForTests();
+
+            Assert.True(ap.SharePeerChoiceCountForTests > 0,
+                "the share form offered no peers after one was connected; the panel says " +
+                $"\"{ap.NoteText}\" and an operator has no control that would populate it");
+        }
+        finally { aw.Close(); }
+    }
+
     // The offer must LEAVE bob's offer list once he has accepted it.
     //
     // An accepted offer is a FOLDER now. Showing it in both places is the

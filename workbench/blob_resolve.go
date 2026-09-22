@@ -154,7 +154,7 @@ func (h *BlobResolveHandler) Manifest() types.HandlerManifestData {
 // (caller's chain-retry path applies on next subscription event).
 func (h *BlobResolveHandler) Handle(ctx context.Context, req *handler.Request) (*handler.Response, error) {
 	if req.Operation != "receive" {
-		return handler.NewErrorResponse(400, "unknown_operation",
+		return handler.NewErrorResponse(501, "unsupported_operation",
 			fmt.Sprintf("blob-resolve does not support operation %q", req.Operation))
 	}
 	hctx := req.Context

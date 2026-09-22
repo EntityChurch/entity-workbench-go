@@ -20,7 +20,7 @@ func TestChainErrors_Guards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status != 400 || errCode(t, resp) != "unknown_operation" {
+	if resp.Status != 501 || errCode(t, resp) != "unsupported_operation" {
 		t.Fatalf("unknown op: status=%d code=%q", resp.Status, errCode(t, resp))
 	}
 
