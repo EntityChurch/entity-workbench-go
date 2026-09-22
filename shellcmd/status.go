@@ -239,6 +239,15 @@ func (ws *ShellWorkspace) observeFolder(f workbench.FolderData) FolderStatus {
 			fs.AcceptedAtMillis = ps.AtMillis
 		}
 	}
+	// Every peer we actually pull from, in both directions. A folder we
+	// OWN and set to `both` subscribes back to each peer that accepted
+	// it, and Syncing — keyed on a single origin — has nowhere to say so.
+	for _, peerID := range receiveFromPeers(f, local.PeerID()) {
+		if _, ok := workbench.LoadSyncBinding(st, peerID, f.Root); ok {
+			fs.SyncingWith = append(fs.SyncingWith, peerID)
+		}
+	}
+	sort.Strings(fs.SyncingWith)
 
 	fs.FilesPresent, fs.FilesIngested, fs.FilesObservable = mountFileCounts(st, fs.LocalRoot)
 	return fs

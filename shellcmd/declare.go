@@ -45,12 +45,18 @@ func (ws *ShellWorkspace) declareLocalShare(root, peerID, alias string, nowMilli
 		return workbench.FolderData{}, false, err
 	}
 
-	f, hadPrior := workbench.LoadFolder(st, root)
+	// The id is the SHARED one — the same string this folder has on every
+	// peer that participates in it. Before S6 this was the bare root, so
+	// our record and theirs had no field in common and there was no
+	// object either side could point at (workbench.FolderID).
+	id := workbench.FolderID(ws.Local.Peer.PeerID(), root)
+
+	f, hadPrior := workbench.LoadFolder(st, id)
 	prior = f
 	if !hadPrior {
 		path, _ := workbench.MountFilesystemRoot(st, root)
 		f = workbench.FolderData{
-			ID:     root,
+			ID:     id,
 			Label:  root,
 			Kind:   "files",
 			Path:   path,
@@ -87,7 +93,7 @@ func (ws *ShellWorkspace) undeclareLocalShare(root, peerID string, prior workben
 	if hadPrior {
 		_ = workbench.SaveFolder(st, prior)
 	} else {
-		workbench.RemoveFolder(st, root)
+		workbench.RemoveFolder(st, workbench.FolderID(ws.Local.Peer.PeerID(), root))
 	}
 	_, _ = ws.ApplyDeclaredPolicy(peerID, "share unwound: "+root)
 }
@@ -110,7 +116,7 @@ func (ws *ShellWorkspace) undeclareLocalShare(root, peerID string, prior workben
 // never shared this", and "it stopped working" then has no answer.
 func (ws *ShellWorkspace) declareWithdrawnShare(root, peerID string) error {
 	st := ws.Local.Peer.Store()
-	f, ok := workbench.LoadFolder(st, root)
+	f, ok := workbench.LoadFolder(st, workbench.FolderID(ws.Local.Peer.PeerID(), root))
 	if !ok {
 		return nil // never declared; nothing to withdraw
 	}

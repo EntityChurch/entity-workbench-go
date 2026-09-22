@@ -668,7 +668,7 @@ Short enough to run on every change. Six inherited, four substrate-native.
 
 ---
 
-## 4. The anti-pattern catalog (AP1-AP71)
+## 4. The anti-pattern catalog (AP1-AP73)
 
 Each a real defect that shipped or a claim that was routed, diagnosed, and
 is now pinned by a regression test.
@@ -933,6 +933,29 @@ one mount and silently static for every one chosen afterwards.
 
 | AP71 | `shellcmd/cmd_share.go`'s post-share instructions, from S3 landing 2026-09-03 until the same day — found by RUNNING the flow, not by reading it | **A verb's printed guidance is a surface, it goes stale exactly like a doc, and no test reads it.** S3 taught `accept` to take a directory and create the mount itself, deleting the receiver's separate `mount` step and the unwritten rule that the receiving directory had to be named after the sender's folder. The `share` verb went on printing the pre-S3 instructions — *"they now run: `mount <a-local-dir> archives/{root}/` / `accept {peer} {root}`"* — to the operator on the machine that had to act on them. So the shipped binary was **instructing an operator to reintroduce the coupling the release had just removed**, and an `accept` with no directory silently falls back to a mount named after the sender's folder, which is precisely the defect. Everything was green: the panel gates, the e2e tests, the operator doc (which was corrected in the same session the program was not). Two rules. **When you delete a step, grep the PROGRAM's output for it**, not only `docs/` — printed guidance is what operators actually follow, and it is the one surface with no reader in the test suite. And **the way to find this class is to run the flow end to end and read what it says**, which is what an operator does and what no assertion does; this was found in the first thirty seconds of doing that, having survived a full green sweep. | D23, D19, D24 |
 
+| AP72 | `workbench/desired_state.go` + `shellcmd/declare.go`, shipped from S2 (2026-09-03) until S6 (2026-09-04) — found by an operator using it, not by any test | **Two peers each held a correct record about the same shared thing, and the records had no field in common.** `share` wrote `app/workbench/folders/{root}`; `accept` wrote `app/workbench/folders/{owner}.{their-root}`. Different ids, different roots, different paths, no shared name, **nothing joining them** — so "this folder" was not an object either side could name, and every downstream surface had to re-infer the relationship by guessing. The operator's words were *"bilateral transfer to different locations, but they don't have the same understanding"*, which is an exact description of the records rather than the UI complaint it sounds like. It presented as five separate confusions (sources and destinations not lining up, bidirectional not working, two rows for one folder) that were one defect. **Nothing could catch it**: both records were written correctly, both round-tripped, both rendered, and every test asserted within ONE peer's tree — a cross-peer identity claim is not expressible in a single-peer assertion, so the entire class was invisible however many tests ran. The fix is that the id is DERIVED from facts both sides already hold (`FolderID(owner, root)`), so it cannot be typed twice and cannot drift; minting one and copying it over the wire would have been a cross-impl coordination for no benefit. Two rules. **When a record describes a relationship, ask what string BOTH parties hold** — if the answer is none, there is no shared object, only two private opinions. And **gate it with a two-peer test that asserts the id is shared AND that the old form is gone**, because the positive assertion alone is satisfied by a build that writes both. | D19, D24, D26 |
+| AP73 | `avalonia/bridge/share.go` + `status.go` + three panels, from the sharing feature's first commit until 2026-09-04 — reported by an operator as *"why am I the one clicking refresh"* | **A feature that never adopted the platform's reactive mechanism grows manual controls instead, and the manual control then reads as a design choice rather than as the missing subscription it is.** Measured: **12 of 15 panels held a tree subscription; the 3 that did not were the 3 sharing panels**, and they were the only ones with Refresh buttons. `share.go` had nine exports and no `RegisterWake`; `status.go` had four and none. `SharePanel`'s only wake was one it *borrowed from the peer-connections model* for its discovery list — so the single thing that updated itself on that panel was the one thing not about sharing. **We did not lack the mechanism**: seven models in `workbench/` already used `OnPrefixChange`, and everything behind these panels is ordinary watchable tree state. Each button was locally reasonable at the moment it was added; the sum was a feature the operator had to hand-crank while the rest of the app was live. Two rules. **A Refresh button on data that lives in the tree is a bug report about a missing subscription** — before adding one, name the prefix and say why it cannot be watched. And **when a capability is near-universal in a codebase, measure the exceptions as a set rather than per-site**: three panels each missing a subscription looks like three small omissions, and the count is what shows it is one feature that never adopted it. | D19, D24 |
+
+*Enforcement (AP72):* `shellboot/folder_identity_e2e_test.go` — two real
+peers, one folder, asserting that the shared id is present on **both**
+and that the pre-S6 bare-root form is **gone**. The negative half is
+load-bearing: the positive assertion alone is satisfied by a build that
+writes both forms, which is what a careless migration produces — two
+records describing one folder, agreeing right up until they diverge. The
+migration's own idempotence is asserted separately, because it runs at
+every bootstrap.
+
+*Enforcement (AP73):* two, at different layers.
+`workbench/declaration_watch_test.go` asserts that a **write produces a
+wake** on each declaration prefix — asserting the watcher is non-nil
+would pass against one that never fires — with the AP60 close-under-churn
+arm looped 40×, since one close does not reliably catch the deliverer
+mid-contention. And `SyncPanelTests.There_Is_No_Refresh_Button_Because_The_Panel_Subscribes_To_The_Tree`
+asserts the **absence**, with a control arm proving the button sweep can
+see that panel's buttons at all: without it the assertion passes against
+a panel with no buttons and against a broken descendant walk, which is
+the likelier false green.
+
 *Enforcement (AP71):* none automated, and that is the finding rather than
 an omission — a test that asserted on the instruction text would have been
 written from the same stale understanding that produced it. The
@@ -968,6 +991,34 @@ nothing — the vacuous shape this area has already produced twice (AP43).
 standing guard on the claim the panel may not make: **if it ever fails
 because someone added an inbound status field, the fix is to delete the
 field, not to update the test.**
+
+**AP67, second instance (2026-09-04): `workbench.FolderData.Mode`.** Declared as
+`send` / `receive` / `both`, written by both declare paths, and read by nothing that
+branches on it — `grep` finds two writers and two readers, both of which put the value
+in a status DTO for display. So the product has a vocabulary for share direction and no
+implementation of one, which is how "share a folder with a peer" came to mean a
+one-way publish while every surface implied otherwise. Found by an operator asking why
+it was not bidirectional, not by a test: a field that is faithfully stored, faithfully
+displayed and never consulted is invisible to every layer's assertions.
+`SHARING-DIRECTION.md` §9.2 carries the consequence. **The tell is a field whose only
+readers are serializers.**
+
+*Closed 2026-09-04 by S6.* `shellcmd/reconcile.go` now branches on `Mode` — for the
+policy union, for the outbound route, and for which peers a folder subscribes to — and
+`ShellWorkspace.SetFolderMode` is the one operation that sets it, shared by the
+`direction` verb and the Sync panel. The reconciler had been branching on `IsLocal()`,
+i.e. on ORIGIN, everywhere it meant direction; origin is immutable and binary, which is
+precisely why `both` was inexpressible and why a bidirectional share could only be two
+unrelated one-way pipes. **The lesson that generalises past this field: a new field that
+gains meaning must default to the OLD behaviour, not to the most permissive one.** The
+first draft defaulted an absent `Mode` to `both` and was caught by
+`TestReconcile_SaysNothingAboutDialingAPeerWeOnlyRECEIVEFrom` — which passes a record
+with no `Mode` precisely because that is what every record already on disk looks like.
+That default would have started publishing folders an operator had only ever *accepted*,
+over a grant that already existed. The mistake is not symmetric: one direction quietly
+sends someone else's files out, the other merely keeps doing what the record already
+did, so `FolderData.EffectiveMode` derives the absent case from `Origin` and reproduces
+the pre-S6 behaviour exactly.
 
 *Enforcement (AP67):* `shell/listen_test.go` —
 `TestShellListenIsActuallyDialable` stands a second peer up and **dials

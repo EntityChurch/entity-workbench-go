@@ -63,7 +63,7 @@ func mountableFixture(t *testing.T) (*ShellWorkspace, *workbench.Store) {
 // only variable is which function ran.
 func TestStatusSnapshot_ReadsWithoutWritingPolicy(t *testing.T) {
 	ws, st := reconcileFixture(t)
-	declareBothDirections(t, st, themPeer)
+	declareBothDirections(t, ws, st, themPeer)
 	// The verbs declare a DEVICE alongside the folder; declareBothDirections
 	// writes only the folders, so the device is added here to reproduce
 	// the state `share` + `accept` actually leave behind.

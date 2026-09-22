@@ -175,6 +175,16 @@ type FolderStatus struct {
 	// Syncing reports that a received folder has its subscription and
 	// binding in place.
 	Syncing bool
+	// SyncingWith is every peer we currently hold a subscription to for
+	// this folder. For a received folder that is at most its origin and
+	// Syncing says the same thing; for a folder we OWN and have set to
+	// `both`, it is the peers whose changes we pull back, and there is
+	// no single origin for Syncing to describe.
+	//
+	// Both fields, because Syncing is what every existing surface reads
+	// and silently redefining it to mean "any peer" would make a
+	// send-only folder shared with four peers report as syncing.
+	SyncingWith []string
 	// PeerStates is one entry per peer this folder is shared with.
 	PeerStates []FolderPeerStatus
 	Note       string
@@ -317,32 +327,41 @@ func desiredGrantsByPeer(selfPeerID string, folders []workbench.FolderData) map[
 	needSender := map[string]bool{}
 	needReceiver := map[string]bool{}
 
+	// Direction comes from Mode, NOT from Origin. Before S6 this loop
+	// branched on IsLocal(), which is "who created the folder" — an
+	// immutable, binary fact standing in for a per-peer, three-valued
+	// one. That is why `both` was inexpressible and why a bidirectional
+	// share had to be two unrelated folders (workbench.FolderData.Mode).
 	for _, f := range folders {
-		if f.IsLocal() {
-			// We publish it. Every peer it is offered to or accepted by
-			// must be able to subscribe and pull the blob closure.
+		for _, p := range f.SharedWith {
+			if p.PeerID == "" || p.PeerID == selfPeerID {
+				continue
+			}
+			// We publish to them: they need the sender grants so they can
+			// subscribe and pull the blob closure.
 			//
 			// `offered` counts, not only `accepted`: the grant is what
 			// makes accepting POSSIBLE. Waiting for their acceptance
 			// before authorizing it is the deadlock the nine-step flow
 			// worked around by making the operator press things in a
 			// particular order on two machines.
-			for _, p := range f.SharedWith {
-				if p.PeerID == "" || p.PeerID == selfPeerID {
-					continue
-				}
+			if f.Publishes() {
 				switch p.State {
 				case workbench.FolderStateOffered, workbench.FolderStateAccepted:
 					needSender[p.PeerID] = true
 				}
 			}
-			continue
-		}
-		// We received it. Only an ACCEPTED folder authorizes the origin
-		// to deliver into our blob-resolve handler — an offer we have not
-		// accepted must not grant a stranger a handler.
-		if ps, ok := f.PeerState(f.Origin); ok && ps.State == workbench.FolderStateAccepted {
-			needReceiver[f.Origin] = true
+			// We receive from them: they need the receiver grant so their
+			// deliveries reach our blob-resolve handler.
+			//
+			// ACCEPTED only, in both directions. An offer we have not
+			// accepted must not grant a stranger a handler, and that is a
+			// property of our decision rather than of who originated the
+			// folder — so it is asserted here rather than inherited from
+			// the Origin branch this replaced.
+			if f.Receives() && p.State == workbench.FolderStateAccepted {
+				needReceiver[p.PeerID] = true
+			}
 		}
 	}
 
@@ -573,7 +592,11 @@ func (ws *ShellWorkspace) ensureOutboundRoute(ctx context.Context, d workbench.D
 func (ws *ShellWorkspace) publishesTo(peerID string) bool {
 	folders, _ := workbench.LoadFolders(ws.Local.Peer.Store())
 	for _, f := range folders {
-		if !f.IsLocal() {
+		// Publishes(), not IsLocal(): a folder we ACCEPTED from them and
+		// set to `both` also dispatches to them, and under the old test
+		// it silently did not — the outbound route was never opened, so
+		// our writes went nowhere with nothing reporting a fault.
+		if !f.Publishes() {
 			continue
 		}
 		for _, p := range f.SharedWith {
@@ -652,44 +675,102 @@ func (ws *ShellWorkspace) reconcileFolder(f workbench.FolderData, out *Reconcile
 			// path on somebody's disk that this record only remembers.
 			fs.Note = "no local mount for root " + f.Root + " — nothing is published from this folder"
 			out.Problems = append(out.Problems, fs.problems()...)
+			return fs
 		}
+	} else {
+		// A received folder. The mount is where the bytes land; without
+		// it every delivery answers 404 no_mount_for_uri while the sync
+		// row still lists as healthy, which is the exact failure this
+		// product shipped twice.
+		if !fs.Accepted {
+			state := "never offered to us"
+			if ps, ok := f.PeerState(f.Origin); ok && ps.State != "" {
+				state = ps.State
+			}
+			fs.Note = "not accepted (" + state + ") — nothing is established for it"
+			return fs
+		}
+		if !fs.Mounted {
+			fs.Note = "accepted, but there is no local mount at root " + fs.LocalRoot + " to receive into"
+			out.Problems = append(out.Problems, fs.problems()...)
+			return fs
+		}
+	}
+
+	if !f.Receives() {
+		// Mounted and set to send-only: we publish our side and take
+		// nothing back. Said out loud, because an operator looking at a
+		// folder that is established and quiet needs to be able to tell
+		// "configured that way" from "broken".
+		fs.Note = "send-only — their changes are not applied here"
 		return fs
 	}
 
-	// A received folder. The mount is where the bytes land; without it
-	// every delivery answers 404 no_mount_for_uri while the sync row
-	// still lists as healthy, which is the exact failure this product
-	// shipped twice.
-	if !fs.Accepted {
-		state := "never offered to us"
-		if ps, ok := f.PeerState(f.Origin); ok && ps.State != "" {
-			state = ps.State
+	// Subscribe to everyone we receive from. This IS establishable
+	// without a human decision: the mount exists and the operator
+	// already said yes, so subscribing carries out their decision
+	// rather than making one.
+	//
+	// The loop is over PEERS rather than over the single origin because
+	// a folder we own and set to `both` pulls from every peer that
+	// accepted it, and it has no origin to key that on. A received
+	// folder yields exactly its origin, so the previous behaviour is the
+	// one-element case of this one.
+	for _, peerID := range receiveFromPeers(f, ws.Local.Peer.PeerID()) {
+		if _, ok := workbench.LoadSyncBinding(ws.Local.Peer.Store(), peerID, f.Root); ok {
+			continue
 		}
-		fs.Note = "not accepted (" + state + ") — nothing is established for it"
-		return fs
-	}
-	if !fs.Mounted {
-		fs.Note = "accepted, but there is no local mount at root " + fs.LocalRoot + " to receive into"
-		out.Problems = append(out.Problems, fs.problems()...)
-		return fs
-	}
-	if !fs.Syncing {
-		// This one IS establishable: the mount exists and the operator
-		// already said yes, so subscribing is carrying out their decision
-		// rather than making one.
 		if _, err := ws.Sync(SyncRequest{
-			Remote: f.Origin, Root: f.Root, TargetRoot: fs.LocalRoot,
+			Remote: peerID, Root: f.Root, TargetRoot: fs.LocalRoot,
 		}); err != nil {
 			fs.Note = "could not subscribe: " + err.Error()
 			out.Problems = append(out.Problems,
-				fmt.Sprintf("folder %q from %s: %v", fs.Label, f.Origin, err))
-			return fs
+				fmt.Sprintf("folder %q from %s: %v", fs.Label, peerID, err))
+			continue
 		}
-		fs.Syncing = true
+		fs.SyncingWith = append(fs.SyncingWith, peerID)
+		if peerID == f.Origin {
+			fs.Syncing = true
+		}
 		out.Actions = append(out.Actions,
-			fmt.Sprintf("folder %q: subscribed to %s and caught up", fs.Label, f.Origin))
+			fmt.Sprintf("folder %q: subscribed to %s and caught up", fs.Label, peerID))
 	}
+	sort.Strings(fs.SyncingWith)
 	return fs
+}
+
+// receiveFromPeers is every peer whose changes to this folder we pull.
+//
+// Empty when the folder does not receive at all, so a caller does not
+// have to check Receives() as well — the two answers cannot then
+// disagree, which is the failure mode that put a subscription on a
+// send-only folder in the first place.
+//
+// For a folder we RECEIVED it is the origin, and only when we accepted
+// it. For one we OWN it is every peer that accepted it: an offer they
+// have not taken up authorizes nothing and must not open a subscription
+// to a peer who never agreed to publish to us.
+func receiveFromPeers(f workbench.FolderData, selfPeerID string) []string {
+	if !f.Receives() {
+		return nil
+	}
+	if !f.IsLocal() {
+		if ps, ok := f.PeerState(f.Origin); ok && ps.State == workbench.FolderStateAccepted {
+			return []string{f.Origin}
+		}
+		return nil
+	}
+	var out []string
+	for _, p := range f.SharedWith {
+		if p.PeerID == "" || p.PeerID == selfPeerID {
+			continue
+		}
+		if p.State == workbench.FolderStateAccepted {
+			out = append(out, p.PeerID)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // grantsEquivalent compares two grant sets for the purpose of deciding

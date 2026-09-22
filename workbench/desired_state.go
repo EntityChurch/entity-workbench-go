@@ -186,15 +186,84 @@ const (
 	FolderStateWithdrawn = "withdrawn"
 )
 
-// Folder modes. Mirrors localfiles.RootConfigData.ReadOnly and
-// Syncthing's send-only / receive-only folder types, which is the
-// most-used non-default setting in that product and is expressible in
-// our substrate today while being settable from nothing we ship.
+// Folder modes — THIS PEER's direction on a shared folder.
+//
+// Syncthing's three folder types exactly (`sendreceive` / `sendonly` /
+// `receiveonly`), and for its reason: direction is a per-device property
+// **of one shared folder**, not a property of who created it.
+//
+// That distinction is the whole of S6. Until 2026-09-04 the reconciler
+// branched on `IsLocal()` — i.e. on ORIGIN — everywhere it meant
+// direction, and origin is immutable and binary. So "bidirectional" was
+// inexpressible: the only way to get bytes flowing both ways was a
+// second, unrelated share on the other machine, producing a second
+// folder object with a different id pointed at a different directory.
+// The operator's words for the result were *"bilateral transfer to
+// different locations, but they don't have the same understanding."*
+// They were describing the data model accurately.
+//
+// Mode is what the reconciler reads now. Origin still says who
+// originated the folder — that is what names it and what owns the offer
+// record — and it no longer decides which way anything flows.
 const (
 	FolderModeSend    = "send"    // we publish changes; we never write theirs
 	FolderModeReceive = "receive" // we accept changes; we never publish ours
 	FolderModeBoth    = "both"
 )
+
+// Publishes reports whether this peer sends its changes for this folder.
+func (f FolderData) Publishes() bool {
+	m := f.EffectiveMode()
+	return m == FolderModeSend || m == FolderModeBoth
+}
+
+// Receives reports whether this peer accepts the other side's changes.
+func (f FolderData) Receives() bool {
+	m := f.EffectiveMode()
+	return m == FolderModeReceive || m == FolderModeBoth
+}
+
+// EffectiveMode is Mode, or — when it is absent — THE PRE-S6 BEHAVIOUR,
+// which is derived from Origin: a folder we own published, a folder we
+// received received.
+//
+// This is the whole migration story for direction, and getting it wrong
+// is not symmetric. Defaulting an absent Mode to `both` (the first
+// version of this) silently starts publishing a folder the operator only
+// ever accepted — someone else's files, and their disk, going back out
+// over a grant that already exists. Defaulting it the other way merely
+// keeps doing what the record already did.
+//
+// So: absent means "what this record meant before the field was read by
+// anything", every record written since carries an explicit value, and
+// `both` is only ever reached by an operator asking for it.
+func (f FolderData) EffectiveMode() string {
+	switch f.Mode {
+	case FolderModeSend, FolderModeReceive, FolderModeBoth:
+		return f.Mode
+	}
+	if f.IsLocal() {
+		return FolderModeSend
+	}
+	return FolderModeReceive
+}
+
+// NormalizeMode maps free text onto a mode constant, refusing anything
+// else. A REFUSAL and not a fallback: a mode that quietly became `both`
+// because it was misspelled would publish an operator's disk when they
+// asked for receive-only, which is the one direction of this mistake
+// that cannot be undone by fixing it afterwards (AP33).
+func NormalizeMode(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case FolderModeSend, "sendonly", "send-only", "out":
+		return FolderModeSend, nil
+	case FolderModeReceive, "receiveonly", "receive-only", "in":
+		return FolderModeReceive, nil
+	case FolderModeBoth, "sendreceive", "send-receive", "bidirectional", "two-way":
+		return FolderModeBoth, nil
+	}
+	return "", fmt.Errorf("mode %q is not one of send, receive, both", s)
+}
 
 // FolderData is one folder and the set of peers it is shared with.
 //
@@ -346,11 +415,103 @@ func (f FolderData) WithPeerState(peerID, state string, atMillis uint64, note st
 	return f
 }
 
-// ReceivedFolderID builds the ID of a folder received from a peer. It is
-// the sync binding key by construction, so the two records cannot drift
-// apart on the one field that joins them.
+// FolderID is the identifier of a shared folder, and it is THE SAME
+// STRING ON EVERY PEER THAT PARTICIPATES IN IT.
+//
+// # The defect this closes (S6)
+//
+// A folder had no identity across peers. `share` wrote
+// `folders/{root}`; `accept` wrote `folders/{owner}.{their-root}`.
+// Different ids, different roots, no shared name, and nothing joining
+// them — so there was no object either side could point at and say "that
+// one". Every downstream symptom the operator reported came from this:
+// the sources and destinations do not line up because there is nothing
+// that says they are two views of one thing.
+//
+// # Why it is derived and not minted
+//
+// Syncthing mints a random folder ID and copies it between devices. We
+// do not have to: the pair (owner peer-id, the owner's root name) is
+// already what identifies the folder, both sides already know both
+// halves at the moment they need the id, and deriving it means **no wire
+// change and no new field in the offer record** — which matters because
+// `app/share/*` is APP-CONVENTION-SHARE's namespace and adding a field
+// there is a cross-impl coordination, not a local edit.
+//
+// It also makes the id impossible to get wrong by construction, which
+// the two-typed-strings version was not.
+//
+// The cost is that renaming the owner's root renames the folder. That is
+// already true of the subscription and the sync binding, which are keyed
+// on the same name, so this adds no new fragility — it inherits the
+// existing one. If we ever need rename-stability, mint at the owner and
+// carry it in the offer; do not paper over it by re-deriving elsewhere.
+//
+// The owner is the peer whose disk the folder originates on: ourselves
+// for a folder we share out, the sender for one we accepted.
+func FolderID(ownerPeerID, root string) string {
+	return SyncBindingKey(ownerPeerID, root)
+}
+
+// ReceivedFolderID is FolderID for the receiving side, where the owner is
+// the peer we got it from. Kept as its own name because the sync binding
+// key is the same string by construction, and a reader at the call site
+// wants to be told that rather than to re-derive it.
 func ReceivedFolderID(remotePeerID, root string) string {
-	return SyncBindingKey(remotePeerID, root)
+	return FolderID(remotePeerID, root)
+}
+
+// OwnerOf recovers the peer whose disk this folder lives on.
+//
+// Origin is authoritative when set; the id is the fallback for a record
+// written before Origin was, and for one whose Origin says "local",
+// where the owner is the reading peer and only they can supply it.
+func (f FolderData) OwnerOf(selfPeerID string) string {
+	if f.Origin != "" && f.Origin != "local" {
+		return f.Origin
+	}
+	return selfPeerID
+}
+
+// MigrateFolderIDs rewrites pre-S6 folder records, whose id was the bare
+// root name, to the shared FolderID form. Idempotent; reports what it
+// moved so a startup path can say so rather than silently rewriting an
+// operator's declarations.
+//
+// A MIGRATION and not a dual-read in LoadFolder. A dual-read leaves two
+// records that can both exist and disagree, and every future reader has
+// to know which wins — the ambiguity outlives the transition and is
+// exactly the kind of thing this repo has shipped as a silent defect
+// before. One pass, one record, and afterwards there is one shape.
+func MigrateFolderIDs(st *Store, selfPeerID string) (moved []string, problems []string) {
+	if st == nil || selfPeerID == "" {
+		return nil, nil
+	}
+	folders, probs := LoadFolders(st)
+	problems = append(problems, probs...)
+	for _, f := range folders {
+		owner := f.OwnerOf(selfPeerID)
+		want := FolderID(owner, f.Root)
+		if f.ID == want {
+			continue
+		}
+		if _, clash := LoadFolder(st, want); clash {
+			problems = append(problems,
+				fmt.Sprintf("folder %q would migrate to %q, which already exists — left alone", f.ID, want))
+			continue
+		}
+		old := f.ID
+		f.ID = want
+		if err := SaveFolder(st, f); err != nil {
+			problems = append(problems, fmt.Sprintf("migrate folder %q: %v", old, err))
+			continue
+		}
+		RemoveFolder(st, old)
+		moved = append(moved, old+" -> "+want)
+	}
+	sort.Strings(moved)
+	sort.Strings(problems)
+	return moved, problems
 }
 
 // --- persistence -----------------------------------------------------
@@ -456,12 +617,17 @@ func SaveFolder(st *Store, f FolderData) error {
 	if f.Kind == "" {
 		f.Kind = "files"
 	}
-	if f.Mode == "" {
-		f.Mode = FolderModeBoth
-	}
 	if f.Origin == "" {
 		f.Origin = "local"
 	}
+	// EffectiveMode, never a flat `both`. Defaulting an absent mode to
+	// `both` here started publishing every folder the operator had only
+	// ever ACCEPTED — someone else's files going back out over a grant
+	// that already existed — the moment the reconciler began reading the
+	// field. Caught by TestReconcile_SaysNothingAboutDialingAPeerWeOnly-
+	// RECEIVEFrom, which passes a record with no Mode precisely because
+	// that is what every pre-S6 record on disk looks like.
+	f.Mode = f.EffectiveMode()
 	if _, err := st.Put(FolderPrefix+f.ID, FolderType, f); err != nil {
 		return fmt.Errorf("persist folder %s: %w", f.ID, err)
 	}

@@ -354,3 +354,47 @@ func StatusRemountFolder(peerHandle C.int64_t, folderID *C.char) (result *C.char
 			" → " + out.TargetPrefix + ". Run a re-check to establish the rest.",
 	}, "status remount")
 }
+
+// StatusSetFolderDirection sets which way a shared folder flows on THIS
+// peer: send, receive, or both.
+//
+// The whole operation is `ShellWorkspace.SetFolderMode`, shared with the
+// `direction` verb. Nothing about the rules is reimplemented here —
+// re-deriving the policy row from the declaration, and the fact that a
+// changed grant is only in force at the next handshake, are exactly the
+// things nobody rediscovers by reading a renderer.
+//
+// It exists because S6 made `FolderData.Mode` the field the reconciler
+// branches on, and a setting that governs an operator's bytes with no way
+// to choose it is AP57 from the other side.
+//
+//export StatusSetFolderDirection
+func StatusSetFolderDirection(peerHandle C.int64_t, folderID *C.char, mode *C.char) (result *C.char) {
+	defer recoverToErrorEnvelope("StatusSetFolderDirection", &result)
+	ws, _, errEnv := shareWorkspace(peerHandle)
+	if errEnv != "" {
+		return C.CString(errEnv)
+	}
+	res, err := ws.SetFolderMode(shellcmd.SetFolderModeRequest{
+		FolderID: strings.TrimSpace(C.GoString(folderID)),
+		Mode:     strings.TrimSpace(C.GoString(mode)),
+	})
+	if err != nil {
+		return marshalReply(statusActionReplyDTO{Er: err.Error()}, "status set direction")
+	}
+	note := res.Label + " is already " + res.Mode + " — nothing changed."
+	if res.Changed {
+		switch res.Mode {
+		case "send":
+			note = res.Label + ": changes here are published to them; theirs are not applied here."
+		case "receive":
+			note = res.Label + ": their changes are applied here; nothing here is published to them."
+		default:
+			note = res.Label + ": changes now flow both ways."
+		}
+	}
+	if res.Caveat != "" {
+		note += " " + res.Caveat
+	}
+	return marshalReply(statusActionReplyDTO{OK: true, Note: note}, "status set direction")
+}

@@ -388,6 +388,22 @@ func Bootstrap(ctx context.Context, cfg Config) (*entitysdk.AppPeer, *shellcmd.S
 		}
 	}
 
+	// Pre-S6 folder records were keyed on the bare root name, so the same
+	// folder had a different id on each peer and no field joined the two
+	// — there was no object either side could point at. One idempotent
+	// pass here rather than inside Reconcile: this rewrites the
+	// operator's own declarations, and a control loop that mutates
+	// declarations on every pass is a different and worse thing than a
+	// loop that reconciles substrate to them.
+	if moved, problems := workbench.MigrateFolderIDs(ap.Store(), ap.PeerID()); len(moved) > 0 || len(problems) > 0 {
+		for _, m := range moved {
+			fmt.Fprintf(os.Stderr, "migrated folder id %s\n", m)
+		}
+		for _, p := range problems {
+			fmt.Fprintf(os.Stderr, "warning: folder id not migrated — %s\n", p)
+		}
+	}
+
 	ws := shellcmd.NewShellWorkspace(ap, cfg.LocalAlias, cfg.Identity)
 	ws.NotificationIngest = ingestHandler
 	ws.BlobResolve = blobResolveHandler

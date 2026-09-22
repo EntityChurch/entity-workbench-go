@@ -511,6 +511,45 @@ one — name the recurring cycle first, then let each step own one lever of it.
   recallable* — building `unshare` on it would make the verb unable to do what it is named after.
   **`access` marks the peer's own kernel-seeded `*:*` row**: unlabelled it reads as a wildcard
   grant to a stranger, and hidden it would conceal a real grant.
+- **A FOLDER IS ONE OBJECT ACROSS TWO PEERS, AND DIRECTION IS A PROPERTY OF IT** (S6, AP72
+  + AP67's second instance). `workbench.FolderID(owner, root)` is the same string on every
+  peer that participates — derived from facts both sides already hold, so it cannot be typed
+  twice and needs no wire change (`app/share/*` is APP-CONVENTION-SHARE's namespace; a field
+  there is a cross-impl coordination, not a local edit). Before it, `share` wrote
+  `folders/{root}` and `accept` wrote `folders/{owner}.{their-root}`: **no field in common,
+  so there was no object either side could name**, and every symptom the operator reported
+  was that one gap. `MigrateFolderIDs` moves pre-S6 records once, at bootstrap, not in the
+  loop — a control loop that rewrites declarations on every pass is a different and worse
+  thing than one that reconciles substrate to them.
+  **`Mode` is what the reconciler branches on now, and `IsLocal()` is not.** Origin says who
+  ORIGINATED a folder; it is immutable and binary, and using it for direction is why `both`
+  was inexpressible. Read direction through `Publishes()` / `Receives()`, never through
+  `IsLocal()`. **An absent `Mode` means the PRE-S6 behaviour** (`EffectiveMode`: local
+  publishes, received receives) and never `both` — defaulting it to `both` starts publishing
+  folders an operator only ever *accepted*, over a grant that already exists, and that
+  mistake is not symmetric. Set it through `ShellWorkspace.SetFolderMode` (verb: `direction`;
+  panel: the Sync row's one button), never by writing the field.
+- **A REFRESH BUTTON ON TREE DATA IS A BUG REPORT ABOUT A MISSING SUBSCRIPTION** (AP73).
+  Measured 2026-09-04: 12 of 15 panels held a tree subscription, and the 3 that did not were
+  the 3 sharing panels — the only ones with Refresh buttons. `share.go` had nine exports and
+  no `RegisterWake`. `workbench.WatchDeclarations` watches all four declaration prefixes;
+  `SharingRegisterWake` hangs it off the **peer** handle and fans out, because `StatusRender`
+  and `ShareRender` already take one and are already wake-safe. **Only the READ is wired** —
+  `StatusReconcile` dials every declared device *and* writes to the tree, so wiring it to a
+  wake makes a dialer out of an open panel and wakes itself forever. Before adding a refresh
+  control, name the prefix and say why it cannot be watched; the one honest case here is a
+  peer's offers TO us, which live in their tree and need a dispatched remote read (AP11).
+- **`Sync` IS THE FRONT DOOR; the other four sharing panels are DIAGNOSTICS.** Five panels
+  touched this one job (Shared Folders 10 buttons, Sharing Status 5, Local Files 5, Files 2,
+  plus Peer Connections) over eighteen shell verbs — each added for a real reason, most of
+  them the scar tissue of a defect this repo actually hit, and the sum unusable. `SyncPanel`
+  is the two gestures and nothing else: *pick a folder → pick a peer → Share*, and *a card
+  appears → pick a directory → Accept*. **Share is one gesture over two substrate steps** —
+  it creates the mount itself, because the operator never says "mount"; that is a mechanism
+  that leaked into the UI and it is why the flow had a step nobody could explain. Note it is
+  the SURFACE creating a mount, never the reconciler, which refuses on purpose. Do not add a
+  control here without asking which of the two gestures it serves; anything else belongs in
+  the diagnostic panels, which are kept and not deleted.
 - **THE FLOW IS A CONTROL LOOP NOW, NOT A SEQUENCE — declare, then reconcile.** Two records are
   written on purpose (`workbench/desired_state.go`): `app/workbench/devices/{peer-id}` and
   `app/workbench/folders/{folder-id}`. Everything else — the policy row, the mount, the

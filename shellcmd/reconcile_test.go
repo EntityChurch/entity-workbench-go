@@ -45,14 +45,26 @@ func reconcileFixture(t *testing.T) (*ShellWorkspace, *workbench.Store) {
 	return NewShellWorkspace(ap, "self", ""), ap.Store()
 }
 
+// outgoingFolderID is the shared id of the fixture's outgoing "photos"
+// folder, as workbench.FolderID computes it for THIS peer.
+func outgoingFolderID(ws *ShellWorkspace) string {
+	return workbench.FolderID(ws.Local.Peer.PeerID(), "photos")
+}
+
 // declareBothDirections writes the two folder records an operator gets
 // from sharing one folder out and accepting one back, with no substrate
 // established — which is exactly the durable state after those two verbs
 // have run.
-func declareBothDirections(t *testing.T, st *workbench.Store, them string) {
+//
+// The outgoing folder's id is the SHARED one — workbench.FolderID(us,
+// root), the same string this folder has on their peer. Writing the bare
+// root here (which is what it used to be) made the unwind and the
+// withdrawal look up an id nothing had written, so both silently found
+// no folder and did nothing.
+func declareBothDirections(t *testing.T, ws *ShellWorkspace, st *workbench.Store, them string) {
 	t.Helper()
 	out := workbench.FolderData{
-		ID: "photos", Label: "photos", Kind: "files",
+		ID: outgoingFolderID(ws), Label: "photos", Kind: "files",
 		Root: "photos", Path: "/tmp/photos", Origin: "local",
 		Mode: workbench.FolderModeBoth,
 	}.WithPeerState(them, workbench.FolderStateOffered, 1, "")
@@ -75,7 +87,7 @@ func declareBothDirections(t *testing.T, st *workbench.Store, them string) {
 func TestReconcile_PolicyIsTheUnionOfBothDirections(t *testing.T) {
 	ws, st := reconcileFixture(t)
 	const them = "2KLf7osYcMLEdmSnYLx3Bg6TScaGJefLZJdKaL1tPNHAbR"
-	declareBothDirections(t, st, them)
+	declareBothDirections(t, ws, st, them)
 
 	// Seed the row the way the verbs leave it: Share first, then Accept
 	// over the top of it. This is not a contrived starting point — it is
@@ -124,7 +136,7 @@ func TestReconcile_PolicyIsTheUnionOfBothDirections(t *testing.T) {
 func TestReconcile_IsIdempotent(t *testing.T) {
 	ws, st := reconcileFixture(t)
 	const them = "2KLf7osYcMLEdmSnYLx3Bg6TScaGJefLZJdKaL1tPNHAbR"
-	declareBothDirections(t, st, them)
+	declareBothDirections(t, ws, st, them)
 
 	first, err := ws.Reconcile(context.Background())
 	if err != nil {
@@ -186,7 +198,7 @@ func TestReconcile_OnlyAcceptedFoldersAuthorizeDelivery(t *testing.T) {
 func TestReconcile_ReportsAFolderWithNoMountRatherThanCreatingOne(t *testing.T) {
 	ws, st := reconcileFixture(t)
 	const them = "2KLf7osYcMLEdmSnYLx3Bg6TScaGJefLZJdKaL1tPNHAbR"
-	declareBothDirections(t, st, them)
+	declareBothDirections(t, ws, st, them)
 
 	out, err := ws.Reconcile(context.Background())
 	if err != nil {

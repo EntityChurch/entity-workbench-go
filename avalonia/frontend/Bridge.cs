@@ -703,6 +703,34 @@ public static class Bridge
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusRemountFolder", CharSet = CharSet.Ansi)]
     public static extern IntPtr StatusRemountFolder(long peerHandle, string folderId);
 
+    // Which way a shared folder flows on THIS peer: send / receive / both.
+    //
+    // S6 made FolderData.Mode the field the reconciler branches on. Before
+    // it, Mode had two writers, two readers, and nothing consulting it —
+    // both readers put it in a status DTO. The tell worth remembering is a
+    // field whose only readers are serializers: stored faithfully,
+    // displayed faithfully, invisible to every test at every layer.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusSetFolderDirection", CharSet = CharSet.Ansi)]
+    public static extern IntPtr StatusSetFolderDirection(long peerHandle, string folderId, string mode);
+
+    // --- The declared-state wake -----------------------------------------
+    //
+    // The sharing surfaces were the only three panels in the app with no
+    // tree subscription, so they were the only three that needed a Refresh
+    // button — 12 of 15 panels updated themselves and these did not. The
+    // state behind them is ordinary watchable tree entities.
+    //
+    // The callback receives the PEER handle, so a panel calls StatusRender
+    // or ShareRender with the value it already holds. Only the READ is
+    // wired: StatusReconcile dials, and it writes to the tree, so wiring it
+    // here would both make a dialer out of a status surface and wake itself
+    // forever.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "SharingRegisterWake")]
+    public static extern IntPtr SharingRegisterWake(long peerHandle, IntPtr callback);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "SharingUnregisterWake")]
+    public static extern IntPtr SharingUnregisterWake(long peerHandle, long registration);
+
     // File explorer: one mount's CONTENTS, and unlike LocalFilesRender
     // above this one IS a handle. The distinction is the event source. A
     // mount's config is written once and does not move; a mount's

@@ -406,13 +406,37 @@ public class App : Application
         PanelRegistry.Register("peer-connections", "Peer Connections",
             (handle, _) => new PeerConnectionsPanel(handle),
             PanelRegistry.Category.Network, "Who this peer is connected to, from the tree's liveness record.");
+        // Sync is the front door for the whole sharing job: the two
+        // gestures and nothing else.
+        //
+        // It exists because five panels touched this one job — Shared
+        // Folders (10 buttons), Sharing Status (5), Local Files (5),
+        // Files (2), plus Peer Connections — over eighteen shell verbs.
+        // Every one was added for a real reason and most are the scar
+        // tissue of a defect this project actually hit, which is exactly
+        // the trap: each was locally justified and the sum is unusable.
+        //
+        // The other four are not deleted, they are DEMOTED. Each answers
+        // a real question you reach for after something breaks; none of
+        // them is what a first-timer should open.
+        PanelRegistry.Register("sync", "Sync — share a folder with a peer",
+            (handle, host) => new SyncPanel(handle, host),
+            PanelRegistry.Category.Network,
+            "Share a folder with another machine, and accept the folders they share with "
+            + "you. Updates itself — the folders, the offers and the state all come from "
+            + "the tree, so there is nothing to refresh.");
         // Registered next to Peer Connections because that is where an
         // operator lands looking for it: connecting is the step before
         // sharing, and until this panel existed the flow simply stopped
         // there. Every verb behind it was shell-only.
-        PanelRegistry.Register("share", "Shared Folders (share and receive)",
+        //
+        // Superseded by Sync for the ordinary flow. Kept because it
+        // exposes per-stage controls (resync, forget, unsync) that Sync
+        // deliberately does not, and those are what you reach for when a
+        // share will not establish.
+        PanelRegistry.Register("share", "Shared Folders (every control, one stage at a time)",
             (handle, _) => new SharePanel(handle),
-            PanelRegistry.Category.Network,
+            PanelRegistry.Category.Diagnostics,
             "Offer a mounted folder to a peer, see what they are offering you, accept it, "
             + "and see what is arriving. Both peers must dial each other.");
         // Named for the question it answers, not for the machinery behind
@@ -422,7 +446,7 @@ public class App : Application
         // naming failure an operator called incomprehensible.
         PanelRegistry.Register("sharing-status", "Sharing Status (declared vs. actual)",
             (handle, _) => new SharingStatusPanel(handle),
-            PanelRegistry.Category.Network,
+            PanelRegistry.Category.Diagnostics,
             "What you declared — peers and folders — beside what is actually established, "
             + "and what is stopping the rest. What you grant a peer is stated exactly; what "
             + "they grant you is not knowable from here, so it is shown as what has arrived.");

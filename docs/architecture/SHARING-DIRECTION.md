@@ -390,7 +390,10 @@ which nothing stated and which silently produced a relationship that
 could not deliver. That coupling is why `FolderData` now records a
 `LocalRoot` beside the sender's `Root`, read through `ReceivingRoot()`.
 
-**S4 — the panel over the declared state. DONE 2026-09-03.**
+**S4 — the panel over the declared state. DONE 2026-09-03, and it is NOT the
+flow in §5.** Read §9 before planning further work here: the operator who asked
+for a streamlined flow got a diagnostic window, correctly built and answering the
+wrong question. S4 is a good *instrument*; it is not the product.
 `Sharing Status (declared vs. actual)` — devices and folders, observed state
 beside desired state, and what is stopping the rest. Built as
 `shellcmd.StatusSnapshot` (a read) beside the existing `Reconcile` (a pass),
@@ -458,11 +461,19 @@ pass" is a property of the reading, and a surface that has to recall which
 function produced its table in order to caption it will eventually caption it
 wrong — and the wrong caption is always the confident one.
 
+**S6 — ONE FOLDER, TWO PEERS.** The identity gap in §9.2. Until a folder is a
+single object both peers can name, "share this with them" cannot mean what
+everybody assumes it means, and no amount of panel work fixes it.
+
+**S7 — the flow in §5, for real.** Two gestures, one surface. The audit in §9.3
+first: every button, what it is for, and what it costs a first-time operator to
+have it there.
+
 **S5 — the second kind.** `kind: revision` through the adapter seam, which is
-what ratifies §4 or refutes it.
-
----
-
+what ratifies §4 or refutes it. **Deliberately after S6/S7 now.** The reason is
+in §9.5: this repo is the furthest along, so the shape it settles on is the one
+the other implementations will copy. Shipping the seam before the model is right
+exports the model being wrong.
 ## 8. What this document does not claim
 
 - **Cross-NAT is not addressed.** Everything above assumes the two machines can
@@ -479,3 +490,240 @@ what ratifies §4 or refutes it.
   usable enough that the question can be reached.
 - **The adapter interface in §4 is a sketch**, generalized from one implemented
   kind. It is a candidate until a second kind is built against it.
+
+
+
+---
+
+## 9. The second operator report — 2026-09-04
+
+The flow works now. A file was shared between two machines and arrived. That
+is the first time that sentence has been true, and everything below is about
+what the operator said next.
+
+What they reported, in their words rendered here as findings:
+
+- **The panel was confusing and offered no obvious order of operations** — buttons
+  everywhere, no indication of which to press first, so every one of them got pressed.
+- **It did not behave as bi-directional.**
+- **Inbound and outbound went to different places** — content from the external peer was
+  written into one directory and content from here was uploaded into another.
+- **Nothing came back the other way**, so the two sides were doing bilateral transfer to
+  different locations without any shared understanding of what the pairing meant.
+- **This is the diagnostic panel, not the one sync panel we agreed to build.**
+
+Every one of those is correct, and three of them are the same defect.
+
+### 9.1 We built the instrument, not the product
+
+§5 of this document specifies the flow: *pick a folder → pick a peer → Share*,
+and on the other machine *a card appears → pick a directory → Accept*. **Nothing
+else.** S4 shipped `Sharing Status (declared vs. actual)` — which answers *is
+what I declared actually working*, a question §5 does not ask and an operator
+only reaches for once something has gone wrong.
+
+It is a good instrument and it stays. But it was scheduled as the next step
+toward §5 and it is not on that path, and calling it S4 disguised that. The
+streamlined flow is **unbuilt**, and the sequence now says so.
+
+### 9.2 A folder has no identity across peers — this is the real defect
+
+*"Their sources and their destinations are different... they don't have the same
+understanding."* That is not a UI problem. Measured in the code:
+
+- `share` creates `app/workbench/folders/{root}` on the sender, `Origin: local`.
+- `accept` creates `app/workbench/folders/{peer}.{their-root}` on the receiver,
+  `Origin: {sender}`, `Mode: receive`.
+- **Nothing joins those two records.** They have different ids, different roots,
+  different paths, and neither carries a name the other would recognise.
+- **`FolderData.Mode` is written and never read.** `grep` finds exactly two
+  writers (`declare.go`) and two readers, both of which put it in a status DTO
+  for display. No code branches on it. So `send` / `receive` / `both` is a
+  vocabulary the product does not implement — **AP67 again**: a configuration
+  field that nothing reads is a fiction, and this is its second instance.
+
+So "share this folder with them" today means *"publish my directory; they
+subscribe to it"*. One direction, full stop. Getting the reverse means running a
+second, unrelated `share` on the other machine, which produces a second folder
+object with a different id, pointed at a different directory. Two one-way pipes
+that share nothing but the operator's intention — which is exactly what was
+described, and exactly what it feels like.
+
+**Syncthing's model is the opposite and is the one to adopt.** There, a folder
+has a **Folder ID** that is the same string on every device. Each device chooses
+its own local path. Direction is a per-device *property of one shared object*,
+not a different object per direction. That single fact is what makes "share a
+folder with a device" mean what everyone expects, and it is what we do not have.
+
+**S6 is that.** Until a folder is one object both peers can name, no panel can
+present it as one thing, because it is not one thing.
+
+### 9.3 Five panels, twenty-two buttons, eighteen verbs — for one job
+
+*"Buttons all over the place. I just kept clicking them all."* Counted, rather
+than sympathised with:
+
+| Surface | Buttons |
+|---|---|
+| Shared Folders | 10 |
+| Sharing Status | 5 |
+| Local Files | 5 |
+| Files | 2 |
+| Peer Connections | 0 (fields + a dial) |
+
+Five panels touch this one job — Peer Connections, Shared Folders, Sharing
+Status, Local Files, Files — and the shell exposes **eighteen** verbs for it:
+`mount unmount mounts share unshare shares offers accept sync unsync syncs
+resync forget access status peers connect disconnect`.
+
+Every one of them was added for a real reason and most are the *seam* of some
+defect this document records. That is the trap: **each was locally justified and
+the sum is unusable.** The audit S7 opens with is not "remove buttons" — it is,
+for each control, *which of the two gestures in §5 does this serve, and what does
+its presence cost someone doing this for the first time?* A control that serves
+neither belongs in a diagnostic surface or behind an "advanced" disclosure, not
+in the flow.
+
+### 9.4 The name collision is a real trap, not a nitpick
+
+*"This entity-shared directory overlapping — because I had downloads, so I had to
+name an entity downloads."*
+
+Accept pre-fills `~/entity-shared/{their-root}`. When their folder is called
+`downloads` and you already have `~/Downloads`, the operator is asked to reason
+about a name that means two different things in two different places, at the
+moment they are least equipped to. The pre-fill is defensible (a fresh directory
+that will not trip the non-empty refusal) and the *label* is wrong: the row
+should say whose folder it is and where it will land in one sentence, and the
+default should be qualified by the peer — `~/entity-shared/{peer-label}/{root}` —
+so two peers sharing a folder of the same name do not collide either.
+
+### 9.5 Why this has to be right before it is copied
+
+This repo is the furthest along, and the plan is for `entity-browser-rust`, the
+Godot frontend and the Python implementation to carry the same pattern. **A
+model that is wrong here gets exported four times.** Concretely: if `Mode` stays
+a fiction and a folder stays peer-local, every implementation inherits
+"bidirectional means two unrelated one-way pipes", and the conformance surface
+will encode it.
+
+That is why S5 (the second kind) now sits *after* S6 and S7. The adapter seam is
+supposed to be the thing that lets a revision project or a CRDT document reuse
+the whole relationship layer — and that is only worth generalising once the
+relationship layer means what it says. Building the seam on top of a folder model
+with no shared identity would generalise the defect, not the design.
+
+### 9.6 What is genuinely established
+
+Said plainly, because the list above is long and the progress is real:
+
+- Two machines, one folder, files across, live changes propagating.
+- Accept creates the directory, mounts it, authorizes, subscribes and backfills
+  in one action.
+- Restart survives, mostly — with §6.1 of `avalonia/README-SHARING.md` the known
+  exception, characterised and routed.
+- The declared-state model and the reconciler are the right shape and are not in
+  question. Everything in §9.2 is a gap *in* that model, not an argument against
+  it.
+
+The foundation holds. What is missing is that the object the operator thinks
+they are manipulating does not exist yet.
+
+## 10. Resolution — 2026-09-04, second session
+
+§9.2 and §9.3 are closed. §9.4's trap is closed by naming. What follows is
+what the fix actually was, because the scoping in §9 over-estimated it and the
+reason is worth carrying.
+
+### 10.1 It was two changes, and grounding it first is why
+
+§9.2 proposed adopting Syncthing's model. Reading Syncthing's configuration
+documentation **before** designing collapsed the scope: their `<device>`
+element is `id` / `name` / `address` / `paused` — which is `DeviceData`
+already — and their `<folder>` is `id` / `path` / a per-folder device list /
+a type, which is `FolderData` already. Their `path` is explicitly *"not sent
+to other devices"*, which is our `Path`, and their folder `id` is the same
+string on every device, which is the one thing we did not have.
+
+So: **one divergence and one dead field**, not a model to adopt. The lesson
+is not about Syncthing. It is that *"adopt X's model"* is a scoping claim,
+and checking it against X's actual documentation is cheap and changed the
+size of the work by an order of magnitude.
+
+### 10.2 The id is derived, not minted
+
+`workbench.FolderID(owner, root)`. Syncthing mints a random folder ID and
+copies it between devices; we do not have to, because the pair (owner
+peer-id, the owner's root name) already identifies the folder and both sides
+already hold both halves at the moment they need it.
+
+That matters for a specific reason: minting would mean carrying a new field
+in the offer record, and the offer record's type lives in `app/share/*`,
+which is APP-CONVENTION-SHARE's namespace. A field there is a cross-impl
+coordination, not a local edit. Deriving it makes the id impossible to get
+wrong by construction and costs nothing on the wire.
+
+**The cost, stated so nobody rediscovers it as a surprise:** renaming the
+owner's root renames the folder. That is already true of the subscription and
+the sync binding, which are keyed on the same name, so this inherits an
+existing fragility rather than adding one. If rename-stability is ever
+needed, mint at the owner and carry it in the offer — do not paper over it by
+re-deriving somewhere else.
+
+### 10.3 Direction is `Mode`, and `IsLocal()` was standing in for it
+
+The reconciler branched on `IsLocal()` — *who created the folder* —
+everywhere it meant *which way bytes flow*. Origin is immutable and binary,
+so direction was immutable and binary. That is the mechanical reason `both`
+was inexpressible and why the only way to get bytes moving both ways was a
+second, unrelated share.
+
+`Publishes()` / `Receives()` are the readers now. `reconcileFolder`
+subscribes to every peer it receives from rather than to a single origin, so
+a folder we own and set to `both` pulls their changes back — without that,
+`both` would still have been half a fiction.
+
+**An absent `Mode` means the pre-S6 behaviour and never `both`.** This is the
+part that nearly went wrong. The first implementation defaulted an absent
+mode to `both`, and `TestReconcile_SaysNothingAboutDialingAPeerWeOnlyRECEIVEFrom`
+failed — it passes a record with no `Mode`, precisely because that is what
+every record already on an operator's disk looks like. That default would
+have begun publishing folders an operator had only ever *accepted*, over a
+grant that already existed.
+
+The generalisation, which is worth more than the fix: **a field that gains
+meaning must default to the OLD behaviour, and when the two directions of the
+mistake are not equally recoverable, that decides it.** One direction quietly
+sends someone else's files out of their machine; the other merely keeps doing
+what the record already did.
+
+### 10.4 One panel, and what was left out of it
+
+§9.3's count — five panels, twenty-two buttons, eighteen verbs — is answered
+by `SyncPanel`: the two gestures and nothing else. Share creates the mount
+itself, because "mount" is a mechanism that leaked into the UI and is the step
+no operator could explain; `accept` had already done this for the same reason.
+It is the *surface* creating a mount, never the reconciler, which refuses on
+purpose because that writes to somebody's disk.
+
+The other panels are **demoted to Diagnostics, not deleted**. Each answers a
+real question you reach for after something breaks. §9.3's rule — *anything
+serving neither gesture belongs behind a disclosure, not in the bin* — is what
+was applied.
+
+What is **not** built, so no one reads this section as completion: a directory
+picker (the field takes a typed path), an "as of" timestamp on the offer list
+(offers are a remote read and a stale list currently looks live), a stop-sharing
+verb on the row, and discovery in the peer chooser.
+
+### 10.5 The refresh buttons were one missing subscription
+
+Not listed in §9 at all, and the operator raised it first. Measured: twelve of
+fifteen panels held a tree subscription and the three that did not were the
+three sharing panels — the only three with Refresh buttons. `share.go` had nine
+bridge exports and no `RegisterWake`.
+
+The mechanism was never missing; seven models in `workbench/` already used
+`OnPrefixChange`. Each button was locally reasonable when it was added, and the
+sum was a feature the operator had to hand-crank while the rest of the
+application was live. AP73 carries the general form.

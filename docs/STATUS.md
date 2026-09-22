@@ -1,8 +1,10 @@
 # entity-workbench-go — status
 
-_Updated: 2026-09-03 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
+_Updated: 2026-09-04 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
-> **Start here:** **§0V — driving the flow for real, and what it found**, then
+> **Start here:** **§0X — one folder, one panel, no refresh buttons**, then
+> **§0W — it works, and a folder is still not one object**, then
+> **§0V — driving the flow for real, and what it found**, then
 > **§0U — the control loop got a face**, then
 > **§0T — accept takes a directory**, then
 > **§0S — the loop was right and three verbs had not been told**, then
@@ -21,6 +23,111 @@ _Updated: 2026-09-03 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > project's own state lives in `docs/status/`, which publishes nothing: dated snapshots,
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
+
+## §0X NEW (2026-09-04) — one folder across two peers, one panel for the job, and no refresh buttons
+
+§0W's three findings are closed. The scoping in it over-estimated the first by a lot, and the
+reason is the transferable part.
+
+**A folder is one object now.** `workbench.FolderID(owner, root)` is the same string on every
+participating peer. **Derived, not minted** — both sides already hold both halves, so there is
+no wire change and no new field in `app/share/*`, which is APP-CONVENTION-SHARE's namespace
+where a field would be a cross-impl coordination rather than a local edit. The receiving side
+had been computing exactly this string all along; only the sharing side wrote the bare root.
+Pre-S6 records migrate once, at bootstrap — not in the loop, because a control loop that
+rewrites declarations on every pass is a different and worse thing than one that reconciles
+substrate to them.
+
+**It was two changes, not a rewrite, because we read the source first.** §0W proposed adopting
+Syncthing's model. Reading Syncthing's own configuration docs *before* designing collapsed the
+scope: their `<device>` is `id`/`name`/`address`/`paused`, which is our `DeviceData`; their
+`<folder>` is `id`/`path`/a device list/a type, which is our `FolderData`; their `path` is
+explicitly *"not sent to other devices"*, which is ours. One divergence and one dead field. The
+lesson is not about Syncthing — it is that **"adopt X's model" is a scoping claim, and checking
+it against X's actual documentation is cheap.**
+
+**`Mode` is read now, and `IsLocal()` was standing in for it.** The reconciler branched on
+*who created the folder* everywhere it meant *which way bytes flow*; origin is immutable and
+binary, which is the mechanical reason `both` was inexpressible. `Publishes()`/`Receives()` are
+the readers, `reconcileFolder` subscribes to every peer it receives from rather than to one
+origin, and `direction <folder-id> <send|receive|both>` sets it. **An absent `Mode` means the
+pre-S6 behaviour, never `both`** — the first draft defaulted to `both` and a test caught it,
+because that would have started publishing folders an operator had only ever *accepted*, over a
+grant that already existed. Generalised: **a field that gains meaning defaults to the OLD
+behaviour, and when the two directions of the mistake are not equally recoverable, that decides
+it.**
+
+**The refresh buttons were one missing subscription, and the operator raised it before we did.**
+Measured: **12 of 15 panels held a tree subscription; the 3 that did not were the 3 sharing
+panels**, and they were the only ones with Refresh buttons. `share.go` had nine bridge exports
+and no `RegisterWake`; `SharePanel`'s only wake was one it borrowed from the *peer-connections*
+model for its discovery list, so the one thing that updated itself was the one thing not about
+sharing. We never lacked the mechanism — seven models already used `OnPrefixChange`. **AP73: a
+Refresh button on data that lives in the tree is a bug report about a missing subscription.**
+Only the read is wired to the wake; the reconcile pass dials *and* writes to the tree, so wiring
+it would make a dialer out of an open panel and wake itself forever.
+
+**And the panel.** `Sync` is the two gestures and nothing else. Share creates the mount itself,
+because "mount" is a mechanism that leaked into the UI and is the step no operator could
+explain. Shared Folders and Sharing Status are **demoted to Diagnostics, not deleted** — each
+answers a real question you reach for after something breaks. Not built, and stated so this does
+not read as completion: a directory picker (the field takes a typed path), an "as of" timestamp
+on the offer list (offers are a remote read and a stale list currently looks live), a
+stop-sharing verb on the row, and discovery in the peer chooser.
+
+Green: **`make test-each` all 10 suites**, and `make -C avalonia test` at 178/178.
+`SHARING-DIRECTION.md` §10 is the full argument; AP72 and AP73 are in the charter.
+
+## §0W (2026-09-04) — an operator shared a file, and told us what is still wrong
+
+A file was shared between two machines by an operator working unassisted, and it arrived.
+That is a first. What they said next is the work item, and three of their complaints turn out
+to be one defect.
+
+**A folder has no identity across peers.** `share` writes a folder record on the sender;
+`accept` writes a different folder record, with a different id, a different root and a
+different path, on the receiver — and **nothing joins them**. `FolderData.Mode` declares
+`send` / `receive` / `both` and is **written and never read**: two writers, two readers, both
+of which only put it in a status view. Nothing branches on it. So "share a folder with a peer"
+means *publish my directory, they subscribe* — one direction — and the reverse is a second,
+unrelated share pointing at a different directory. The operator's words were *"bilateral
+transfer to different locations, but they don't have the same understanding"*, which is exactly
+what the records say. Syncthing's answer is one idea: a **Folder ID that is the same string on
+every device**, each device choosing its own local path, direction being a property of one
+shared object rather than a different object per direction. That is the next piece of work, and
+everything else is downstream of it. The dead `Mode` field is **AP67's second instance** — a
+configuration field that nothing reads is a fiction — and the tell worth carrying is *a field
+whose only readers are serializers*.
+
+**And we built the instrument rather than the product.** `Sharing Status (declared vs. actual)`
+answers *is what I declared actually working* — a question you reach for once something has
+gone wrong. The flow this was supposed to be heading toward is two gestures and nothing else.
+The operator noticed at once: *"thought we were going to build the one sync panel; looks like
+you just built the diagnostic panel."* Correct. The panel is good and it stays; scheduling it
+as the next step toward the flow disguised that it was not on that path, and the sequence now
+says so.
+
+The scale of the surface, counted rather than sympathised with: **five panels touch this one
+job, twenty-two buttons across them, and eighteen shell verbs.** Every one was added for a real
+reason — most are the seam of a defect this project actually hit — and that is the trap: each
+was locally justified and the sum is unusable. The next piece of work opens with an audit that
+asks, per control, which of the two gestures it serves and what its presence costs someone
+doing this for the first time.
+
+Why the bar is this high: the plan is for the Rust browser, the Godot frontend and the Python
+implementation to carry this pattern, and this repo is the furthest along. **A model that is
+wrong here gets exported four times.** So the second share kind — the one that would prove the
+adapter seam generalises to a revision project or a CRDT document — has been moved to *after*
+the model is fixed, on the grounds that generalising a layer before it means what it says
+generalises the defect rather than the design.
+
+What is genuinely established, said plainly because the list above is long: two machines, one
+folder, files across, live changes propagating, accept creating and mounting the directory in
+one action, and restart survival with one known and characterised exception. The foundation
+holds. What is missing is that the object the operator thinks they are manipulating does not
+exist yet. `docs/architecture/SHARING-DIRECTION.md` §9 is the full argument.
+
+---
 
 ## §0V NEW (2026-09-03) — we drove the whole flow for real, and it found three things
 

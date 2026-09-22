@@ -335,10 +335,22 @@ public sealed class SharingStatusPanelTests
         var entry = PanelRegistry.Get("sharing-status");
         Assert.True(entry != null, "SharingStatusPanel is not in the registry — it would be "
             + "a complete panel with no way for an operator to open it");
-        Assert.Equal(PanelRegistry.Category.Network, entry!.Category);
+        // DIAGNOSTICS as of 2026-09-04, not Network. This panel answers
+        // "is what I declared actually working" — a question you reach
+        // for after something breaks, not one of the two gestures. The
+        // Sync panel is the front door now, and leaving four panels in
+        // Network is the surface sprawl an operator called out.
+        //
+        // The assertion the test's name is about is the pair below: a
+        // panel that registers without a category and a blurb lands in
+        // "This peer" with no explanation, which is a bug and not a
+        // default. Which category is a product decision and moves.
+        Assert.Equal(PanelRegistry.Category.Diagnostics, entry!.Category);
         Assert.False(string.IsNullOrWhiteSpace(entry.Blurb));
-        // Named for its question. "Sync" would be the third Network panel
-        // whose name does not say which question it answers.
+        // Named for its question. This must stay distinct from the Sync
+        // panel's name now that one exists — two panels whose names do
+        // not say which question they answer is the naming failure an
+        // operator called incomprehensible.
         Assert.DoesNotContain("Sync", entry.DisplayName);
     }
 

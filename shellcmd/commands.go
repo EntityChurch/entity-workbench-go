@@ -376,6 +376,14 @@ func init() {
 		Handler: cmdOffers,
 	})
 	r.Register(Command{
+		Name:  "direction",
+		Usage: "direction <folder-id> <send|receive|both>",
+		Help: "Which way a shared folder flows on THIS peer. `shares` prints the ids. " +
+			"send: publish ours, ignore theirs. receive: apply theirs, publish nothing. " +
+			"both: a shared folder in the ordinary sense.",
+		Handler: cmdDirection,
+	})
+	r.Register(Command{
 		Name:  "accept",
 		Usage: "accept <peer> <root> [<directory>] [-anyway]",
 		Help: "Take a peer up on a shared folder: pick where the files go, authorize " +

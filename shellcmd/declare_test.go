@@ -29,7 +29,7 @@ func TestUnwindShare_LeavesTheOtherDirectionAuthorized(t *testing.T) {
 
 	// The state a share-then-accept pair leaves: one folder out to them,
 	// one folder in from them, and the union of both grants in the row.
-	declareBothDirections(t, st, them)
+	declareBothDirections(t, ws, st, them)
 	if _, err := ws.ApplyDeclaredPolicy(them, "test seed"); err != nil {
 		t.Fatalf("seed policy: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestUnwindShare_LeavesTheOtherDirectionAuthorized(t *testing.T) {
 
 	// Now unwind the OUTGOING folder, as a failed `Share` does. The
 	// incoming one is untouched and must keep working.
-	if _, ok := workbench.LoadFolder(st, "photos"); !ok {
+	if _, ok := workbench.LoadFolder(st, outgoingFolderID(ws)); !ok {
 		t.Fatal("fixture did not create the outgoing folder")
 	}
 	// hadPrior=false is the common case: the share that failed is the one
@@ -65,7 +65,7 @@ func TestUnwindShare_LeavesTheOtherDirectionAuthorized(t *testing.T) {
 		t.Errorf("the unwind left the sender grant in place for a share that was rolled "+
 			"back.\n  grants now: %+v", pol.Grants)
 	}
-	if _, still := workbench.LoadFolder(st, "photos"); still {
+	if _, still := workbench.LoadFolder(st, outgoingFolderID(ws)); still {
 		t.Error("the unwind left the folder declaration behind")
 	}
 }
@@ -86,7 +86,7 @@ func TestUnshare_IsNotResurrectedByTheNextReconcile(t *testing.T) {
 	ws, st := reconcileFixture(t)
 	const them = "2KLf7osYcMLEdmSnYLx3Bg6TScaGJefLZJdKaL1tPNHAbR"
 
-	declareBothDirections(t, st, them)
+	declareBothDirections(t, ws, st, them)
 	if _, err := ws.ApplyDeclaredPolicy(them, "test seed"); err != nil {
 		t.Fatalf("seed policy: %v", err)
 	}
