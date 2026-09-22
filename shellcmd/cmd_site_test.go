@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"entity-workbench-go/fetch"
 	"entity-workbench-go/workbench"
 )
 
@@ -93,6 +94,12 @@ func TestRenderConsume_GreenRunCarriesTheFreshnessBound(t *testing.T) {
 		Origin: "http://origin.example", PeerID: "2Kexample",
 		Discovered: true, Verified: true, HasRun: true, Duration: "18ms",
 		PublishedAt: 1787279734361, Seq: 3,
+		// The mode is what decides which of two sentences a green run
+		// carries, and this inspector reads a static origin. It was
+		// implicit here until 2026-09-12 — the assertions below are on the
+		// static wording and were passing against a build that could only
+		// produce it.
+		Mode:     fetch.ModeStaticOrigin,
 		RootHash: "ecf-sha256:abc", Prefix: "docs/", AbsolutePrefix: "/2Kexample/docs/",
 		KeysTotal: 2, KeysOK: 2,
 		Steps: []workbench.ConsumeStep{{Name: "trie walk", Status: workbench.StepOK,

@@ -226,6 +226,21 @@ func decodeVerified(b []byte, want hash.Hash) (entity.Entity, error) {
 	if err := ecf.Decode(b, &ent); err != nil {
 		return entity.Entity{}, fmt.Errorf("fetch: decode entity: %w", err)
 	}
+	return verifyEntity(ent, want)
+}
+
+// verifyEntity is [decodeVerified]'s second half — the part that does
+// not know what bytes are.
+//
+// **It is split out because the decode is the TRANSPORT's and the check
+// is not.** A [Source] that hands back an already-decoded entity — which
+// is what a dispatched read is, since the framing was cracked by the
+// protocol layer and the wire bytes never reach this package — has
+// nothing for `decodeVerified` to decode, and re-encoding one so the
+// signature matched would be manufacturing bytes in order to check them.
+// Everything below this line is transport-neutral: recompute the hash
+// over (type, data) and require it to be the hash the tree bound.
+func verifyEntity(ent entity.Entity, want hash.Hash) (entity.Entity, error) {
 	if ent.Type == "" {
 		return entity.Entity{}, fmt.Errorf("fetch: content body carries no type")
 	}

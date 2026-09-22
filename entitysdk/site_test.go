@@ -204,18 +204,39 @@ func TestSiteManifest_DeterministicEncoding(t *testing.T) {
 	}
 }
 
-// Path helpers — sanity-check the egui-aligned tree layout.
+// Path helpers — the SITE v0.5 placement.
+//
+// **These literals were `/PEER1/content/sites/…` until 2026-09-12 and
+// that is why nothing caught the divergence.** The writer and its test
+// shared one constant, so the pair agreed with itself while naming a
+// placement v0.5 drops and neither of this repo's own site resolvers
+// looks at. A round trip through your own constant is not a check on the
+// constant. See [SitesSubpath].
+//
+// The literals stay spelled out rather than built from `SitesSubpath`,
+// because a test that composes the value under test can only ever agree
+// with it.
 func TestSitePaths(t *testing.T) {
 	cases := []struct{ got, want string }{
-		{SitePrefix("PEER1", "blog"), "/PEER1/content/sites/blog/"},
-		{SiteManifestPath("PEER1", "blog"), "/PEER1/content/sites/blog/manifest"},
-		{SitePagesPrefix("PEER1", "blog"), "/PEER1/content/sites/blog/pages/"},
-		{SitePagePath("PEER1", "blog", "about"), "/PEER1/content/sites/blog/pages/about"},
-		{SitePagePath("PEER1", "blog", "docs/intro"), "/PEER1/content/sites/blog/pages/docs/intro"},
+		{SitePrefix("PEER1", "blog"), "/PEER1/sites/blog/"},
+		{SiteManifestPath("PEER1", "blog"), "/PEER1/sites/blog/manifest"},
+		{SitePagesPrefix("PEER1", "blog"), "/PEER1/sites/blog/pages/"},
+		{SitePagePath("PEER1", "blog", "about"), "/PEER1/sites/blog/pages/about"},
+		{SitePagePath("PEER1", "blog", "docs/intro"), "/PEER1/sites/blog/pages/docs/intro"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
 			t.Errorf("path mismatch: got %q want %q", c.got, c.want)
 		}
+	}
+	// The half the old test could not express: the SDK writes where this
+	// repo's resolvers read. Two packages, one convention — asserted
+	// across the boundary the divergence lived on, at the only layer that
+	// can see both (`workbench` imports `entitysdk`, so the comparison
+	// itself lives in workbench/site_paths_agree_test.go; this arm names
+	// the segment so a reader of THIS file learns the rule).
+	if SitesSubpath != "sites" {
+		t.Errorf("SitesSubpath = %q; SITE v0.5 §2 registers `sites` as the convention's reserved "+
+			"first segment and drops the `content/sites` placement by name", SitesSubpath)
 	}
 }

@@ -37,7 +37,7 @@ D12–D27 here are ours, earned on the eight crash-hunt commits, two feedback ep
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP94, and the promotion
+  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP99, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -594,7 +594,7 @@ one — name the recurring cycle first, then let each step own one lever of it.
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
 - The project measures everything against the **27 disciplines (D1–D27)**, ten review
-  questions, and anti-pattern catalog (AP1–AP94) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+  questions, and anti-pattern catalog (AP1–AP98) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A COPY OF A LIVE SQLITE STORE IS NOT THE STORE, AND THE MISSING WRITES READ AS ZERO ROWS**
   (AP76). File-backed `SqliteStore` opens **WAL** (`core/store/sqlite.go`, `buildSqliteDSN`
   defaults `JournalMode` to `"WAL"`), so everything since the last checkpoint is in the `-wal`
@@ -1836,6 +1836,97 @@ entities):
   - **A workbench-published site is "verified as of `published_at`", never "verified"** — a quiet
     publisher and a withholding origin are indistinguishable at the consumer (§6.5.3.1, D6/D7).
   Result packet: `docs/architecture/reviews/archive/PUBLISHER-CONFORMANCE-RESULT-2026-08-18.md`.
+- **A SITE LIVES AT `/{peer}/sites/{id}/`, AND THE SDK WROTE IT SOMEWHERE ELSE FOR FOUR MONTHS**
+  (AP96, fixed 2026-09-12). `APP-CONVENTION-SEMANTIC-CONTENT-SITE` v0.5 §2 **drops
+  `content/sites/` by name** — `system/content/*` is the CONTENT extension's namespace, where the
+  leaf is always `{hex(H)}` — and registers `sites` as the convention's reserved first segment.
+  `workbench`'s two resolvers, `entity-browser-rust` and the live corpus were all on `sites/`;
+  `entitysdk.PutSiteManifest` / `PutSitePage` / `SitePrefix` — the surface an application
+  developer reaches for, and what `entity-seed-site` calls — were on the retired one. **So a site
+  authored through our own SDK was invisible to the Local Site panel and to the Browser panel,
+  with every suite green.** There is ONE definition now: `workbench.SitesSubpath` is
+  `entitysdk.SitesSubpath`. No migration is owed — anything at the old placement was already
+  unreadable by every surface that renders a site.
+  Three things to carry, each worth more than the fix. **A round trip through your own constant is
+  not a check on the constant** — each package's tests composed the expected path from its own
+  copy, so both halves agreed with themselves indefinitely; the gate
+  (`workbench/site_paths_agree_test.go`) asserts both against **spelled-out literals**, because
+  composing from the now-shared constant could not fail on the segment however wrong it was.
+  **A cross-impl fixture measures the half of a corridor that faces it** — the remote resolver's
+  only end-to-end exercise is browser-rust's frozen emission, which uses the correct path, so it
+  proved the READER right and said nothing whatever about the writer. And **the divergence had
+  already been noticed and filed as a coordination detail** in `publish/site_root_scope_test.go`'s
+  comment, as a note about scoping a future joint fixture rather than a question about which side
+  was conformant — AP45's shape, and the reason that comment now carries the retraction.
+- **`workbench.PeerSource` IS THE SECOND `fetch.Source`: read a site by DISPATCHING at the peer
+  that wrote it** (W2, 2026-09-12). Same `fetch.Consumer`, same recomputed hashes, same two-hop
+  signature, same `seq` floor, same fail-closed walk — **a second verification path is the thing
+  that must not exist**, because it would be two code paths for one trust argument with the weaker
+  one wearing the same UI. An authenticated connection proves WHO, not WHAT.
+  **It lives in `workbench` and not in `fetch`** — `fetch` is deliberately peer-free so
+  `entity-fetch` links no peer, no store and no location index, which is also why `fetch.Registry`
+  exists at all. Gate: `publish/live_and_static_test.go`, which drives **both projections of one
+  published act** and requires byte-identical bodies plus an identical committed key set, with the
+  locators the only thing allowed to differ.
+  **The seam changed shape and that is AP95.** `Source` was `raw []byte` in three of four
+  primitives; a dispatched read hands back a decoded entity, so `Root`/`Blob` now return
+  `entity.Entity` and `Leaf` returns the **binding** (`hash.Hash`). `crackPointer` moved into
+  `HTTPSource`, because Amendment 6 binds the HTTP projection and a dispatched `tree:get`
+  returning the entity is the protocol behaving correctly — a check that fires on conformant
+  behaviour on another transport is AP44's false refusal with a citation attached. The mechanical
+  check that the seam holds: **`fetch/consume.go` imports no encoding package.**
+  Two decisions not to re-litigate. **A peer that has never published is a third state and v1
+  refuses it by name** (`fetch.ErrNoPublishedRoot`, passed through `VerifiedRoot` unwrapped, for
+  `errNoManifestPrefix`'s reason): *unreachable*, *withholding* and *committed to nothing* send an
+  operator to three different machines. **And a grant for a live site is NOT the site prefix** —
+  the published-root and its signature live at `system/peer/published-root` and
+  `system/signature/*`, outside the prefix they commit to, so a grant scoped to `sites/*` alone
+  yields a peer that serves every page and cannot be verified at all, presenting as *"this
+  publisher has never published"*, i.e. as the other machine's fault. Both arms are gated.
+  Known and named rather than hidden: one dispatch per CHAMP node (`Source.Blob` takes one hash
+  while `content:get` takes an array), and `leafAt` costs an extra round trip because the one door
+  into the content store stays one door.
+- **`publish` WOULD SIGN A ROOT COMMITTING TO NOTHING, AND ITS OWN GUARD FOR THAT COULD NEVER
+  FIRE** (AP97, fixed 2026-09-12). `mintSignedRoot` refuses when `trieRoot.IsZero()`;
+  `tree.BuildTrieForPrefix` over a prefix with no bindings returns the hash of the canonical
+  **empty** CHAMP node, which is non-zero and identical under every identity. So a mistyped
+  `-prefix` emitted a well-formed, correctly-signed, entirely empty origin — and an empty root
+  answers *absent* to every key with a valid signature over it, which is exactly what
+  `fetch.ErrEmptyEnumeration` exists to say carries no information. The refusal is now in
+  `Publish`, **on the binding count it already computed and printed**, not on the root hash. Guard
+  on the fact, not on a proxy for it; and a guard with no control arm asserting its condition is
+  reachable is a handled case that was never handled.
+- **THE SYNC LEG SAYS OUT LOUD THAT IT HAS NO ROLLBACK WITNESS** (`A-33`, ruled 2026-09-12).
+  `FolderStatus.RollbackWitness` is `not_supported` for every folder with an incoming leg, with
+  one sentence written once (`FolderStatus.RollbackWitnessNote`) and rendered by the shell's
+  `status` and by the *Sharing Status* panel's delivery section. The ruling has two MUSTs: **MUST
+  NOT synthesize a floor from a quantity minted by neither the writer nor the content** — which is
+  why `modified_at` is not it, the filesystem being a third party — and **MUST report the leg's
+  witness as `not_supported` while MUST NOT presenting it as rollback-protected.** We met the
+  second half by saying nothing, and *saying nothing* is how a reader concludes a leg is fine: the
+  static leg next door DOES refuse a rollback, so one defended leg and one silent leg reads as two
+  defended legs. **Carrying a witness is the subscription tier's, not ours — do not build a floor
+  here.** The quantity, when it exists, is a per-`(sender, subject)` counter from the sender's own
+  durable state: a genuine revert is a new write (counter advances, bytes go backwards → follow
+  it), a replay is the same write twice (counter stale → refuse).
+  **`BY-12` is MEASURED** (`shellboot/delivery_entry_authorization_probe_test.go`): a peer with no
+  policy row gets **403 `capability_denied`** at `workbench/blob-resolve:receive`; a peer with one
+  gets **404 `no_mount_for_uri`**, i.e. past capability and answered on the merits. So the missing
+  floor is reachable by an **authorized** sender and by accidental out-of-order delivery, and not
+  by a stranger. The second arm is the anti-vacuity one and it is not optional — without it the
+  probe is satisfied by a receiver that refuses everything. It is also the only cross-peer test in
+  this repo with **no `OpenAccess` anywhere**, which is the whole experiment (AP63).
+- **THE FOLDERS AND PEERS LISTS IN THE SHARING STATUS PANEL HAVE NO HEIGHT BOUND, AND THEY ARE THE
+  TWO THAT GROW WITH USE** (open, found 2026-09-12). Conflicts, delivery and recording are all
+  bounded; these two are not. Measured: **one extra line of text above the folders list pushed the
+  Remount button outside its clipping ancestor** and turned
+  `Remount_Is_Offered_Only_When_The_Loop_Is_Stuck_On_A_Missing_Mount` red. That is AP64's other
+  half — *never put an unbounded list in a docked region* — live, and one row of honest text away
+  from an operator meeting it. **Adding `MaxHeight` is not a one-line fix and was reverted:** a
+  bounded list becomes its own clipping ancestor, so that test's reachability predicate then reads
+  a scrolled-out row as unreachable, and the predicate has to learn the difference between *below
+  the fold of something scrollable* and *cannot be clicked at all*. The workaround in place is to
+  put standing facts in the section they belong to rather than on every row.
 - **The consume side is a JOURNEY now, not an inspector** (2026-08-21). `fetch.Registry` +
   `workbench.BrowseModel` do `name → binding → transports → the target's signed root → walk →
   page`, and the three surfaces are `entity-shell`'s `registry` / `browse` / `open`, the Avalonia
@@ -1890,6 +1981,114 @@ entities):
   - **An origin-relative transport prefix resolves against a scheme://host:port, never against the
     path the profile was fetched under** (`fetch.OriginRoot`). A registry served at `host/registry`
     names domains at `host/docs`.
+- **A BINDING'S `transports` IS A RANKED LIST AND WE WERE TAKING THE FIRST ONE** (AP98, fixed
+  2026-09-12). `priority` is landed normative text — `EXTENSION-NETWORK` §6.5.1a D1, Amendment 8 Q1,
+  lower preferred, **default 100**, gated 3-way green — and `EXTENSION-REGISTRY` §4.1.1 points a
+  binding's `transports` at it by name. We read the field **nowhere**: `OriginFor` walked the array
+  and took the first entry that decoded as `http-poll`. A publisher's declared preference was
+  discarded in silence, with a correct page at the end of it, and the symptom (a reader on the slow
+  mirror) reads as *the publisher's* misconfiguration. `fetch/transports.go` is the fix —
+  `TransportsFor` returns a ranked `TransportOptions` with the declines kept, `OriginFor` is its
+  static half and keeps its signature. **`advertised_at` is a MUST NOT** (D3, wall-clock and
+  skew-prone) and is read by nothing; the gate proves it with two profiles differing only in that
+  field. **Ranking within a class is the spec's; choosing between static and live is the CALLER's**
+  — D1 sorts profiles *of the wanted `transport_type`*, and `entity-fetch` links no peer, so `fetch`
+  ranks and reports while the caller says which roads it has.
+  Three things to carry. **A wire field your code never names is either dead or a rule you have not
+  implemented, and the two look identical from inside the code** — grep the struct's fields against
+  your own source. **A rule you are about to design is a rule to search for first**: D20 aimed at
+  the *spec* for the second time, and it keeps not happening because a missing rule and an unread
+  rule feel the same while you are writing the replacement. And **D1's tie-break is unreachable
+  here, which is routed and not patched** — `profile-id` is *the final path segment* of the
+  profile's tree path (core-go gets it from `path.Base(e.Path)`, correctly), and **neither carriage
+  that moves profiles between parties carries a path**: a registry binding carries content hashes
+  (REGISTRY §3 `[MUST, v1.21]`), a `system/peer/transport-set` carries members inline and says
+  *"array order is NOT significant"* while its rule 6 requires D1 order. We stable-sort and
+  **disclose** it (`TransportOptions.TieBreak`); a locally-invented tie-break is deterministic per
+  implementation and *different per implementation*, which is the failure the rule prevents wearing
+  the look of the rule. Ask **A-35**, packet `ROUTING-2026-09-12-b-…-the-d1-tie-break-key-does-not-survive-either-carriage`.
+  **And a live profile is no longer a decode failure** — every non-`http-poll` family used to land
+  in `Skipped` as *"type …/tcp, not …/http-poll"*, so a peer saying *dial me* read as a malformed
+  binding; a static-only reader now refuses by naming what it saw.
+- **THE FRESHNESS SENTENCE IS CARRIED IN THE OUTCOME, AND THE TWO MODES MAY NOT BORROW EACH OTHER'S**
+  (`fetch/freshness.go`, 2026-09-12). `Source.Describe()` puts a `Mode` on `VerifiedRoot`, and
+  `VerifiedRoot.Freshness()` is the **one** composition that switches on it — both hand-written
+  copies are gone (`BrowseModel.goTo`, `ConsumeOutput.FreshnessNote`). A surface that has to recall
+  which consumer it built in order to caption a chain will eventually caption it wrong, always in
+  the confident direction; that is `shellcmd/status.go`'s `Reconciled` rule one corridor over.
+  **What a live read buys is the REMOVAL OF A PARTY, not fresher bytes.** A static origin is a third
+  party that can serve an arbitrarily old correctly-signed root and say nothing; asking the
+  publisher removes anyone in that position. It does **not** establish the root is current — a
+  publisher that has not republished in a year answers instantly and the exchange looks no
+  different, so *quiet publisher* survives both modes and only *withholding origin* is removed.
+  `TestLiveFreshnessDoesNotClaimTheRootIsCurrent` exists to fail when that sentence drifts into the
+  other one. **An unnamed mode produces NEITHER claim** — falling back to the static sentence would
+  be the safe-looking choice and is wrong, because it buries a Source that never implemented
+  `Describe` under a true-sounding claim. Gates: `fetch/freshness_test.go` for cross-exclusion, and
+  the arm that matters in `publish/live_and_static_test.go`, where both sentences come out of **real
+  verifications of one published act** rather than struct literals — the hand-built one cannot fail
+  if `Describe` is never called on a real read.
+  ⛔ **Owed: nothing a user can reach takes the live road.** `BrowseModel` holds an `*http.Client`
+  and no peer, so `TransportsFor` reports live candidates and every shipped caller still picks
+  static. Named rather than absorbed (D23). **Sequence it behind W4's public grant** — a road that
+  exists and leads to a publisher who authorizes nobody fails as *"that machine is broken"* on the
+  reader's screen.
+- **`publish` IS ONE ACT WITH TWO PROJECTIONS, AND THE GRANT IS THE DANGEROUS HALF** (W4, 2026-09-12).
+  Publishing is signing a `system/peer/published-root` over a prefix; the static directory and the
+  live serve are projections of that one act, which is why `publish.MintRoot` and `publish.Publish`
+  run the same code past the same refusal. **Both go through `prepareMint`** — the AP97 empty-prefix
+  guard was in `Publish` alone, and adding a second entry point beside it would have re-opened the
+  defect on the newer road. Surfaces: the `publish` verb (`shellcmd/publish_op.go` + `cmd_publish.go`)
+  and the *Local Site* panel's docked publish bar, in the same change (D23 — the act the whole
+  consume side exists to read had no verb and no pixel).
+  **The public grant is `workbench.PublicSiteGrants`, derived from the prefix the root committed
+  to**, and it refuses an empty prefix by name: `MintRoot` will sign over the whole tree, which is
+  legal, and a PUBLIC grant over the whole tree is `Resources: ["*"]` in a different spelling — AP90
+  aimed at everybody instead of at one named peer. It carries `system/peer/published-root` and
+  `system/signature/*` **as well as** the prefix, because those two live outside the prefix they
+  commit to and a site-shaped grant that omits them serves every page and cannot be verified at all,
+  presenting as *"this publisher has never published"* — an accusation against the publisher for
+  something the reader's own grant caused.
+  Four things this cost, each worth more than the feature:
+  **A CATCH-ALL AUTHORIZATION ROW IS SHADOWED BY EVERY SPECIFIC ONE** (AP99). The V7 §8 table
+  resolves `hex(identityHash)` → Base58 peer-id → `default` and **returns at the first match**
+  (`readHandshakePolicyGrants`); it is not a union. So a public site was readable by every peer on
+  earth **except the ones already named by a share** — the only peers an operator has to test with,
+  measured as `403 capability_denied` at `system/peer/published-root`. Fixed by deriving the public
+  grant into every per-peer row (`desiredGrantsByPeer`), and **deliberately not** by propagating a
+  hand-written `default` row, which would be widening somebody else's grant on their behalf.
+  Generalise: *a fallback rule is not a floor* — ask of any catch-all, **who is excluded by being
+  known to us?**
+  **A PEER HAS EXACTLY ONE PUBLISHED ROOT**, so publishing a narrower prefix stops committing to
+  everything outside it, under a valid signature — a site going dark that a reader cannot tell from
+  a site that never existed (`fetch.ErrEmptyEnumeration`'s whole reason). `SignedRoot.PriorPrefix` +
+  `narrowedFrom` say so. Note the edge its own test caught: §3.3a spells the universal tree `"/"`
+  and everything else without a leading slash, so an unstripped `HasPrefix` reports *publishing the
+  whole tree* as taking a site dark — a warning firing on the one move that cannot lose a key.
+  **A VERB THAT CHANGES AUTHORIZATION MUST RE-DERIVE AND RECONNECT** — grants are assembled at
+  handshake (AP63), so `-public` runs `ApplyDeclaredPolicy` + `refreshGrantConnection` for every
+  declared peer. `direction` shipped without that for four days with a doc comment claiming
+  otherwise.
+  **AND THE PUBLIC ROW WIDENS THE CONTENT EXPOSURE FROM ONE NAMED PEER TO EVERYBODY.** Measured, not
+  argued (`shellboot/public_site_scope_probe_test.go`, logged rather than asserted for AP65's
+  reason): a stranger fetched a file from an unshared folder through `system/content:get` by knowing
+  its hash. That is §6.4.1's unimplemented get-half, already routed; what holds the line is that the
+  **tree** grant is what discloses hashes, which is why the tree boundary is the assertion and the
+  content probe is a log. `publish -private` removes the row; `access` marks it *NOT A PEER*.
+  **Three of the four defects above were found by TYPING THE COMMANDS, not by reading the code**
+  (AP71, and every suite was green throughout). (1) With nothing published, the access block printed
+  *"this root is signed and in the tree"* — the renderer branched on the grant and not on whether a
+  root existed. (2) `prepareMint`'s refusal ended *"check the prefix"* when the prefix was correct
+  and the STORE was empty: `entity-shell` defaults to an **in-memory** store, so `-identity NAME`
+  alone yields the right peer-id and a blank tree, and the message sent an operator to re-read the
+  one thing that was right (AP44). It now names the tree's actual top-level prefixes, which
+  separates *wrong prefix* from *wrong store* at a glance — when you refuse, say what was on offer.
+  (3) **`publish -private` re-published at the CONSTANT default**, silently moving the committed
+  prefix away from the one the operator had chosen. The default is now **sticky** — the prefix the
+  current root already commits to, falling back to `sites/` only on a first publish
+  (`currentPublishPrefix`). *A default is what to do when nothing is known, and after the first
+  publish something IS known*; a constant one made the commonest action (re-publish after adding a
+  page) quietly change what the peer commits to, with no error anywhere.
 - **ONE ORIGIN MAY HOST SEVERAL PEERS, and the well-known `transport-profile` names exactly
   one of them** (AP44). `{origin}/transport-profile` is a **cold-start entry point**
   (NETWORK §6.5.3, Mode A2), never an exclusivity claim. We read it as *the* peer that origin

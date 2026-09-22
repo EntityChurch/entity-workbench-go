@@ -458,6 +458,44 @@ which mode it ran in, because a wrong pin and a withholding origin look identica
 
 ---
 
+## 10b. Publishing a site of your own
+
+Everything above is the *reading* side. `publish` is the other one.
+
+```
+publish                      sign a root over this peer's sites; tell nobody
+publish -public              …and let any peer that can dial this one read it
+publish -private             withdraw that
+publish -out ./site -origin https://example.com     …and emit a static directory
+publish status               what is published, who may read it, can anyone arrive
+```
+
+**There is one act and the flags are projections of it.** Publishing means signing a
+`system/peer/published-root` over a tree prefix — by default `sites/`, everything this peer holds
+as a site. A reader can then get those bytes over HTTP from the static directory, or by dialing
+this peer, and the verification chain is identical either way: same signature, same `seq` floor,
+same fail-closed walk.
+
+Four things it will tell you that are easy to be wrong about:
+
+- **A peer has exactly one published root.** `publish -site notes` commits to `sites/notes/` and
+  therefore *stops* committing to every other site — which a reader sees as a correctly-signed
+  "absent", indistinguishable from a site that never existed. The command says what went dark.
+- **Publishing is not permission.** With no `-public` the root is signed, complete, in the tree,
+  and readable by nobody. That is the default on purpose.
+- **`-public` is a real disclosure and the output says so in those words.** It writes the
+  `default` row in the capability policy table: any peer that can dial this one may read the
+  published prefix and verify it. `access` lists that row and marks it as not being a peer.
+- **Publishing does not make you reachable.** If this peer bound no listener, or published no
+  transport profile, nothing can dial it and `publish` says which of the two is missing. The
+  static directory is unaffected — it is a set of files, and it reaches a reader when you upload
+  it, which is also something `publish` will remind you of.
+
+A registry is still published with `entity-publish` (§10a): it is a batch operation over a whole
+`system/` prefix, run against a store off disk, and it is not a site.
+
+---
+
 ## 11. Cheat sheet
 
 ```
@@ -484,6 +522,11 @@ registry issue <name> <peer> -target-origin <url>
 open <name>[/site[/page]]    go there, and print the chain that verified it
 browse back|forward|where|sites
 site verify <origin>         the inspector: the chain, not the page
+publish [-public|-private] [-out DIR -origin URL]
+                             sign a root over this peer's sites, and choose
+                             who may read it (see §10b)
+publish status               what is published, and whether anyone can arrive
+access                       who is authorized here, including `default`
 connect <alias> <host:port>  open a session to a remote peer
 disconnect <alias>           close & evict from pool
 info [alias]                 connection details

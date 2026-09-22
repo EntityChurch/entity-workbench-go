@@ -1,10 +1,19 @@
 // entity-seed-site — author a small content site into a peer's store.
 //
 // Mints the SiteManifest + a handful of SitePage entities at the
-// canonical paths (`/{peer}/content/sites/{site_id}/manifest` +
-// `/{peer}/content/sites/{site_id}/pages/{slug}`), so a subsequent
-// `entity-publish -prefix content/sites/{site_id}/` emits a static dir
-// that an egui-rust consumer can fetch via HTTP-poll.
+// canonical paths (`/{peer}/sites/{site_id}/manifest` +
+// `/{peer}/sites/{site_id}/pages/{slug}`), so a subsequent
+// `entity-publish -prefix sites/{site_id}/` emits a static dir
+// that an entity-browser-rust consumer can fetch via HTTP-poll.
+//
+// **Every path in this file — including the ones in the seeded page
+// BODIES and in the `entity-publish` line it prints at the end — said
+// `content/sites/` until 2026-09-12.** That is the placement SITE v0.5
+// §2 drops by name, so this tool wrote a site none of our own resolvers
+// could find and then told the operator to publish a prefix that, as of
+// the same day, refuses as empty. AP71: the program's printed guidance
+// is a surface with no reader in the suite, and it goes stale in exactly
+// the sessions that fix everything else. See `entitysdk.SitesSubpath`.
 //
 // The site here is workbench-go's own — short, voice-y, with a section
 // header in the nav and a cross-peer placeholder link. NOT a copy of
@@ -36,7 +45,7 @@ Flags:
   -storage-path PATH  SQLite DB path. Defaults to
                       ~/.entity/peers/{identity}/store.db when -identity set.
   -site-id ID         Site slug (default "%s"). The published URL will
-                      address /{peer}/content/sites/{site-id}/manifest.
+                      address /{peer}/sites/{site-id}/manifest.
   -create-identity    If -identity NAME is given but no identity by that
                       name exists yet under ~/.entity/identities/, mint a
                       fresh Ed25519 keypair and save it. Off by default
@@ -93,8 +102,25 @@ func main() {
 	fmt.Println()
 	fmt.Printf("seeded site %q (%d pages) under peer %s\n",
 		*siteID, len(pages), ap.PeerID())
-	fmt.Printf("publish via:\n  entity-publish -identity %s -prefix content/sites/%s/ -origin <URL>\n",
-		coalesce(*identity, "<identity>"), *siteID)
+	// AP71: a program's printed guidance is a surface with no reader in
+	// the suite, and it goes stale in exactly the sessions that fix
+	// everything else. Both routes are named because they answer
+	// different questions — one emits files for a web server, the other
+	// makes the running peer serve the site itself — and until 2026-09-12
+	// only the first existed, so every doc that inherited this line told
+	// operators the static corridor was the only way to publish.
+	fmt.Printf("publish it:\n"+
+		"  from the running peer:  entity-shell -identity %s -storage sqlite\n"+
+		"                          entity:/ > publish -public\n"+
+		"  as a static directory:  entity-publish -identity %s -prefix sites/%s/ -origin <URL>\n"+
+		"\n"+
+		"`-storage sqlite` is not optional here and the omission is quiet: the shell\n"+
+		"defaults to an in-memory store, so `-identity` alone gives you the right peer-id\n"+
+		"and an empty tree — the site above would simply not be there.\n"+
+		"\n"+
+		"`publish` with no flags signs a root and authorizes nobody; -public writes the\n"+
+		"`default` policy row so any peer that can dial this one may read and verify it.\n",
+		coalesce(*identity, "<identity>"), coalesce(*identity, "<identity>"), *siteID)
 }
 
 // ensureIdentity mints + saves a fresh Ed25519 keypair under
@@ -200,7 +226,7 @@ family that ships the cross-impl test rig, the publish pipeline,
 and the TUI/desktop shells.
 
 This page is the landing page, served as an ` + "`app/site-page`" + `
-entity at ` + "`/{peer}/content/sites/workbench-notes/pages/index`" + `.
+entity at ` + "`/{peer}/sites/workbench-notes/pages/index`" + `.
 
 ## What's around
 
@@ -252,11 +278,11 @@ The pipeline is three stages:
 1. **Author** — ` + "`entity-seed-site`" + ` constructs ` + "`SiteManifest`" + ` and
    ` + "`SitePage`" + ` Go structs, encodes them via ECF (deterministic
    CBOR, RFC 8949 §4.2), and ` + "`Put`" + `s them at:
-   - ` + "`/{peer}/content/sites/workbench-notes/manifest`" + `
-   - ` + "`/{peer}/content/sites/workbench-notes/pages/{slug}`" + `
+   - ` + "`/{peer}/sites/workbench-notes/manifest`" + `
+   - ` + "`/{peer}/sites/workbench-notes/pages/{slug}`" + `
 
 2. **Publish** — ` + "`entity-publish`" + ` walks the tree under the
-   ` + "`content/sites/workbench-notes/`" + ` prefix, emits a flat dir
+   ` + "`sites/workbench-notes/`" + ` prefix, emits a flat dir
    with the Amendment-5 manifest at the root, per-prefix ` + "`.list`" + `
    files, and content-addressed blob shards under ` + "`/content/`" + `.
 
@@ -304,7 +330,7 @@ on substrate A, transport over dumb HTTP, render on substrate B.
   link (target omitted on the wire, per ` + "`nav-node.? target`" + `).
 
 If we can also point a link at
-` + "`entity://<their-peer>/content/sites/<their-site>/pages/<slug>`" + `
+` + "`entity://<their-peer>/sites/<their-site>/pages/<slug>`" + `
 and have it cross-peer-resolve — that's the bonus level.
 `
 

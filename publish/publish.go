@@ -189,10 +189,14 @@ func Publish(ctx context.Context, opts Opts) (Result, error) {
 	}
 
 	cs := opts.Peer.RawContentStore()
-	li := opts.Peer.RawLocationIndex()
 	peerID := opts.Peer.PeerID()
 
-	entries := entitysdk.ListEntriesSorted(li, opts.Prefix)
+	// The empty-prefix refusal (AP97) lives in prepareMint, so the
+	// static and live projections cannot drift apart on it. See mint.go.
+	entries, err := prepareMint(opts.Peer, opts.Prefix)
+	if err != nil {
+		return Result{}, err
+	}
 	entries = applyPathFilter(entries, opts.IncludePath)
 	fmt.Printf("publishing peer %s prefix %q — %d paths\n",
 		shortPeerID(peerID), opts.Prefix, len(entries))
@@ -245,6 +249,7 @@ func Publish(ctx context.Context, opts Opts) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	signed.Bindings = len(entries)
 
 	closure, err := collectClosure(cs, entries, opts)
 	if err != nil {

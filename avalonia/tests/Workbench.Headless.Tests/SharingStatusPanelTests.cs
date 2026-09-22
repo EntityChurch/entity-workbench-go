@@ -372,6 +372,64 @@ public sealed class SharingStatusPanelTests
         finally { window.Close(); }
     }
 
+    // A-33. A leg that carries no rollback witness has to SAY so, and the
+    // saying is what this asserts — not the absence of a claim.
+    //
+    // **The negative arm is NOT here, and that is AP70.** *"a send-only
+    // folder says nothing"* cannot be asserted over this panel: the fixture
+    // peer is shared, another test accepts a real folder into it, and the
+    // line then legitimately appears — which is what the first version of
+    // this test discovered by failing. The negative lives in Go, on the
+    // model, where the question has one answer:
+    // `shellcmd.TestRollbackWitness_OnlyWhereThereIsAnIncomingLeg`.
+    //
+    // What is left here is the half only this side can answer: that the
+    // sentence crosses the bridge and reaches a pixel. If
+    // `rollbackWitnessNote` is dropped at the bridge or undeclared on the
+    // DTO it arrives as "" and the panel renders exactly like a peer with
+    // nothing to report (AP49) — the worst available failure for a line
+    // whose only job is to say a defence is absent.
+    [AvaloniaFact]
+    public void A_Receiving_Folder_States_That_Its_Leg_Has_No_Rollback_Witness()
+    {
+        var (window, panel) = Open();
+        try
+        {
+            panel.SeedFolderForTests("s4-witness", "s4-witness", local: false,
+                origin: "12D3KooWRemotePeerIdentifier",
+                root: "their-notes", localRoot: "their-notes",
+                mounted: true, syncing: true, accepted: true, path: "/home/me/their-notes",
+                filesPresent: 3, filesIngested: 3, filesObservable: true,
+                rollbackWitnessNote: "rollback witness: not_supported — a delivery carries no "
+                    + "ordering quantity, so a stale one arriving after a newer one is applied. "
+                    + "This leg is NOT rollback-protected (the static publish leg is).");
+            Settle(window, panel);
+
+            // The sentence is a property of the LEG, so it is rendered once
+            // for the section and asserted over the whole panel rather than
+            // inside a row. (AP70 still applies to the NEGATIVE arm below,
+            // which is why that one is a fresh panel.)
+            var texts = AllTexts(panel);
+            Assert.Contains(texts, t => t.Contains("not_supported"));
+            Assert.Contains(texts, t => t.Contains("NOT rollback-protected"));
+        }
+        finally { window.Close(); }
+    }
+
+    // AllTexts is every rendered string in the panel. Used only where the
+    // fact under test belongs to the PANEL rather than to a row; anything
+    // about one folder goes through RowTextsFor, because the fixture peer
+    // is shared and other tests write real rows to it (AP70).
+    private static System.Collections.Generic.List<string> AllTexts(Visual root)
+    {
+        var outp = new System.Collections.Generic.List<string>();
+        foreach (var tb in root.GetVisualDescendants().OfType<TextBlock>())
+        {
+            if (!string.IsNullOrEmpty(tb.Text)) outp.Add(tb.Text!);
+        }
+        return outp;
+    }
+
     // AP64. A panel that forgets the floor claims the 200px default and
     // the stack then clips every panel on screen; PanelStackScrollTests
     // collects offenders, but declaring it is cheaper than discovering it

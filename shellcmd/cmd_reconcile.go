@@ -132,6 +132,16 @@ func cmdStatus(sh *Shell, args []string) (Result, error) {
 			} else {
 				lines = append(lines, "               files: unknown — there is no mount to count")
 			}
+			// A-33's report. A STATED PROPERTY, printed beside the
+			// counts rather than under `problems:` — nothing is wrong
+			// with this folder, and a permanent line in the problems
+			// list is how an operator learns to skip the problems list.
+			// Said at all because the alternative is silence, and the
+			// static leg next door refuses a rollback: one defended leg
+			// and one silent leg reads as two defended legs.
+			if note := f.RollbackWitnessNote(); note != "" {
+				lines = append(lines, "               "+note)
+			}
 			for _, p := range f.PeerStates {
 				lines = append(lines, "               "+p.PeerID+" ("+p.State+")")
 			}

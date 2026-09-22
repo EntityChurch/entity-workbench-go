@@ -1,6 +1,6 @@
 # entity-workbench-go — status
 
-_Updated: 2026-09-11 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
+_Updated: 2026-09-12 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
 > **STARTING WORK? Read
 > `docs/status/HANDOFF-2026-09-10-d-the-live-peer-implementation-plan.md`** — its §0 is the
@@ -19,7 +19,17 @@ _Updated: 2026-09-11 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > into ours / waiting-on-architecture / waiting-on-core-go, in the order to do them, with the
 > one piece of work that is deliberately sequenced behind somebody else named as such.
 >
-> **Start here:** **§35 — three defects the specification round handed back, and one of them ate
+> **Start here:** **§38 — publishing reached a surface, and "public" reached everyone except the
+> people we knew** (one act with two projections; a catch-all authorization row is shadowed by every
+> specific one), then
+> **§37 — the ranking we were about to invent was already law, and its tie-break
+> cannot be carried** (a publisher's declared preference was being discarded silently; the freshness
+> sentence now says which road answered; one specification question routed), then
+> **§36 — a site can now be read from the machine that wrote it, and the seam we
+> built for it was wrong in three of four places** (plus two live defects that fell out: the SDK
+> wrote sites where nothing reads them, and the publisher would sign a root committing to nothing),
+> then
+> **§35 — three defects the specification round handed back, and one of them ate
 > 5,000 files** (two fixed, one measured and still open), then
 > **§34 — the closure path holds, and the witness we were handed costs 1000× the
 > spec's claim** (three measurements against the revision-3 draft), then
@@ -89,7 +99,329 @@ _Updated: 2026-09-11 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
 
-## §35 NEW (2026-09-11) — three defects the specification round handed back, and one of them ate 5,000 files
+## §38 NEW (2026-09-12) — publishing reached a surface, and "public" reached everyone except the people we knew
+
+**This peer could read anybody's site and could not publish its own from anywhere a person could
+press. Fixing that took an afternoon. The hour that mattered went on the grant — and on discovering
+that the obvious way to make a site public makes it readable by every stranger in the world and by
+none of your own machines.**
+
+### 1. The act, and why it had to be one act
+
+Publishing is signing a statement: *at this moment, this peer commits to these keys, and here is my
+signature over it.* Everything else — a directory of files for a web server, a peer answering
+questions over a connection — is a projection of that one statement. Both projections were already
+implemented; only one of them had a way in, and that way was a separate command-line program that
+opens a peer's storage off disk while the peer is not running.
+
+So there is now a `publish` verb and a strip along the bottom of the Local Site panel, both over the
+same act. Ask for the static directory and you get it; ask for nothing and you get a signed root
+that nobody is allowed to read, which is the right default. The signing code has exactly one
+entrance, shared by both, and the refusal that stops it signing an empty prefix sits on that shared
+path rather than beside it — the previous version of that guard protected one caller of one, and a
+second caller would have walked straight past it.
+
+### 2. The finding: a fallback rule is not a floor
+
+Authorization here is a small table. A connecting peer is looked up by identity, then by peer
+identifier, then under a catch-all entry named `default`; making a site public means writing that
+catch-all entry.
+
+**The lookup returns at the first match. It does not combine them.**
+
+Which means: any peer that already has an entry of its own — every peer you have ever shared a
+folder with — never reaches the catch-all. Publishing a site publicly made it readable by every
+stranger who could dial the machine, and unreadable by the one other machine the operator owns.
+Which is, of course, the only machine they have to test with. The site would look broken to the
+single reader available and fine to everybody they could not ask.
+
+Measured, not reasoned: a peer that had just been granted a shared folder got a flat refusal at the
+publisher's signed root. The fix is to derive the public grant into every specific row, so being
+known to us stops being a way to be excluded. What was deliberately **not** done is propagate a
+catch-all entry somebody wrote by hand — a rule whose intent we cannot read is not one to widen on
+its author's behalf.
+
+The generalisation is worth more than the fix and it is not about this system. Any mechanism with a
+"default" arm behaves this way, and the failure always has the same shape: adding a specific case
+silently removes the general one, so the feature works for the population you cannot observe and
+fails for the one in front of you — which reads as the feature being broken rather than as the rule
+working exactly as written.
+
+### 3. Three smaller things, each of which could have shipped quietly
+
+**A peer has exactly one published root.** Publishing a narrower prefix stops committing to
+everything outside it — with a valid signature over the replacement, so a reader asking for one of
+the vanished pages gets a correctly-signed *"absent"*, which is indistinguishable from a page that
+never existed. Nobody downstream can raise this; the publisher is the only party that knows what it
+just stopped committing to, so it now says so. The test for that arithmetic immediately caught an
+edge where publishing the *whole* tree — the one move that cannot possibly lose a key — was being
+reported as taking a site dark.
+
+**A grant scoped to the site cannot verify the site.** The signed root and its signature live
+outside the prefix they commit to. Omit them and the publisher serves every page and can prove none
+of them, which the reader's software reports as *"this publisher has never published"* — an
+accusation against the publisher for something the reader's own configuration caused.
+
+**Changing who may read something is not in force until the next handshake.** Authorization is read
+when a connection is established, so the flag that opens a site also re-derives and re-establishes
+every affected connection. A verb in this codebase shipped without that step for four days, with a
+comment claiming it had been taken.
+
+### 4. What is measured, and what is only logged
+
+The gate runs four arms with no wildcard grant anywhere: a stranger verifies the site end to end; the
+same read **fails** with the grant removed (without that arm the first proves nothing); the stranger
+can read nothing else — not a file from an unshared folder, not the peer's own records of who it is
+paired with; and a peer we share a folder with can read it too, which is the arm that found the
+defect above and was confirmed by removing the fix and watching it fail.
+
+One thing is measured and deliberately **not** asserted: making a site public widens an existing,
+already-reported weakness from one named peer to anybody who can reach the machine. A stranger can
+fetch any stored blob whose content hash it already knows. What stands in the way is that hashes are
+not discoverable, and the readable-paths grant is what discloses them — which is why the paths
+boundary is an assertion and the blob probe is a log. Asserting either outcome would be wrong: one
+fails today, the other would fail on the day somebody fixes it.
+
+### 5. Three of the defects came from typing the commands
+
+Not from reading the code, and every test was green the whole time. This keeps happening, and the
+cost of the habit is about ten minutes.
+
+The status output, with nothing published yet, said *"this root is signed and in the tree"* — it was
+deciding what to print from who was authorized, and never asking whether there was anything to
+authorize. The refusal for an empty prefix ended with *"check the prefix"*, and the case an operator
+actually hits is the one where the prefix is right and the **store** is empty: the command-line shell
+defaults to an in-memory store, so naming an identity gets you the correct peer identity and a blank
+tree. That message sent someone to re-read the one thing that was correct. It now reports what the
+tree does hold, which separates *wrong prefix* from *wrong store* in one glance — the same rule that
+applies everywhere else here: when you refuse, say what was on offer.
+
+And withdrawing public access silently re-published at the constant default prefix, moving what the
+peer commits to away from the one the operator had deliberately chosen. The default is now the
+prefix already published, falling back to the constant only the first time. *A default is what to do
+when nothing is known, and after the first publish something is known.* A constant one made the
+commonest action of all — re-publish after adding a page — quietly change the shape of what the peer
+commits to, with nothing anywhere reporting it.
+
+### 6. Owed, and named rather than absorbed
+
+No graphical control for the static directory projection. No public-read equivalent for a name
+registry, which is still published as a batch from storage and is correctly a different operation.
+And the chooser from §37 — nothing a user can reach takes the live road yet — is still owed, but it
+is no longer blocked: the road now leads to a publisher who will answer.
+
+## §37 (2026-09-12) — the ranking we were about to invent was already law, and its tie-break cannot be carried
+
+**A published site is reachable through more than one road, and something has to choose. We sat down
+to design that choice, read the specification first, and found the rule already written, already
+agreed across three implementations, and implemented here in no place at all.**
+
+A transport profile carries a `priority` — lower is preferred, DNS-SRV semantics, with a documented
+default for an absent one — and the ordering rule that reads it is normative text. Our name resolver
+read that field nowhere. It walked the list of ways to reach a publisher in whatever order they were
+written down and took the first one it recognised. So a publisher who marked a preferred origin
+first-choice and a slow mirror last-choice got whichever the registry happened to list first,
+**silently**, with a perfectly good page at the end of it and nothing anywhere to indicate a
+preference had been discarded — and the symptom, a reader on the slow mirror, looks like the
+publisher's own misconfiguration.
+
+That is the third time this year the answer to *"how should we decide X"* has been *"someone already
+decided, go and read it"*, and the second time the someone was the specification rather than the
+substrate. The habit that keeps paying is cheap: **before designing a rule, spend twenty minutes
+finding out whether it exists.** The reason it keeps not happening is that a missing rule and an
+unread rule feel identical from inside the code.
+
+### 1. What a live read actually buys, said carefully
+
+The same site is now readable two ways, and the only thing that may legitimately differ between them
+is what a reader is told about **age**. That sentence is now composed in one place, from the kind of
+party that answered, and it is worth writing down what the difference is — because the tempting
+version of it is wrong.
+
+Fetching from a static origin puts a third party between the reader and the publisher. That party
+cannot forge anything: everything is signed and every byte is checked against a hash the publisher
+committed to. What it **can** do is serve an older signed snapshot and say nothing, and from the
+reader's position that is indistinguishable from a publisher who simply has not published since.
+Asking the publisher directly removes that party. Nobody is in a position to withhold a newer
+statement, because the party who would be doing the withholding is the one whose statement it is.
+
+**What it does not buy is freshness.** A publisher that has not republished in a year answers
+instantly with a year-old root and the exchange looks no different. One of the two doubts is
+removed; the other survives both roads. There is a test whose entire job is to fail if that sentence
+ever grows into the other one, because both readings are plausible English about a correctly
+verified result and nothing else in the tree can tell them apart.
+
+### 2. The tie-break is a path segment, and the two ways a profile travels have no paths ⚠ ROUTED
+
+Implementing the rule properly meant implementing all of it, and the second half does not work.
+
+Ordering is *by priority, then by the profile's name* — where the name is defined as the last segment
+of the location the profile is stored at. That is available to a peer reading another peer's profiles
+out of its own copy of their tree, which is how the substrate implements it, correctly.
+
+It is not available anywhere else. The two mechanisms the specification defines for moving profiles
+between parties both discard the location: one carries content hashes, which resolve to the record
+and not to where it lived, and the other carries the records inline — and that second one states
+outright that the order they appear in is not significant, while separately requiring consumers to
+use the ordering rule. For two profiles of equal priority, that is not an under-specified rule. It is
+an **unsatisfiable** one, in precisely the situation the mechanism exists to serve.
+
+It has not bitten anyone because it needs a publisher advertising two equal-priority routes of the
+same kind — the mirror case — and the one live federation in this ecosystem has one route per
+publisher. **Every fixture models one instance of a plural relationship, so the plural case is
+untestable and green**, which is a failure shape already in our catalogue under a different name.
+
+We ship a stable order, which is deterministic, and the surface is **told** that the real tie-break
+went missing rather than left to assume the publisher's preference was honored. The alternative —
+quietly picking our own tie-break — is the trap: deterministic for us, different for the next
+implementation, and wearing the appearance of having followed the rule. Routed as one question, with
+four possible shapes listed and none of them recommended, because the trade-offs sit in a layer that
+is not ours to weigh.
+
+### 3. A road that leads somewhere nobody can go yet ⛔ OPEN
+
+Stated plainly rather than absorbed: the ranking now reports that a publisher offers a direct route,
+and **nothing a user can reach will take it.** The browser holds an HTTP client and no peer, so every
+shipped surface still goes the static way. The choice function, the peer handle, and the three-way
+gate that proves the choice is made correctly are owed — and are deliberately sequenced behind the
+permission work, because a road that exists and leads to a publisher who authorizes nobody is worse
+than no road: it fails as *"that machine is broken"* on the reader's screen.
+
+This is the failure mode this project has a standing rule against — a capability that is complete at
+every layer with no edge connecting it to a person — and the rule is being followed by naming it
+here, not by having avoided it.
+
+### 4. The suites, and which run each number came from
+
+`make test-each`, full sweep: **eight of ten green** — the file explorer, the shell, the panel
+layer, the programs track, the publish corridor, the consume corridor and the two inspectors — with
+the two red ones being the sets already on record as belonging to an upstream capability change,
+matched name for name.
+
+**One number in that sweep was ours and is fixed.** The sweep was started before the last change
+landed, so its table includes a renderer test this work broke, and the break is worth more than the
+fix: the verification result had been given a field that only the model could fill, so **any view
+built outside the model produced a verified-looking result whose scope sentence had quietly
+degraded.** A test that had been asserting that sentence for weeks caught it in a hundredth of a
+second. The repair was to the design rather than to the test — the field now travels as an ordinary
+one alongside the sequence number and the timestamp it belongs with, and there is still exactly one
+place the sentence is composed.
+
+Two habits did the work there and both are cheap. **A count taken from one run is a lower bound**,
+so the two red suites were checked against the recorded sets by name rather than by number — and an
+earlier native run of the same suite produced a different count from the sweep's, which is the
+reason that rule exists. And **an intermittent failure that did not fire is not a passing test**:
+the one known flake in that suite stayed quiet this time, which is information about this run and
+not about the tree.
+
+## §36 (2026-09-12) — a site read from the machine that wrote it, and a seam that was wrong in three of four places
+
+**A published site is now readable two ways from one act of publishing: over HTTP against a signed
+root, and by dispatching at the peer that authored it.** Same verification stack — recomputed
+content hashes, the two-hop signature against the key carried in the peer-id, the monotonic `seq`
+floor, a CHAMP walk that fails closed. Measured over a 63-key site and a 5-node trie: **byte-identical
+page bodies, identical committed key set, identical root and `seq`**, and locators that differ
+(`entity://…` against `http://…`), which is what the freshness sentence will hang off next.
+
+That is the feature. The three things worth a reader's time are what it cost to find out.
+
+### 1. A seam with one implementation is a hypothesis, and this one was false
+
+The byte-source seam shipped the day before with a single implementation and a note saying, in as
+many words, that its transport-neutrality was untested until a second one existed. It was untested
+and it was wrong in **three of its four primitives**, all in the same way: they returned `raw
+[]byte`, because **decoding was never a check — it was HTTP's framing**, sitting above the seam
+because HTTP was the only thing below it. A dispatched read hands back an already-decoded entity;
+the wire bytes are the protocol's own framing and never reach that layer. A byte-shaped seam would
+have forced the second implementation to **re-encode an entity purely so the layer above could
+decode it again**, which is manufacturing bytes in order to check them.
+
+The interesting one is the third primitive, because moving it moved a **conformance check**. Over
+HTTP a tree leaf must serve the bound hash *pointer* and not the dereferenced entity; over a
+dispatch, returning the entity is the protocol behaving correctly. A check that fires on conformant
+behaviour on another transport is not a stricter check, it is a **false refusal** — a failure mode
+this project has a catalogue entry for, because it reads as rigour and leaves no wrong answer for
+anyone to catch. The check moved down to the transport that carries the obligation, and the seam now
+answers the question both callers were actually asking: *what hash does this publisher bind here?*
+
+Nothing that decides admissibility moved. The verification file now imports no encoding package at
+all, which is the one mechanical check a reader can run on whether the seam holds. **The existing
+suites were the net and not one test file was edited to accommodate the change**, including the
+frozen cross-implementation fixture.
+
+### 2. The SDK wrote sites where nothing in this repository reads them ✅ FIXED
+
+Pointing our own writer at our own reader for the first time found that they disagreed about where a
+site lives. The SDK — the surface an application developer reaches for, and what the site-seeding
+tool calls — used a placement the site convention **drops by name** as a layer violation; both
+resolvers here, the sibling implementation and the live corpus use the current one. So a site
+authored through the SDK was invisible to every surface in this program that renders a site.
+
+**Nothing failed, and the reason generalises.** Each half round-trips through its own copy of the
+constant, so both agreed with themselves; the remote resolver's only end-to-end exercise is a frozen
+fixture from the other implementation, which uses the correct path and therefore proved the *reader*
+right while saying nothing about the writer. **A round trip through your own constant is not a check
+on the constant.**
+
+Worse, the divergence had already been *noticed* — written into a test's comment as a note about how
+to scope a future joint comparison, rather than as a question about which of the two was conformant.
+A paragraph explaining a difference closes the question permanently, where a `TODO` would have
+invited the work. There is one definition now, at the lower layer, with the upper one an alias of
+it; the gate asserts both packages against **spelled-out literals**, because composing the expected
+path from the shared constant could not fail on the segment however wrong the segment was — which is
+precisely the vacuity that hid this. The seeding tool's printed operator instructions named the old
+prefix too, which is its own recurring lesson: when you move something, grep what the *program*
+prints, not only what the docs say.
+
+### 3. The publisher would sign and emit a root committing to nothing ✅ FIXED
+
+Found by a *failing* run of the new gate, in its output rather than its assertions: `— 0 paths`,
+immediately followed by a signed root. The publisher has an explicit refusal for an empty prefix and
+it **cannot fire** — building a trie over a prefix with no bindings returns the hash of the canonical
+*empty* node, which is a perfectly good non-zero hash. So a mistyped prefix emitted a well-formed,
+correctly-signed, entirely empty origin.
+
+The failure mode is the one this corridor works hardest to avoid: an empty root answers *absent* to
+every key, with a valid signature over it, which is indistinguishable from a large site nobody asked
+the right question of. The publisher is the one party that can tell those apart for free, because it
+knows it bound nothing. The refusal is now on the binding count, and the gate carries a control arm
+asserting the substrate fact the old guard was wrong about — without it the test would pass against a
+build where nothing was ever fixed.
+
+### 4. Two decisions, recorded because they will be re-litigated otherwise
+
+**A peer that has never published is its own state, and this path refuses it by name.** It is not
+unreachable — it answered — and not withholding, because there is nothing to withhold. Those three
+send an operator to three different places and only the middle one is the publisher misbehaving.
+Admitting it here would mean every check hanging off a signed root that does not exist, i.e.
+structure coming from whatever the far side says it has, which is the exact inversion the design
+exists to prevent. Reading an unpublished peer is a different operation; it wants a different name,
+not this one made lenient.
+
+**A grant for a published site is not the site prefix.** The signed root and its signature live
+outside the prefix they commit to, so a grant scoped to the site alone yields a peer that serves
+every page and **cannot be verified at all** — and the failure does not present as a permission
+error. It presents as *"this publisher has never published"*: the other machine's fault, on your
+screen, with the grant looking complete. Measured as its own arm, and it is the thing the public
+serving grant would otherwise have got wrong.
+
+### 5. One line of honest text made a button unreachable ⚠ OPEN
+
+A delivered file carries no quantity a receiver can order deliveries by, so a stale one arriving
+after a newer one is applied. That is now **said out loud** on the status surfaces rather than left
+silent — the publish side next door does refuse a rollback, and a product with one defended path and
+one silent path reads as a product with two defended paths.
+
+Saying it cost a line, and the line broke a test: one extra row of text above the folders list
+pushed a *Remount* button outside its clipping region. The sentence moved to the section it actually
+belongs to — it describes the delivery mechanism, not any one folder — which fixed the symptom.
+**The finding underneath is not fixed and is recorded here rather than quietly absorbed:** of the
+five lists in that panel, the two with no height bound are the two that grow with what an operator
+actually does. They were one line of text away from an unreachable control, and adding the bound is
+not a one-line edit, because a bounded list becomes its own clipping region and the reachability
+check has to learn the difference between *below the fold of something scrollable* and *unreachable*.
+
+## §35 (2026-09-11) — three defects the specification round handed back, and one of them ate 5,000 files
 
 **The specification seat ruled all six of our open asks in our favour and named three consequences as
 ours to fix.** All three are shipped or measured here. They are unrelated to each other except in

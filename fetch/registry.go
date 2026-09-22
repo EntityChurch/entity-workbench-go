@@ -806,13 +806,9 @@ func (r *Registry) Resolve(ctx context.Context, name string) (NameResolution, er
 		return NameResolution{}, err
 	}
 	rel := types.PeerIssuedByNamePath(normalized)
-	raw, url, err := r.src.Leaf(ctx, rel)
+	bindingHash, url, err := r.src.Leaf(ctx, rel)
 	if err != nil {
 		return NameResolution{}, fmt.Errorf("%w: %s: %w", ErrNameNotFound, url, err)
-	}
-	bindingHash, err := crackPointer(raw)
-	if err != nil {
-		return NameResolution{}, fmt.Errorf("%s: %w", url, err)
 	}
 	res, err := r.verify(ctx, name, normalized, bindingHash, SourcePointer, nil)
 	res.PointerURL = url
@@ -1120,86 +1116,43 @@ type SkippedTransport struct {
 // target's peer-id. That is AP21 in one line: a consumer that derives a
 // layout works against exactly one publisher, and against every other
 // one it produces a 404 that reads as a withholding origin.
+//
+// **It is the STATIC half of [Registry.TransportsFor], kept because
+// `entity-fetch` links no peer and static is the only road it has.** It
+// used to be the whole of the transport step and to walk the binding in
+// array order, which is not the selection rule — see transports.go for
+// what §6.5.1a D1 actually says and for the tie-break that does not
+// survive a registry binding. A caller that can also dial should ask
+// `TransportsFor` and choose, rather than asking this and never learning
+// that a live profile was on offer.
 func (r *Registry) OriginFor(ctx context.Context, res NameResolution, origin string) (Origin, error) {
-	if origin == "" {
-		origin = OriginRoot(r.Layout.Origin)
-	}
-	out := Origin{}
-	for _, ref := range res.Binding.Transports {
-		prof, err := r.profileOf(ctx, ref)
-		if err != nil {
-			out.Skipped = append(out.Skipped, SkippedTransport{Hash: ref.Hash, Reason: err.Error()})
-			continue
-		}
-		// The registry signed a binding to peer X carrying a profile
-		// that says peer Y. Refuse: the profile's peer-id is the key the
-		// target's content signature gets checked against, so following
-		// it would verify the wrong publisher perfectly.
-		if prof.PeerID != "" && prof.PeerID != res.Binding.TargetPeerID {
-			out.Skipped = append(out.Skipped, SkippedTransport{Hash: ref.Hash,
-				Reason: fmt.Sprintf("profile is for peer %s, binding targets %s",
-					prof.PeerID, res.Binding.TargetPeerID)})
-			continue
-		}
-		if prof.PeerID == "" {
-			// A bare endpoint carries no peer-id; the binding's target is
-			// the only identity in play, and it is the registry's signed
-			// assertion. Adopt it explicitly rather than letting Layout
-			// fail on an empty one.
-			prof.PeerID = res.Binding.TargetPeerID
-		}
-		at := origin
-		if abs, ok := absoluteOrigin(prof); ok {
-			// A profile with absolute URL prefixes carries its own host
-			// and does not need ours (§6.5.3 lets the three prefixes sit
-			// on entirely separate origins).
-			at = abs
-		}
-		layout, err := LayoutFromProfile(at, prof)
-		if err != nil {
-			out.Skipped = append(out.Skipped, SkippedTransport{Hash: ref.Hash, Reason: err.Error()})
-			continue
-		}
-		out.Layout, out.Profile, out.ProfileHash, out.Ref = layout, prof, ref.Hash, ref
+	opts := r.TransportsFor(ctx, res, origin)
+	out := Origin{Skipped: opts.Skipped}
+	for _, c := range opts.Static() {
+		out.Layout, out.Profile, out.ProfileHash, out.Ref = c.Layout, c.Profile, c.Hash, c.Ref
 		return out, nil
+	}
+	// Naming the live candidates in the refusal is the point of the
+	// change: before it they were counted as decode failures, so a peer
+	// that said *dial me* read as a peer whose binding was malformed, and
+	// an operator was sent to the registry rather than to a consumer that
+	// cannot dial.
+	if live := opts.Live(); len(live) > 0 {
+		return out, fmt.Errorf("the binding for %q commits no http-poll transport, but it does "+
+			"commit %d live one(s) (%s) that this consumer cannot use — a static reader has no "+
+			"way to dial a peer",
+			res.Normalized, len(live), liveSummary(live))
 	}
 	return out, fmt.Errorf("no usable http-poll transport among the %d the binding for %q commits to (%s)",
 		len(res.Binding.Transports), res.Normalized, skippedSummary(out.Skipped))
 }
 
-// profileOf turns one transports entry into a profile, fetching it from
-// the registry when the entry is a bare hash.
-//
-// The by-hash branch reads from the **registry's** content store, which
-// is a real limitation worth naming rather than hiding: nothing in §3
-// says the registry holds the entity a binding's hash names, so a
-// by-hash transport can dead-end at a registry that published the
-// reference and not the referent. The inline shape has no such hole,
-// which is one of the arguments in the divergence packet.
-func (r *Registry) profileOf(ctx context.Context, ref TransportRef) (types.HTTPPollProfileData, error) {
-	switch ref.Kind {
-	case TransportInline:
-		return ref.Profile, nil
-	case TransportByHash:
-		ent, err := r.Blob(ctx, ref.Hash)
-		if err != nil {
-			return types.HTTPPollProfileData{}, fmt.Errorf(
-				"the binding names transport-profile %s and the registry does not serve it: %w", ref.Hash, err)
-		}
-		return httpPollProfile(ent)
-	default:
-		return types.HTTPPollProfileData{}, errors.New(ref.Note)
+func liveSummary(live []TransportCandidate) string {
+	parts := make([]string, len(live))
+	for i, c := range live {
+		parts[i] = fmt.Sprintf("%s at %s", c.Type, c.Address)
 	}
-}
-
-// httpPollProfile decodes a transport-profile entity, insisting it is
-// the http-poll shape this consumer can actually drive.
-func httpPollProfile(ent entity.Entity) (types.HTTPPollProfileData, error) {
-	if ent.Type != types.TypePeerTransportHTTPPoll {
-		return types.HTTPPollProfileData{}, fmt.Errorf("transport is type %q, not %s",
-			ent.Type, types.TypePeerTransportHTTPPoll)
-	}
-	return types.HTTPPollProfileDataFromEntity(ent)
+	return strings.Join(parts, ", ")
 }
 
 // absoluteOrigin reports the origin a profile's own URL prefixes name,

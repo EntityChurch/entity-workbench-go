@@ -404,6 +404,14 @@ func init() {
 		Handler: cmdAccess,
 	})
 	r.Register(Command{
+		Name:  "publish",
+		Usage: "publish [-prefix P | -site ID] [-out DIR -origin URL] [-public|-private] | publish status",
+		Help: "Sign a root over this peer's sites and choose who may read it. " +
+			"With -public, any peer that can dial this one may read and verify it; " +
+			"with -out, also emit a static directory for a web server.",
+		Handler: cmdPublish,
+	})
+	r.Register(Command{
 		Name:    "sync",
 		Usage:   "sync <peer> <root> [-as <local-root>]",
 		Help:    "Receive a folder another peer has mounted, into a local mount of the same name.",

@@ -49,7 +49,29 @@ type SignedRoot struct {
 	// ClosureSize is how many distinct hashes the §6.5.3 publish-side
 	// closure obligation contributed to the emitted content set (trie
 	// root + interior nodes + leaf-bound hashes).
+	//
+	// Static projection only. A live read pulls the closure a node at a
+	// time over `system/content:get`, so nothing collects it publisher-side
+	// and this stays zero — which is a real difference between the two
+	// projections rather than a gap in the reporting.
 	ClosureSize int
+
+	// Bindings is how many tree bindings under the prefix the root
+	// commits to. It is the number [prepareMint] refuses on when it is
+	// zero, carried out so a surface prints the fact rather than a
+	// proxy for it.
+	Bindings int
+
+	// PriorPrefix is what this peer's PREVIOUS published root committed
+	// to, or "" when this is the first publish.
+	//
+	// Carried because a peer has exactly ONE published root, so
+	// publishing a narrower prefix silently stops committing to
+	// everything outside it. That is a site going dark with a
+	// correctly-signed root over the top of it — the AP97 failure one
+	// move along — and the publisher is the only party who can see it
+	// coming. Every surface that reports a publish compares the two.
+	PriorPrefix string
 }
 
 // mintSignedRoot builds the trie over prefix, signs a published-root
@@ -91,11 +113,19 @@ func mintSignedRoot(ap *entitysdk.AppPeer, prefix string, at time.Time) (SignedR
 	if err != nil {
 		return SignedRoot{}, fmt.Errorf("publish: build trie for prefix %q: %w", prefix, err)
 	}
+	// NOT the empty-prefix guard, however much it reads like one. A trie
+	// over a prefix with no bindings has the hash of the canonical empty
+	// CHAMP node — non-zero, valid, and identical under every identity —
+	// so this arm has never fired for that case and cannot. It catches a
+	// build that returned nothing at all, which would be a kernel fault.
+	// The real refusal is in [Publish], on the binding count; see the
+	// comment there for what an empty publish does to a consumer.
 	if trieRoot.IsZero() {
-		return SignedRoot{}, fmt.Errorf("publish: prefix %q has no bindings, so there is no root to sign", prefix)
+		return SignedRoot{}, fmt.Errorf("publish: BuildTrieForPrefix returned a zero root for prefix %q "+
+			"with no error — there is nothing to sign and nothing to explain it", prefix)
 	}
 
-	prevSeq, prevHash := priorPublishedRoot(cs, li)
+	prev, prevHash := priorPublishedRoot(cs, li)
 
 	data := types.PublishedRootData{
 		PeerID:   peerID,
@@ -104,7 +134,7 @@ func mintSignedRoot(ap *entitysdk.AppPeer, prefix string, at time.Time) (SignedR
 		// absolute paths as `prefix + relative_key`, and "" would
 		// concatenate into a wrong path rather than fail.
 		Prefix:      publishedPrefix(prefix),
-		Seq:         prevSeq + 1,
+		Seq:         prev.Seq + 1,
 		PublishedAt: uint64(at.UnixMilli()),
 		Predecessor: prevHash,
 	}
@@ -154,35 +184,37 @@ func mintSignedRoot(ap *entitysdk.AppPeer, prefix string, at time.Time) (SignedR
 	}
 
 	return SignedRoot{
-		Root:      rootEnt,
-		Signature: sigEnt,
-		Data:      data,
-		TrieRoot:  trieRoot,
+		Root:        rootEnt,
+		Signature:   sigEnt,
+		Data:        data,
+		TrieRoot:    trieRoot,
+		PriorPrefix: prev.Prefix,
 	}, nil
 }
 
 // priorPublishedRoot reads the published-root this peer already has
-// bound, returning its seq and content hash. Both zero-valued when
-// there is none (the first publish) or when what is bound does not
-// decode — a corrupt predecessor is not a reason to refuse to publish,
-// but it IS a reason not to claim a chain we cannot substantiate.
-func priorPublishedRoot(cs store.ContentStore, li store.LocationIndex) (uint64, *hash.Hash) {
+// bound, returning what it committed to and its content hash. Both
+// zero-valued when there is none (the first publish) or when what is
+// bound does not decode — a corrupt predecessor is not a reason to
+// refuse to publish, but it IS a reason not to claim a chain we cannot
+// substantiate.
+func priorPublishedRoot(cs store.ContentStore, li store.LocationIndex) (types.PublishedRootData, *hash.Hash) {
 	h, ok := li.Get(types.PublishedRootStoragePath())
 	if !ok {
-		return 0, nil
+		return types.PublishedRootData{}, nil
 	}
 	ent, ok := cs.Get(h)
 	if !ok {
 		fmt.Printf("  warn: prior published-root %s is bound but not stored; seq restarts\n", h)
-		return 0, nil
+		return types.PublishedRootData{}, nil
 	}
 	prev, err := types.PublishedRootDataFromEntity(ent)
 	if err != nil {
 		fmt.Printf("  warn: prior published-root %s does not decode (%v); seq restarts\n", h, err)
-		return 0, nil
+		return types.PublishedRootData{}, nil
 	}
 	prevHash := ent.ContentHash
-	return prev.Seq, &prevHash
+	return prev, &prevHash
 }
 
 // publishedPrefix normalizes to the §3.3a form: "/" is the universal

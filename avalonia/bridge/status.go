@@ -154,6 +154,23 @@ type statusFolderDTO struct {
 	ReceiveFrom []string `json:"receiveFrom"`
 	SyncingWith []string `json:"syncingWith"`
 
+	// RollbackWitness is `A-33`'s report: how this folder's INCOMING leg
+	// is defended against a stale delivery arriving after a newer one.
+	// Today it is `not_supported` for every folder with an incoming leg,
+	// and empty for one with none.
+	//
+	// **Declared here because an undeclared field is dropped in silence
+	// (AP49), and this is the worst possible field to drop**: the whole
+	// obligation is that a leg carrying no witness must SAY so, and a
+	// dropped field renders as "nothing to report", which is exactly the
+	// reading the clause exists to prevent.
+	RollbackWitness string `json:"rollbackWitness"`
+	// RollbackWitnessNote is the operator sentence, from the one writer
+	// in `shellcmd`. Carried rather than re-worded here for `Problems`'
+	// reason: the shell, the pass and this panel must not describe one
+	// property three ways.
+	RollbackWitnessNote string `json:"rollbackWitnessNote"`
+
 	// Problems is `FolderStatus.problems()` verbatim — the SAME sentences
 	// the shell prints and a reconcile pass produces.
 	//
@@ -378,6 +395,9 @@ func statusOutcomeToDTO(localPeerID, localAlias string, ws *shellcmd.ShellWorksp
 			FilesObservable:  f.FilesObservable,
 			ReceiveFrom:      nz(f.ReceiveFrom),
 			SyncingWith:      nz(f.SyncingWith),
+
+			RollbackWitness:     f.RollbackWitness,
+			RollbackWitnessNote: f.RollbackWitnessNote(),
 			// One writer for the sentence (shellcmd/status.go), shared by
 			// the shell, the pass and this panel, so the three cannot
 			// describe the same fault differently.

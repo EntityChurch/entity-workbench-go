@@ -49,10 +49,14 @@ namespace EntityAvalonia.Panels;
 // MarkdownFilesPanel.RowsPathSetMatches.
 public sealed class SiteViewPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
-    // Chrome floor: sidebar of pages beside a page body.
+    // Chrome floor: sidebar of pages beside a page body, plus the publish
+    // bar docked under both.
     // Declared because the 200px stack default clipped this panel the
-    // moment a second one was open — see IPanelPreferredHeight.
-    public double PreferredSlotMinHeight => 460;
+    // moment a second one was open — see IPanelPreferredHeight. Raised
+    // from 460 when the publish bar landed: a floor that does not cover a
+    // panel's own fixed chrome is AP64 exactly, and the publish bar is
+    // three lines that are always there.
+    public double PreferredSlotMinHeight => 540;
     private readonly long _peerHandle;
     private readonly long _handle;
     private readonly string _siteID;
@@ -72,6 +76,26 @@ public sealed class SiteViewPanel : UserControl, IDisposable, IPanelPreferredHei
     private readonly ScrollViewer _bodyScroll = null!;
     private readonly StackPanel _bodyStack = null!;
     private readonly TextBlock _placeholder = null!;
+
+    // --- The publish bar --------------------------------------------------
+    //
+    // This panel renders a site THIS peer wrote. Until 2026-09-12 there was
+    // nowhere in the application to publish one: `entity-publish` is a
+    // separate binary that opens a store off disk, so the act the whole
+    // consume side exists to read had no verb and no pixel (D23).
+    //
+    // It is docked rather than scrolled, because the disclosure line — who
+    // may read this — must be on screen whenever the panel is. AP84 is the
+    // precedent and it is the expensive one: the reconciler's correct
+    // diagnosis went to stderr and an operator lost a morning, because a
+    // fact nobody can see is not a surface.
+    private readonly TextBlock _publishLine = null!;
+    private readonly TextBlock _publishAccess = null!;
+    private readonly TextBlock _publishProblems = null!;
+    private readonly Button _publishButton = null!;
+    private readonly Button _publicButton = null!;
+    private bool _publishBusy;
+    private bool _publicNow;
 
     // P6 — explicit GCHandle root for the wake delegate. The field
     // alone isn't enough; GCHandle.Alloc is belt-and-suspenders.
@@ -219,14 +243,82 @@ public sealed class SiteViewPanel : UserControl, IDisposable, IPanelPreferredHei
         bodyRow.Children.Add(sidebarScroll);
         bodyRow.Children.Add(mainColumn);
 
+        // --- Publish bar (persistent, docked) ----
+        _publishLine = new TextBlock
+        {
+            Text = "(reading what is published…)",
+            FontSize = 12,
+            Opacity = 0.75,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _publishAccess = new TextBlock
+        {
+            Text = "",
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        _publishProblems = new TextBlock
+        {
+            Text = "",
+            FontSize = 11,
+            Foreground = Brushes.Goldenrod,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 2, 0, 0),
+            IsVisible = false,
+            // Bounded, because AP64's other half is "never put an unbounded
+            // block in a docked region". These are honest sentences of
+            // arbitrary length, so an under-estimate must degrade to
+            // clipping the text and not to pushing the buttons off screen.
+            MaxHeight = 72,
+        };
+        _publishButton = new Button
+        {
+            Content = "Publish",
+            FontSize = 11,
+            Padding = new Thickness(8, 2),
+            Margin = new Thickness(8, 0, 0, 0),
+        };
+        ToolTip.SetTip(_publishButton,
+            "Sign a new root over this peer's sites. Does not change who may read it.");
+        _publishButton.Click += (_, _) => _ = PublishAsync(0);
+        _publicButton = new Button
+        {
+            Content = "Make public",
+            FontSize = 11,
+            Padding = new Thickness(8, 2),
+            Margin = new Thickness(6, 0, 0, 0),
+        };
+        _publicButton.Click += (_, _) => _ = PublishAsync(_publicNow ? -1 : 1);
+
+        var publishTopRow = new DockPanel { LastChildFill = true };
+        var publishButtons = new StackPanel { Orientation = Orientation.Horizontal };
+        publishButtons.Children.Add(_publishButton);
+        publishButtons.Children.Add(_publicButton);
+        DockPanel.SetDock(publishButtons, Dock.Right);
+        publishTopRow.Children.Add(publishButtons);
+        publishTopRow.Children.Add(_publishLine);
+
+        var publishBar = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Margin = new Thickness(10, 6),
+        };
+        publishBar.Children.Add(publishTopRow);
+        publishBar.Children.Add(_publishAccess);
+        publishBar.Children.Add(_publishProblems);
+
         var root = new Grid
         {
-            RowDefinitions = new RowDefinitions("Auto,*"),
+            RowDefinitions = new RowDefinitions("Auto,*,Auto"),
         };
         Grid.SetRow(_navBar, 0);
         Grid.SetRow(bodyRow, 1);
+        Grid.SetRow(publishBar, 2);
         root.Children.Add(_navBar);
         root.Children.Add(bodyRow);
+        root.Children.Add(publishBar);
         Content = root;
 
         // P6 — pin the wake delegate.
@@ -238,6 +330,169 @@ public sealed class SiteViewPanel : UserControl, IDisposable, IPanelPreferredHei
 
         // First render — synchronous; subsequent renders are debounced.
         RerenderFromBridge();
+        RefreshPublish();
+    }
+
+    // --- Publishing -------------------------------------------------------
+
+    // RefreshPublish READS. It mints nothing, writes nothing, dials
+    // nothing, so it is safe here and safe on a wake — which
+    // `PublishAsync` is not, and that is the reason they are two exports
+    // rather than one with a flag (`avalonia/bridge/publish.go`).
+    internal void RefreshPublish()
+    {
+        if (_handle < 0) return;
+        ApplyPublish(Bridge.TakeString(Bridge.PublishRender(_peerHandle)), "publish render");
+    }
+
+    // PublishAsync signs a new root, off the UI thread.
+    //
+    // `makePublic` is 1 / -1 / 0 — write the public grant, remove it, or
+    // leave it exactly as it is. The plain Publish button passes 0 on
+    // purpose: picking up a new page must not restate a decision about
+    // who may read the site, and a bool parameter here would make every
+    // re-publish do exactly that.
+    //
+    // Thread-pool worker for AP31's reason: `PublishNow` is a synchronous
+    // cgo export that walks the tree and may re-handshake every declared
+    // peer.
+    internal async System.Threading.Tasks.Task PublishAsync(int makePublic)
+    {
+        if (_handle < 0 || _publishBusy) return;
+        _publishBusy = true;
+        _publishButton.IsEnabled = false;
+        _publicButton.IsEnabled = false;
+        _publishLine.Text = makePublic switch
+        {
+            > 0 => "publishing, and opening it to every peer that can dial this one…",
+            < 0 => "publishing, and withdrawing public access…",
+            _ => "signing a new root over this peer's sites…",
+        };
+        PanelLog.Write("site-view", $"Publish makePublic={makePublic}");
+        try
+        {
+            var reply = await System.Threading.Tasks.Task.Run(() =>
+                Bridge.TakeString(Bridge.PublishNow(_peerHandle, makePublic)));
+            ApplyPublish(reply, "publish");
+        }
+        finally
+        {
+            _publishBusy = false;
+            _publishButton.IsEnabled = true;
+            _publicButton.IsEnabled = true;
+        }
+    }
+
+    // PublishForTests is the driver seam. Tests await this rather than
+    // synthesizing a click: `.GetAwaiter().GetResult()` on the test thread
+    // deadlocks the headless dispatcher, because the continuation resumes
+    // on the UI thread.
+    internal System.Threading.Tasks.Task PublishForTests(int makePublic) => PublishAsync(makePublic);
+
+    internal string PublishLineForTests => _publishLine?.Text ?? "";
+    internal string PublishAccessForTests => _publishAccess?.Text ?? "";
+    internal string PublishProblemsForTests =>
+        _publishProblems is { IsVisible: true } ? _publishProblems.Text ?? "" : "";
+
+    private void ApplyPublish(string reply, string what)
+    {
+        PublishDto? dto = null;
+        string err = "";
+        try
+        {
+            dto = JsonSerializer.Deserialize<PublishDto>(reply, PublishJsonOpts);
+        }
+        catch (JsonException ex)
+        {
+            err = ex.Message;
+        }
+        if (dto == null || dto.Error.Length > 0)
+        {
+            _publishLine.Text = $"{what} failed: " + (dto?.Error is { Length: > 0 } e ? e : err);
+            _publishLine.Foreground = Brushes.IndianRed;
+            return;
+        }
+        _publishLine.Foreground = Brushes.Gainsboro;
+        _publishLine.Opacity = 0.9;
+        _publishLine.Text = dto.RootHash.Length == 0
+            ? "this peer has published nothing"
+            : (dto.Minted
+                ? $"published “{dto.Prefix}” — {dto.Bindings} keys, seq {dto.Seq}"
+                : $"published “{dto.Prefix}” — seq {dto.Seq}, {dto.Bindings} keys bound now");
+
+        // The disclosure line. Goldenrod is not decoration: "anyone may
+        // read this" is the single fact on this panel an operator can be
+        // wrong about in a direction they cannot undo.
+        _publicNow = dto.PublicPresent && dto.PublicOurs;
+        _publicButton.Content = _publicNow ? "Make private" : "Make public";
+        if (_publicNow)
+        {
+            _publishAccess.Text =
+                $"PUBLIC — any peer that can dial this one may read “{dto.PublicPrefix}” and verify it";
+            _publishAccess.Foreground = Brushes.Goldenrod;
+        }
+        else if (dto.PublicPresent)
+        {
+            // A hand-written `default` row. Named and never removed by
+            // this panel: replacing it would delete authorization somebody
+            // wrote deliberately, and the policy write REPLACES rather
+            // than merges, so the friendly action is the destructive one.
+            _publishAccess.Text = "a `default` policy row exists that this app did not write: " + dto.PublicSummary;
+            _publishAccess.Foreground = Brushes.Goldenrod;
+            _publicButton.IsEnabled = false;
+        }
+        else
+        {
+            _publishAccess.Text = "private — no peer is authorized to read this site unless you have shared with it by name";
+            _publishAccess.Foreground = Brushes.Gainsboro;
+        }
+
+        // The problems, rendered HERE rather than only in the run log.
+        // This is the panel's AP84 obligation: the reconciler's version of
+        // this sentence went to stderr and cost an operator a morning.
+        if (dto.Problems is { Count: > 0 })
+        {
+            _publishProblems.Text = string.Join("\n", dto.Problems.ConvertAll(p => "• " + p));
+            _publishProblems.IsVisible = true;
+        }
+        else
+        {
+            _publishProblems.Text = "";
+            _publishProblems.IsVisible = false;
+        }
+    }
+
+    private static readonly JsonSerializerOptions PublishJsonOpts = new()
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+
+    // Every field the Go DTO carries is declared here. AP49: an
+    // undeclared field is dropped by System.Text.Json in total silence,
+    // and on this surface the dropped ones would be `publicPresent` and
+    // `problems` — i.e. the whole panel would render "published, nothing
+    // wrong, private" for a site open to the world.
+    private sealed class PublishDto
+    {
+        [JsonPropertyName("peerId")] public string PeerId { get; set; } = "";
+        [JsonPropertyName("prefix")] public string Prefix { get; set; } = "";
+        [JsonPropertyName("seq")] public ulong Seq { get; set; }
+        [JsonPropertyName("rootHash")] public string RootHash { get; set; } = "";
+        [JsonPropertyName("bindings")] public int Bindings { get; set; }
+        [JsonPropertyName("minted")] public bool Minted { get; set; }
+        [JsonPropertyName("narrowedFrom")] public string NarrowedFrom { get; set; } = "";
+        [JsonPropertyName("publicPresent")] public bool PublicPresent { get; set; }
+        [JsonPropertyName("publicOurs")] public bool PublicOurs { get; set; }
+        [JsonPropertyName("publicPrefix")] public string PublicPrefix { get; set; } = "";
+        [JsonPropertyName("publicStale")] public bool PublicStale { get; set; }
+        [JsonPropertyName("publicSummary")] public string PublicSummary { get; set; } = "";
+        [JsonPropertyName("listening")] public string Listening { get; set; } = "";
+        [JsonPropertyName("advertised")] public List<string>? Advertised { get; set; }
+        [JsonPropertyName("staticDir")] public string StaticDir { get; set; } = "";
+        [JsonPropertyName("staticOrigin")] public string StaticOrigin { get; set; } = "";
+        [JsonPropertyName("staticPaths")] public int StaticPaths { get; set; }
+        [JsonPropertyName("problems")] public List<string>? Problems { get; set; }
+        [JsonPropertyName("error")] public string Error { get; set; } = "";
     }
 
     public void Dispose()

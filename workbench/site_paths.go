@@ -1,14 +1,28 @@
 package workbench
 
-// Site tree-path helpers. Mirrors egui-rust src/content_site/paths.rs.
+import "entity-workbench-go/entitysdk"
+
+// Site tree-path helpers. Mirrors entity-browser-rust's
+// src/content_site/paths.rs.
 //
 // SITE convention v0.5 (APP-CONVENTION-SEMANTIC-CONTENT-SITE):
 // a site is a free subgraph at a bare /{peer}/sites/{siteID}/ prefix —
 // NOT under content/sites (that namespace belongs to the CONTENT
 // extension; v0.5 §2 erratum closed that layer violation).
+//
+// **These read; `entitysdk`'s equivalents WRITE, and until 2026-09-12
+// the two named different paths.** This file was right and the SDK was
+// on the retired v0.4.2 placement, so a site authored through the SDK
+// was unreadable by either resolver in this package — with every suite
+// green, because each half round-trips through its own constant. The
+// definition is now single and lives at the lower layer; see
+// [entitysdk.SitesSubpath] for what it cost and why it was invisible.
 
 // SitesSubpath is the publisher convention's first segment under a peer.
-const SitesSubpath = "sites"
+//
+// One definition, aliased rather than restated: two constants holding
+// one convention is what produced the divergence above.
+const SitesSubpath = entitysdk.SitesSubpath
 
 // SitesPrefix returns the trailing-slash prefix that covers every site
 // under a peer. Subscribing here covers any configured landing site

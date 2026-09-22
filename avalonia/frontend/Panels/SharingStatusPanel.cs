@@ -130,6 +130,11 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
 
     private readonly TextBlock _devicesEmpty;
     private readonly TextBlock _foldersEmpty;
+    // A-33: one sentence for the whole section. Hidden when no folder
+    // on this peer has an incoming leg, because a peer that only
+    // publishes has no leg to describe and an answer about one it does
+    // not have is a different kind of wrong.
+    private readonly TextBlock _rollbackWitness;
     private readonly TextBlock _problemsEmpty;
     private readonly Control _actionsSection;
 
@@ -192,12 +197,22 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
     internal void SeedFolderForTests(string id, string label, bool local, string origin,
         string root, string localRoot,
         bool mounted, bool syncing, bool accepted, string path,
-        int filesPresent, int filesIngested, bool filesObservable)
+        int filesPresent, int filesIngested, bool filesObservable,
+        string rollbackWitnessNote = "")
     {
         _folders.Add(new FolderVm(id, label, local, origin, root, localRoot, path, mounted,
             syncing, accepted, filesPresent, filesIngested, filesObservable, "",
-            new List<FolderPeerVm>()));
+            rollbackWitnessNote, new List<FolderPeerVm>()));
         _foldersEmpty.IsVisible = false;
+        // The seed drives the SAME section-level line the render path
+        // fills. A helper that populated the list and not the line would
+        // make the panel's own test unable to reach the thing under test
+        // (AP70's shape at the level of a helper).
+        if (!string.IsNullOrEmpty(rollbackWitnessNote))
+        {
+            _rollbackWitness.Text = rollbackWitnessNote;
+            _rollbackWitness.IsVisible = true;
+        }
     }
 
     // A conflict row without a second peer and a real collision.
@@ -254,6 +269,8 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
             + "re-establishes the relationship by itself at every start.");
         _foldersEmpty = Hint("No folders declared yet. Use Shared Folders to offer one, "
             + "or to accept one that has been offered to you.");
+        _rollbackWitness = Hint("");
+        _rollbackWitness.IsVisible = false;
         _problemsEmpty = Hint("Nothing is wrong that this peer can see.");
         _conflictsEmpty = Hint("No file here has had one of your edits replaced by a "
             + "change from someone else.");
@@ -446,6 +463,29 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         stack.Children.Add(_deliveryLine);
         stack.Children.Add(_catchUpLine);
         stack.Children.Add(_recordingLine);
+        // A-33's report — a property of the DELIVERY MECHANISM, which is
+        // what this section is about, and not of any one folder. Every
+        // folder that receives has the identical answer, so a per-row line
+        // would say one sentence N times.
+        //
+        // It started in the Folders section and moved here, and the move is
+        // the interesting part: **one extra line above that list pushed the
+        // Remount button outside a clipping ancestor** (measured 2026-09-12,
+        // `Remount_Is_Offered_Only_When_The_Loop_Is_Stuck_On_A_Missing_Mount`
+        // went red). The Folders and Peers lists are the only two here with
+        // no `MaxHeight`, and they are the two that grow with what an
+        // operator actually does — AP64's other half, live, and one line of
+        // honest text away from an operator meeting it. Bounding them is
+        // the fix and it is NOT done here: a `MaxHeight` makes the list its
+        // own clipping ancestor, which that test's reachability predicate
+        // reads as unreachable, so it needs a scroll-aware predicate and a
+        // layout pass rather than a one-line edit. Recorded in STATUS.
+        //
+        // Gray, and not in Problems: nothing here is WRONG. Said at all
+        // because the static publish leg DOES refuse a rollback, and a
+        // product with one defended leg and one silent leg reads as a
+        // product with two defended legs.
+        stack.Children.Add(_rollbackWitness);
 
         var row = new StackPanel
         {
@@ -857,9 +897,21 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
             }
             _folders.Add(new FolderVm(f.Id, f.Label, f.Local, f.Origin, f.Root, f.LocalRoot,
                 f.Path, f.Mounted, f.Syncing, f.Accepted, f.FilesPresent, f.FilesIngested,
-                f.FilesObservable, f.Note, peers));
+                f.FilesObservable, f.Note, f.RollbackWitnessNote, peers));
         }
         _foldersEmpty.IsVisible = _folders.Count == 0;
+        // The section-level witness line. Taken from whichever row carries
+        // it rather than composed here — one writer for the sentence, in
+        // `shellcmd.FolderStatus.RollbackWitnessNote`, shared with the shell
+        // and the reconcile pass so the three cannot describe one property
+        // three ways.
+        var witness = "";
+        foreach (var f in _folders)
+        {
+            if (!string.IsNullOrEmpty(f.RollbackWitnessNote)) { witness = f.RollbackWitnessNote; break; }
+        }
+        _rollbackWitness.Text = witness;
+        _rollbackWitness.IsVisible = !string.IsNullOrEmpty(witness);
 
         _problems.Clear();
         foreach (var p in dto.Problems ?? new List<string>()) _problems.Add(p);
@@ -1256,6 +1308,7 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         string Id, string LabelRaw, bool Local, string Origin, string Root, string LocalRoot,
         string Path, bool Mounted, bool Syncing, bool Accepted,
         int FilesPresent, int FilesIngested, bool FilesObservable, string Note,
+        string RollbackWitnessNote,
         List<FolderPeerVm> Peers)
     {
         public string Label => string.IsNullOrEmpty(LabelRaw) ? Id : LabelRaw;
@@ -1469,6 +1522,17 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         [JsonPropertyName("filesPresent")] public int FilesPresent { get; set; }
         [JsonPropertyName("filesIngested")] public int FilesIngested { get; set; }
         [JsonPropertyName("filesObservable")] public bool FilesObservable { get; set; }
+        // A-33: the sentence saying this folder's INCOMING leg carries no
+        // ordering witness, or "" where there is no incoming leg.
+        //
+        // Declared here for the reason stated above the DTO block, which
+        // this field is the sharpest instance of: the whole obligation is
+        // that a leg with no defence must SAY so, and an undeclared member
+        // is discarded in silence — which renders as "nothing to report",
+        // i.e. as the reassuring answer. The sentence is not composed here;
+        // it comes from `shellcmd.FolderStatus.RollbackWitnessNote`, one
+        // writer shared with the shell and the pass.
+        [JsonPropertyName("rollbackWitnessNote")] public string RollbackWitnessNote { get; set; } = "";
         [JsonPropertyName("peers")] public List<FolderPeerDto>? Peers { get; set; }
     }
 

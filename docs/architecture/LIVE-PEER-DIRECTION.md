@@ -114,16 +114,41 @@ it. A design that picks one is wrong in the case the other exists for.
 So the seam goes under the byte source and nowhere else:
 
 ```go
-// Source is where a consumer's bytes come from. It answers "give me these
-// bytes" and nothing else: no method on it can express a verdict, because
-// every check lives above.
+// Source is where a consumer's bytes come from. It answers "give me this"
+// and nothing else: no method on it can express a verdict, because every
+// check lives above.
 type Source interface {
     PeerID() string
-    Root(ctx context.Context) (raw []byte, locator string, err error)
-    Leaf(ctx context.Context, treePath string) (raw []byte, locator string, err error)
-    Blob(ctx context.Context, h hash.Hash) (raw []byte, locator string, err error)
+    Root(ctx context.Context) (ent entity.Entity, locator string, err error)
+    Leaf(ctx context.Context, treePath string) (h hash.Hash, locator string, err error)
+    Blob(ctx context.Context, h hash.Hash) (ent entity.Entity, locator string, err error)
 }
 ```
+
+**Every one of those three signatures said `raw []byte` when the seam landed, and all three
+were wrong — which is what a second implementation is for.** W1 shipped the interface with one
+implementation and said in as many words that *"everything above it is asserted to be
+transport-neutral and that claim is untested until a second one exists"*. Building `PeerSource`
+tested it and it failed three times in one shape: **`ecf.Decode` was never a check, it was
+HTTP's framing**, sitting above the seam because HTTP was the only thing under it. A dispatched
+read hands back a decoded entity — the wire bytes are the protocol's own framing and never reach
+this package — so a byte-shaped seam would have forced the second source to *re-encode an entity
+in order for the layer above to decode it again*, which is manufacturing bytes in order to check
+them.
+
+`Leaf` is the one worth arguing about, because moving it moved a **conformance check**.
+EXTENSION-NETWORK Amendment 6 makes an HTTP tree leaf the bound hash *pointer* and not the
+dereferenced entity — but that is a rule about the **HTTP projection**, and a dispatched
+`system/tree:get` returning the entity is the protocol behaving correctly rather than a one-hop
+publisher cutting a corner. A check that fires on conformant behaviour on another transport is
+not a stricter check, it is a false refusal (AP44). So `crackPointer` moved into `HTTPSource`,
+where the obligation lives, and the seam answers the question both callers were actually asking:
+*what hash does this publisher bind at this path*.
+
+What did **not** move: the recomputed content hash, the two-hop signature against the key in the
+peer-id, the `seq` floor, the fail-closed walk. None of them can be satisfied by a `Source`, and
+`consume.go` now imports no encoding package at all — which is the one mechanical check a reader
+can run on whether the seam holds.
 
 **Three primitives, not two, and building it is what established that.** An earlier draft of this
 section sketched two — content-addressed bytes, and the invariant-pointer leaves that live *outside*
@@ -148,11 +173,16 @@ project keeps catching in its own models.
 `HTTPSource` is today's `Layout`+`Client`, moved behind it with no behaviour change. ✅ *Landed
 2026-09-11; it is the only implementation, and a seam with one side is justified by what goes on
 the other rather than by itself.*
-`PeerSource` dispatches at a connected peer. **Both are adoption, not construction** — `AppPeer.Get`
-already routes a peer-qualified path to *that peer's* tree — a dispatched read of a peer-qualified
-path is a remote read — and `workbench/blob_resolve.go` already pulls a blob closure across peers
-over `system/content:get` under a minted capability. Search the substrate before pricing the build;
-here it answers twice.
+`workbench.PeerSource` dispatches at a connected peer. ✅ *Landed 2026-09-12 (W2).* **Both were
+adoption, not construction** — `AppPeer.Get` already routes a peer-qualified path to *that peer's*
+tree (a dispatched read of a peer-qualified path is a remote read) and `AppPeer.ContentAt` already
+does the cross-peer `system/content:get` the sync leg has used since M2. D20 came back positive for
+the fifth time.
+
+**It lives in `workbench`, not in `fetch`.** `fetch` is deliberately peer-free — `entity-fetch`
+links a content decoder and an HTTP client and no peer, no store, no location index, which is also
+why `fetch.Registry` exists rather than calling the kernel's resolver. A `Source` needing an
+`AppPeer` would pull the whole peer stack into that binary. `workbench` already imports both.
 
 **`decodeVerified` stays above the seam.** A live peer gets the identical hash check, the identical
 seq floor and the identical walk. A second verification path is the failure this repo keeps hitting
@@ -173,9 +203,20 @@ upgrade in freshness.
 
 **The corollary is a third state and it needs a name, not a silent fallback.** A peer that has never
 published a root can still answer `tree:get`. That is a real and useful thing — your own LAN, a
-draft, a peer that never intends to publish — and it is *committed to nothing*. It renders with a
-different label, never with the same chain, and whether v1 admits it at all is an open question in
-the handoff.
+draft, a peer that never intends to publish — and it is *committed to nothing*.
+
+**Q3 decided 2026-09-12: v1 does NOT read one through this stack, and it refuses by its own name.**
+`fetch.ErrNoPublishedRoot` passes through `VerifiedRoot` unwrapped, for the same reason
+`errNoManifestPrefix` does — wrapped in *"fetch manifest:"* it reads as a network failure, and no
+amount of retrying changes it. The three states send an operator to three different places:
+*unreachable* (the peer did not answer), *withholding* (it answered and will not serve what its own
+root commits to), *unpublished* (it answered and has committed to nothing). Only the middle one is
+the publisher misbehaving.
+
+Admitting the third state here would mean every check hanging off a signed root that does not
+exist, i.e. structure coming from what the far side says it has — the exact inversion §4.2 is
+about. Reading an unpublished peer is a **different operation** and wants a different name; it does
+not want this one made lenient. Gated: `TestLiveRead_UnpublishedPeerIsItsOwnState`.
 
 ### 4.3 Which mode answers, and the surface says which
 
@@ -204,14 +245,27 @@ exists: the V7 §8 policy table at `system/capability/policy/{peer}` is keyed on
 **Scope it to the site prefix and to two operations, never to `*`.** This repository shipped a
 sharing grant carrying `Resources: ["*"]` for months, under a doc comment claiming the set was
 minimal: sharing one folder authorized a read of every entity and every mounted file on the machine.
-A public site grant is `system/tree:get` + `system/content:get` over `content/sites/{site_id}/*` and
-the content namespace those bytes live in, and nothing else. **The blast radius of getting this wrong
+A public site grant is `system/tree:get` + `system/content:get` over `sites/{site_id}/*` and
+the content namespace those bytes live in, and nothing else.
+
+⚠ **And it is NOT only the site prefix, which W2 measured.** The published-root lives at
+`system/peer/published-root` and its signature at `system/signature/{hex}` — both **outside** the
+prefix they commit to. A grant scoped to the site alone yields a peer that serves every page and
+cannot be verified at all, and the failure does not present as *permission denied on the manifest*:
+it presents as **a publisher that has never published**, i.e. as the other machine's fault, with
+the grant looking complete. Gated in both directions by
+`TestLiveRead_NeedsTheSignedRootPathsNotJustTheSite`. **The blast radius of getting this wrong
 is larger than that one's** — a per-peer grant names one reader; this names everybody.
 
 ### 4.5 Publishing is one act with two projections
 
-The site lives in the tree. `entitysdk.PutSiteManifest` / `PutSitePage` already write
-`app/site-manifest` / `app/site-page` under `content/sites/{site_id}/`, on the final type tags.
+The site lives in the tree. `entitysdk.PutSiteManifest` / `PutSitePage` write `app/site-manifest` /
+`app/site-page` under **`sites/{site_id}/`**, on the final type tags.
+
+⚠ **They wrote `content/sites/{site_id}/` until 2026-09-12**, which is the placement SITE v0.5 §2
+drops by name as a layer violation — so the SDK, the surface an application developer reaches for,
+authored sites where neither of this repo's own resolvers looks. Found by W2 pointing our own
+writer at our own reader for the first time. Every path in this document inherited it.
 Everything else is a projection of those entities:
 
 | Projection | What it is | Reaches |
@@ -244,13 +298,31 @@ path, and it is the prerequisite for everything in §3.
 from what the far side says it has. A live peer can answer a listing query any way it likes; the
 signature is what commits.*
 
-**Step 2 — publish from the running peer.**
-There is **no `publish` verb** (40+ shell verbs; measured) and no GUI panel. Publishing is
-`entity-publish`, a separate binary that reads a store off disk. For the static corridor that is
-fine. For the live one it is the wrong shape entirely: a peer that authored a site should serve it,
-and a reader should reach it by dialing. Author a site into the tree, advertise the transport, be
-resolvable. The static emit stays — it is how you reach the web tier — but it stops being the only
-way to exist.
+**Step 2 — publish from the running peer.** ✅ *done 2026-09-12.*
+Until then there was **no `publish` verb** (40+ shell verbs; measured) and no GUI panel: publishing
+was `entity-publish`, a separate binary that reads a store off disk. For the static corridor that is
+fine. For the live one it was the wrong shape entirely — a peer that authored a site should serve
+it, and a reader should reach it by dialing.
+
+There is one publishing ACT — signing a root over a prefix — and the projections are flags on it.
+`publish` signs; `-out`/`-origin` also emit the static directory; `-public` writes the `default`
+grant so a peer nobody named may read the site and verify it; `-private` withdraws it. The *Local
+Site* panel carries the same act and, always on screen, the sentence that says who may read this.
+The static emit stays: it is how you reach the web tier, and it has stopped being the only way to
+exist.
+
+Three things the build surfaced that are worth carrying into anything that grants:
+
+- **A peer has exactly ONE published root**, so publishing a narrower prefix stops committing to
+  everything outside it — under a valid signature, which a reader cannot tell from a site that was
+  never there. The publisher is the only party who can see that coming, so it says so.
+- **A catch-all authorization row is shadowed by every specific one.** The policy table resolves
+  identity-hash → peer-id → `default` and returns at the *first* match, so a public site reached
+  everybody except the peers already named by a share — the only peers an operator can test with.
+  The general grant is now derived into every specific row.
+- **A public grant needs the two paths outside the prefix it commits to** — the published root and
+  its signature — or the site serves every page and cannot be verified, which reads to a reader as
+  *"this publisher has never published"*.
 
 **Step 3 — `Embed`, then the four feed types.** Forced order: the embed convention's child payload
 carries a reference (we have the atom), and a feed entry's `body` is an `embed-node`. Built on

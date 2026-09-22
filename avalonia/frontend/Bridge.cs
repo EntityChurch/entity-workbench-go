@@ -740,6 +740,32 @@ public static class Bridge
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusSetFolderDirection", CharSet = CharSet.Ansi)]
     public static extern IntPtr StatusSetFolderDirection(long peerHandle, string folderId, string mode);
 
+    // --- Publishing (the produce side) -----------------------------------
+    //
+    // Same split as the pair above and for a sharper reason. StatusRender
+    // is safe on a wake because it does not dial; PublishRender is safe on
+    // a wake because it does not MINT. A publish signs a new root and
+    // increments `seq`, so wiring it to a wake would make an open window
+    // announce a new release of the site every time it was focused.
+    //
+    // Both return the same envelope, carrying `minted`, so the surface
+    // says which it is showing rather than implying the stronger one.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "PublishRender")]
+    public static extern IntPtr PublishRender(long peerHandle);
+
+    // public: 1 writes the public grant, -1 removes it, 0 leaves it alone.
+    //
+    // A tri-state and not a bool, because a bool makes every re-publish
+    // restate a disclosure decision — so pressing "Publish" to pick up a
+    // new page would silently un-publish the site, which is a change to
+    // who can read it made by a button that does not say so.
+    //
+    // Walks the tree and, with a grant change, re-handshakes every
+    // declared peer. Thread-pool worker, like StatusReconcile and for the
+    // same AP31 reason.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "PublishNow")]
+    public static extern IntPtr PublishNow(long peerHandle, int makePublic);
+
     // --- The declared-state wake -----------------------------------------
     //
     // The sharing surfaces were the only three panels in the app with no

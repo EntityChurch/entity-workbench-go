@@ -295,21 +295,39 @@ func cmdAccess(sh *Shell, args []string) (Result, error) {
 		}), nil
 	}
 	lines := make([]string, 0, len(policies)+len(problems)+2)
-	others := 0
+	others, public := 0, false
 	for _, p := range policies {
-		if !p.IsSelf {
+		switch {
+		case p.IsSelf:
+		case p.IsPublic:
+			public = true
+		default:
 			others++
 		}
 	}
-	lines = append(lines, fmt.Sprintf("authorized peers: %d (plus this peer's own entry)", others))
+	// The public row is counted OUT of the peer total and said separately.
+	// Folding it in would report "3 authorized peers" for two peers and
+	// the network, and the arithmetic would be the reassuring half of a
+	// wrong answer.
+	head := fmt.Sprintf("authorized peers: %d (plus this peer's own entry)", others)
+	if public {
+		head += " — AND EVERY PEER THAT CAN DIAL THIS ONE, see the `default` row"
+	}
+	lines = append(lines, head)
 	for _, p := range policies {
 		label := p.PeerID
-		if p.IsSelf {
+		switch {
+		case p.IsSelf:
 			// Named, never hidden. The kernel seeds this wildcard entry for
 			// the peer itself; an operator auditing "who can read my
 			// files" would otherwise find `*:*` granted to an unexplained
 			// hex string and reasonably conclude they had been breached.
 			label = p.PeerID + "   <- THIS PEER (kernel seed entry, not a grant to anyone else)"
+		case p.IsPublic:
+			// The opposite failure to IsSelf's, and the reason both are
+			// marked: this row's name looks like one more peer, and it is
+			// every peer. `publish -private` removes it.
+			label = p.PeerID + "   <- NOT A PEER: every peer that can dial this one"
 		}
 		lines = append(lines, fmt.Sprintf("  %s", label))
 		lines = append(lines, fmt.Sprintf("      %s", p.Summary))

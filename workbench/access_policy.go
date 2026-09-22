@@ -315,6 +315,18 @@ type AccessPolicy struct {
 	// and one that silently hides it is concealing a real grant.
 	// Distinguish it and say which it is.
 	IsSelf bool
+
+	// IsPublic marks the `default` catch-all row — the one entry in this
+	// table whose grantee is not a peer.
+	//
+	// IsSelf's argument, one row over and pointing the other way. The
+	// self entry is alarming and harmless; this one is the opposite: it
+	// reads as an ordinary entry with an unremarkable name, and it
+	// authorizes **every peer that can dial this one**. A listing that
+	// prints `default` beside two peer-ids, with no more emphasis than
+	// they get, has told an operator that three peers are authorized
+	// when the true answer is "two peers and the network".
+	IsPublic bool
 }
 
 // SaveAccessPolicy writes (or replaces) the handshake policy for one peer.
@@ -417,11 +429,12 @@ func ListAccessPolicies(st *Store, selfIdentityHex string) (policies []AccessPol
 			continue
 		}
 		policies = append(policies, AccessPolicy{
-			PeerID:  peerID,
-			Grants:  d.Grants,
-			Notes:   d.Notes,
-			Summary: SummarizeGrants(d.Grants),
-			IsSelf:  selfIdentityHex != "" && peerID == selfIdentityHex,
+			PeerID:   peerID,
+			Grants:   d.Grants,
+			Notes:    d.Notes,
+			Summary:  SummarizeGrants(d.Grants),
+			IsSelf:   selfIdentityHex != "" && peerID == selfIdentityHex,
+			IsPublic: peerID == PublicPolicyPeer,
 		})
 	}
 	sort.Slice(policies, func(i, j int) bool { return policies[i].PeerID < policies[j].PeerID })

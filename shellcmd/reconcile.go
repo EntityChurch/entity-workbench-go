@@ -345,6 +345,63 @@ type FolderStatus struct {
 	// there, because "record" and "we do not know" are the two states
 	// this field exists to keep apart.
 	OwnerConflictPolicy string
+
+	// RollbackWitness is how this folder's INCOMING leg is defended
+	// against a stale delivery arriving after a newer one — and today,
+	// for every folder, the answer is [WitnessNotSupported].
+	//
+	// **It is a stated property, not a problem, and the distinction is
+	// the design.** Nothing is wrong with a folder that reports this;
+	// every folder reports it, because the subscription-delivered leg
+	// carries no ordering quantity at all. Putting it in `problems()`
+	// would add one permanent line to every receiving folder, which is
+	// how an operator learns to skip the problems list.
+	//
+	// It exists because the architecture seat ruled (`A-33`, 2026-09-12)
+	// that where a leg carries no witness the receiving implementation
+	// **MUST** report it as `not_supported` and **MUST NOT** present the
+	// leg as rollback-protected. We were already meeting the second half
+	// by saying nothing — and *saying nothing* is exactly how a reader
+	// concludes a leg is fine. The static leg next door DOES refuse a
+	// rollback (`fetch.ErrSeqRollback`), and a product with one defended
+	// leg and one silent leg reads as a product with two defended legs.
+	//
+	// Empty for a folder with no incoming leg: a send-only folder has
+	// nothing arriving, and reporting an undefended leg it does not have
+	// is a different kind of wrong answer.
+	RollbackWitness string
+}
+
+// WitnessNotSupported is the `A-33` value: this leg carries no quantity
+// a receiver could order deliveries by.
+//
+// Spelled exactly as the ruling spells it. **It is deliberately not a
+// bool** — `RollbackProtected: false` is a field a surface forgets to
+// read and renders as absence, and absence is indistinguishable from
+// "fine" (AP49's shape). A string that says `not_supported` cannot be
+// rendered as nothing by accident.
+//
+// The fix is NOT ours: a witness on this leg is a subscription-tier
+// change (arch's `BY-6`). Do not synthesize one locally — `modified_at`
+// is minted by the filesystem rather than by the writer, so a floor over
+// it refuses a restored backup forever while admitting the replay it was
+// built for. Measured and ruled; see
+// `shellboot/sync_rollback_probe_test.go`.
+const WitnessNotSupported = "not_supported"
+
+// RollbackWitnessNote is the one sentence every surface prints for it,
+// and the empty string where there is no incoming leg to describe.
+//
+// One writer, for `problems()`' reason: two copies of a diagnostic drift
+// the moment one of them is improved, and this one crosses cgo into a
+// panel as well as into the shell.
+func (fs FolderStatus) RollbackWitnessNote() string {
+	if fs.RollbackWitness != WitnessNotSupported {
+		return ""
+	}
+	return "rollback witness: not_supported — a delivery carries no ordering " +
+		"quantity, so a stale one arriving after a newer one is applied. This leg " +
+		"is NOT rollback-protected (the static publish leg is)."
 }
 
 // Reconcile runs one pass. Safe to call at startup, after any change to
@@ -382,7 +439,7 @@ func (ws *ShellWorkspace) Reconcile(ctx context.Context) (ReconcileOutcome, erro
 
 	// 2. Policy. Computed as a union across every folder, per peer, and
 	// written only when it differs from what is stored.
-	desired := desiredGrantsByPeer(local.PeerID(), folders)
+	desired := desiredGrantsByPeer(local.PeerID(), folders, ws.publicSiteGrants())
 	changedPolicy := ws.reconcilePolicies(desired, &out)
 
 	// 3. Connections. maintain-peer is idempotent per peer (the handler
@@ -455,7 +512,30 @@ func (ws *ShellWorkspace) refreshDeviceAddresses(devices []workbench.DeviceData,
 // grants; a peer we receive from needs the receiver grant; a peer in both
 // relationships needs both, and the two verbs that write this row today
 // each write only their own half over the top of the other's.
-func desiredGrantsByPeer(selfPeerID string, folders []workbench.FolderData) map[string][]types.GrantEntry {
+//
+// # publicSite, and the reason a named peer needs it spelled out again
+//
+// **The kernel's policy resolution is FIRST MATCH WINS, not a union.**
+// `readHandshakePolicyGrants` tries `hex(identityHash)`, then the Base58
+// peer-id, then `default`, and RETURNS AT THE FIRST ONE IT FINDS. So a
+// peer with a row of its own never reaches `default` — and the
+// consequence is the opposite of intuition: **publishing a site publicly
+// makes it readable by every peer in the world EXCEPT the ones you have
+// shared a folder with.**
+//
+// That is the worst available shape of this bug. The peer most likely to
+// be used to test a newly-published site is the other machine already
+// paired with this one, so the feature presents as broken to the only
+// reader an operator has, while working for everybody they cannot ask.
+//
+// So the site grants are unioned into every derived per-peer row. Note
+// what is NOT done: an arbitrary hand-written `default` row is left
+// alone. `default` means "peers not otherwise named" in the kernel, and
+// redefining it as "everyone" for a row whose intent we cannot read
+// would be widening somebody else's grant on their behalf. Only OUR
+// public site grant is propagated, because "this site is public" is a
+// statement about everyone and we know it is, having written it.
+func desiredGrantsByPeer(selfPeerID string, folders []workbench.FolderData, publicSite []types.GrantEntry) map[string][]types.GrantEntry {
 	// Peer -> the roots we publish TO them. A set of roots and not a bool,
 	// because the sender grant is now scoped to exactly those folders
 	// (workbench.SyncSenderGrants): a peer we share two folders with must
@@ -536,7 +616,31 @@ func desiredGrantsByPeer(selfPeerID string, folders []workbench.FolderData) map[
 	for peerID := range needReceiver {
 		out[peerID] = append(out[peerID], workbench.SyncReceiverGrants()...)
 	}
+	// Appended last and to every row, so the set stays a pure function of
+	// its inputs — the row's content hash decides whether a re-handshake
+	// happens, and an unstable ordering here is an outage generator.
+	for peerID := range out {
+		out[peerID] = append(out[peerID], publicSite...)
+	}
 	return out
+}
+
+// publicSiteGrantsForPeers is the public site grant, or nil when this
+// peer is not serving one.
+//
+// Nil rather than an empty slice on purpose: it is appended to every
+// derived row, and the difference between "no public site" and "a public
+// site granting nothing" is the difference between leaving a row alone
+// and rewriting it.
+func (ws *ShellWorkspace) publicSiteGrants() []types.GrantEntry {
+	if ws == nil || ws.Local == nil || ws.Local.Peer == nil {
+		return nil
+	}
+	row, ok := workbench.LoadAccessPolicy(ws.Local.Peer.Store(), workbench.PublicPolicyPeer)
+	if !ok || !workbench.IsPublicSiteGrant(row.Grants) {
+		return nil
+	}
+	return row.Grants
 }
 
 // appendScope adds v to s when it is not already there.
@@ -660,7 +764,7 @@ func (ws *ShellWorkspace) declaredGrantsFor(peerID string) ([]types.GrantEntry, 
 	}
 	local := ws.Local.Peer
 	folders, _ := workbench.LoadFolders(local.Store())
-	return desiredGrantsByPeer(local.PeerID(), folders)[peerID], local.Store(), nil
+	return desiredGrantsByPeer(local.PeerID(), folders, ws.publicSiteGrants())[peerID], local.Store(), nil
 }
 
 // writePolicyIfChanged is the one place a policy row is written.

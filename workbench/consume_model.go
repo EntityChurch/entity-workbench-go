@@ -138,6 +138,25 @@ type ConsumeOutput struct {
 	LastRun  time.Time
 	HasRun   bool
 	Duration string
+
+	// Mode is what kind of party answered, carried here exactly as Seq and
+	// PublishedAt are, and **propagated from the verified root rather than
+	// decided by this model**.
+	//
+	// This model builds its consumer from a [fetch.Layout], so it is static
+	// by construction and writing the static mode in by hand would even be
+	// correct today. It would also be the shape `fetch/freshness.go`
+	// forbids: a surface stating the scope of a verification from its own
+	// memory of which constructor it called. The value comes off the root,
+	// which got it off the Source.
+	//
+	// It is **exported**, which the first version of this was not — see
+	// [fetch.FreshnessFor] for what that cost.
+	Mode fetch.Mode
+	// ObservedAt is when the root came back. Only the live sentence uses
+	// it as evidence; see freshness.go for why quoting it on the static
+	// side would be the confident-direction error in one field.
+	ObservedAt time.Time
 }
 
 // NewConsumeModel builds the model. A nil client means the default.
@@ -313,6 +332,8 @@ func runConsume(ctx context.Context, client *http.Client, origin, peerID string,
 		root.Signature.Algorithm)
 	out.Steps = append(out.Steps, rootStep)
 
+	out.Mode = root.Mode
+	out.ObservedAt = root.ObservedAt
 	out.RootHash = root.Data.RootHash.String()
 	out.Prefix = root.Data.Prefix
 	out.AbsolutePrefix = fetch.AbsolutePrefix(root.Data.Prefix, layout.PeerID)
@@ -430,12 +451,16 @@ func runConsume(ctx context.Context, client *http.Client, origin, peerID string,
 // the moment: §6.5.3.1 / D6 / D7 — a quiet publisher and a withholding
 // origin are indistinguishable at the consumer, so "verified" without a
 // timestamp is a claim the corridor cannot support.
+//
+// **The sentence itself is composed once, in `fetch/freshness.go`, from
+// the mode that answered.** It used to be written out here as well, which
+// was harmless while there was one mode and is not now: two copies of a
+// claim about what a verification covers is two places for the live one
+// to be pasted next to a static result, and both readings are plausible
+// English about a correctly verified root.
 func (o ConsumeOutput) FreshnessNote() string {
 	if !o.Verified || o.PublishedAt == 0 {
 		return ""
 	}
-	t := time.UnixMilli(int64(o.PublishedAt)).UTC()
-	return fmt.Sprintf("verified as of published_at %s (seq %d) — never simply \"verified\": "+
-		"a quiet publisher and a withholding origin are indistinguishable from here",
-		t.Format(time.RFC3339), o.Seq)
+	return fetch.FreshnessFor(o.Mode, o.PublishedAt, o.Seq, o.ObservedAt)
 }

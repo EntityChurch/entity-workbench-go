@@ -7,10 +7,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"entity-workbench-go/entitysdk/publishedroot"
 
-	"go.entitychurch.org/entity-core-go/core/ecf"
 	"go.entitychurch.org/entity-core-go/core/entity"
 	"go.entitychurch.org/entity-core-go/core/hash"
 	"go.entitychurch.org/entity-core-go/core/types"
@@ -95,6 +95,27 @@ var (
 	// byte-identical to a withholding origin at the consumer (AP21).
 	errNoManifestPrefix = errors.New("fetch: publisher advertises no manifest_url_prefix, " +
 		"so this origin has no signed entry point (§6.5.3 reserves the location; it is not derivable)")
+
+	// ErrNoPublishedRoot is a reachable peer that has never published a
+	// root: it answers, and it has committed to nothing.
+	//
+	// **It is a third state and it is exported so a surface can say so.**
+	// It is not "the peer is down" (the peer answered) and it is not "the
+	// publisher is withholding" (there is nothing to withhold). A peer
+	// that never intends to publish — your own LAN, a draft, a machine
+	// serving one other machine — is a real and useful thing.
+	//
+	// **What it is not, in v1, is readable through this Consumer**, and
+	// that is a decision rather than an omission (Q3, decided
+	// 2026-09-12). Every check this type performs hangs off the signed
+	// root: without one there is no key set to walk, so *structure would
+	// come from what the far side says it has*, which is the exact
+	// inversion [Source]'s file note exists to prevent. Admitting it here
+	// would mean a second, weaker trust argument wearing the same UI.
+	// Reading an unpublished peer is a different operation and wants a
+	// different name; it does not want this one made lenient.
+	ErrNoPublishedRoot = errors.New("this peer has never published a root, " +
+		"so there is nothing signed to verify against")
 
 	// ErrSeqRollback is a published-root whose `seq` is below one this
 	// consumer already accepted from the same publisher.
@@ -188,6 +209,9 @@ type Consumer struct {
 	// exactly what a consumer rebuilt per click does not have.
 	minSeq     uint64
 	haveMinSeq bool
+
+	// Now backs [VerifiedRoot.ObservedAt]. Nil means time.Now.
+	Now func() time.Time
 }
 
 // NewConsumerFromSource binds a consumer to any byte source.
@@ -222,6 +246,22 @@ type VerifiedRoot struct {
 
 	ManifestURL  string
 	SignatureURL string
+
+	// Mode is what kind of party answered — set from the [Source], never
+	// by the caller. It is the only input to [VerifiedRoot.Freshness]
+	// that is not in the signed body, and it is carried here rather than
+	// remembered by a surface for the reason freshness.go gives.
+	Mode Mode
+	// Authority is that party, as the mode addresses it.
+	Authority string
+	// ObservedAt is when this root came back, which is a fact about the
+	// READING and not about the publisher.
+	//
+	// **Only the live sentence may use it as evidence**, and the
+	// distinction is the point: over a static origin the moment we
+	// fetched says nothing about the age of what was served, so quoting
+	// it there would be the confident-direction error in one field.
+	ObservedAt time.Time
 }
 
 // VerifiedRoot fetches the manifest and verifies it end to end.
@@ -241,16 +281,13 @@ type VerifiedRoot struct {
 // origin are indistinguishable from here, and no freshness field closes
 // that. The caller decides what age it will accept.
 func (c *Consumer) VerifiedRoot(ctx context.Context) (VerifiedRoot, error) {
-	raw, manifestURL, err := c.src.Root(ctx)
+	ent, manifestURL, err := c.src.Root(ctx)
+	observed := c.now()
 	if err != nil {
-		if errors.Is(err, errNoManifestPrefix) {
+		if errors.Is(err, errNoManifestPrefix) || errors.Is(err, ErrNoPublishedRoot) {
 			return VerifiedRoot{}, err
 		}
 		return VerifiedRoot{}, fmt.Errorf("fetch manifest: %w", err)
-	}
-	var ent entity.Entity
-	if err := ecf.Decode(raw, &ent); err != nil {
-		return VerifiedRoot{}, fmt.Errorf("fetch: decode manifest %s: %w", manifestURL, err)
 	}
 
 	peerID := c.src.PeerID()
@@ -280,13 +317,28 @@ func (c *Consumer) VerifiedRoot(ctx context.Context) (VerifiedRoot, error) {
 		return VerifiedRoot{}, err
 	}
 
+	desc := c.src.Describe()
 	return VerifiedRoot{
 		Entity:       ent,
 		Data:         data,
 		Signature:    sig,
 		ManifestURL:  manifestURL,
 		SignatureURL: sigURL,
+		Mode:         desc.Mode,
+		Authority:    desc.Authority,
+		ObservedAt:   observed,
 	}, nil
+}
+
+// now is the clock behind [VerifiedRoot.ObservedAt]. Injectable because
+// the live freshness sentence quotes it, and a gate that cannot fix the
+// clock can only assert on the shape of a timestamp rather than on the
+// sentence.
+func (c *Consumer) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
 }
 
 // acceptSeq is the §3-RES.4 monotonicity floor, and it is one function
@@ -477,11 +529,11 @@ func (c *Consumer) Blob(ctx context.Context, h hash.Hash) (entity.Entity, error)
 	if ent, ok := c.Cache.Blob(h); ok {
 		return ent, nil
 	}
-	body, _, err := c.src.Blob(ctx, h)
+	served, _, err := c.src.Blob(ctx, h)
 	if err != nil {
 		return entity.Entity{}, err
 	}
-	ent, err := decodeVerified(body, h)
+	ent, err := verifyEntity(served, h)
 	if err != nil {
 		return entity.Entity{}, err
 	}
@@ -489,23 +541,31 @@ func (c *Consumer) Blob(ctx context.Context, h hash.Hash) (entity.Entity, error)
 	return ent, nil
 }
 
-// leafAt resolves a peer-relative tree path the advertised way: the
-// two-hop `system/hash` pointer at the leaf, then the content blob it
-// names. This is `Fetch`'s path, reused — the tree-leaf surface is how
-// the SIGNATURE is reached (§5.2 makes it an invariant pointer, not a
-// trie key), so the consumer needs both resolution paths, not one.
+// leafAt resolves a peer-relative tree path to the entity bound there:
+// the source answers the binding, then the content blob it names is
+// fetched and verified through the one door.
+//
+// The tree-leaf surface is how the SIGNATURE is reached (§5.2 makes it
+// an invariant pointer, not a trie key), so the consumer needs both
+// resolution paths, not one.
+//
+// **Two hops even when the transport already had the entity.** A
+// dispatched read hands back the body at the path and this asks for it
+// again by hash, which is one extra round trip per leaf on that
+// transport. That is deliberate: [Consumer.Blob] is the only door into
+// the content store and the only place the cache is filled, both past
+// [verifyEntity], and short-circuiting it for one Source would put bytes
+// in front of the caller that a different amount of code had checked.
+// Two leaves are resolved per navigation, so the cost is two dispatches;
+// the alternative costs a trust argument.
 //
 // The locator is returned on the failure paths too, because the caller's
 // error message names where it looked and a failed lookup is exactly
 // when that matters.
 func (c *Consumer) leafAt(ctx context.Context, treePath string) (entity.Entity, string, error) {
-	raw, locator, err := c.src.Leaf(ctx, treePath)
+	h, locator, err := c.src.Leaf(ctx, treePath)
 	if err != nil {
 		return entity.Entity{}, locator, err
-	}
-	h, err := crackPointer(raw)
-	if err != nil {
-		return entity.Entity{}, locator, fmt.Errorf("%s: %w", locator, err)
 	}
 	ent, err := c.Blob(ctx, h)
 	return ent, locator, err
@@ -554,25 +614,26 @@ func AbsolutePath(prefix, peerID, key string) string {
 	return AbsolutePrefix(prefix, peerID) + key
 }
 
-// PointerFor resolves the hash the publisher's own tree-leaf URL
-// advertises for a committed key.
+// PointerFor resolves the hash the publisher's own tree surface
+// advertises for a committed key — the second answer the reconciliation
+// check in [Report] compares against the signed root.
 //
 // `key` is relative to the published-root's `prefix` (the configured
-// form — see [AbsolutePrefix]); the tree-leaf URL is built from a
-// peer-relative path, so the key is reconstructed to absolute and the
-// peer segment stripped back off.
+// form — see [AbsolutePrefix]); the tree path is peer-relative, so the
+// key is reconstructed to absolute and the peer segment stripped back
+// off.
+//
+// **The question survives the transport change and that is why the
+// check is still worth running live.** Over HTTP it asks what the leaf
+// URL points at; over a dispatch it asks what entity the peer serves at
+// that path, hashed. Either way the answer comes from the publisher's
+// *mutable* tree rather than from the signed trie, so a publisher whose
+// two surfaces disagree is serving two trees and only one of them is
+// signed.
 func (c *Consumer) PointerFor(ctx context.Context, prefix, key string) (hash.Hash, string, error) {
 	peerID := c.src.PeerID()
 	rel := peerRelative(AbsolutePath(prefix, peerID, key), peerID)
-	raw, locator, err := c.src.Leaf(ctx, rel)
-	if err != nil {
-		return hash.Hash{}, locator, err
-	}
-	h, err := crackPointer(raw)
-	if err != nil {
-		return hash.Hash{}, locator, fmt.Errorf("%s: %w", locator, err)
-	}
-	return h, locator, nil
+	return c.src.Leaf(ctx, rel)
 }
 
 // peerRelative turns an absolute `/{peer}/a/b` tree path into the

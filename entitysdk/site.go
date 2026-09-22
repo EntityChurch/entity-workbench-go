@@ -1,10 +1,15 @@
 // Content-site entity types — `app/site-manifest` and `app/site-page`.
 //
-// Cross-impl contract: APP-CONVENTION-SEMANTIC-CONTENT-SITE v0.4.2 (locked).
-// Wire-bytes peer is egui-entity-core-rust's `src/content_site/format.rs`;
+// Cross-impl contract: APP-CONVENTION-SEMANTIC-CONTENT-SITE — the
+// entity bodies are v0.4.2's (locked); the PLACEMENT is v0.5's, which
+// this file was four months late to (see SitesSubpath).
+// Wire-bytes peer is `entity-browser-rust`'s `src/content_site/format.rs`;
 // we hold to byte-equivalence with their `to_entity` output so a site
-// published from workbench-go renders identically when fetched by an
-// egui-rust consumer over HTTP-poll.
+// published from workbench-go renders identically when fetched by their
+// consumer over HTTP-poll. **That claim is measured rather than asserted
+// as of 2026-09-09** — `fetch/site_entity_crossimpl_test.go` decodes
+// their frozen emission through these types and re-encodes it
+// byte-identically. It sat here as prose for months (AP83).
 //
 // Encoding: ECF (deterministic CBOR, RFC 8949 §4.2, length-then-lex map
 // key order). Optional fields use `,omitempty` so the wire matches the
@@ -16,13 +21,16 @@
 //   - NavItem.Children          — omitted when empty (back-compat with
 //     flat-nav wire shape)
 //
-// Path layout under the peer's content namespace (peer-id substituted):
+// Path layout — a free subgraph at the convention's reserved first
+// segment (v0.5 §2; peer-id substituted):
 //
-//	/{peer_id}/content/sites/{site_id}/manifest
-//	/{peer_id}/content/sites/{site_id}/pages/{slug}
+//	/{peer_id}/sites/{site_id}/manifest
+//	/{peer_id}/sites/{site_id}/pages/{slug}
 //
-// See SitePrefix/ManifestPath/PagePath helpers below. `assets/{name}`
-// is reserved for the post-v1 passive-Embed work; not exposed yet.
+// See SitesSubpath for what this used to be and what it cost. The
+// helpers are SitePrefix / SiteManifestPath / SitePagePath below;
+// `assets/{name}` is reserved for the post-v1 passive-Embed work and is
+// not exposed here yet.
 package entitysdk
 
 import (
@@ -130,33 +138,68 @@ func (p SitePage) Title() string {
 
 // --- path layout ---
 
-// sitesSubpath is the per-peer subpath under which all sites live, per
-// egui's `content_site/paths.rs`. Sites are publishable content, NOT
-// app state (`app/...`).
-const sitesSubpath = "content/sites"
+// SitesSubpath is the per-peer subpath under which all sites live.
+//
+// **It was `content/sites` until 2026-09-12, which is the placement
+// `APP-CONVENTION-SEMANTIC-CONTENT-SITE` v0.5 DROPS by name.**
+// `system/content/*` is the CONTENT extension's namespace — the leaf
+// there is always `{hex(H)}` (EXTENSION-CONTENT §6.4.2) — and an L5
+// application subgraph has no business in it. v0.5 makes a site a free
+// subgraph at a publisher-chosen path and registers `sites` as the
+// convention's reserved first segment; `entity-browser-rust` and this
+// repo's own `workbench` resolvers have both been on `sites/` since
+// then.
+//
+// **So for as long as it was wrong, this SDK — the surface an
+// application developer reaches for — wrote sites where neither of our
+// own site resolvers looks.** A site seeded through `entity-seed-site`
+// was invisible to the Local Site panel and to the Browser panel, and
+// nothing failed: the remote resolver is only ever exercised against
+// `entity-browser-rust`'s frozen fixture, which uses the correct path,
+// and `entitysdk`'s own tests round-trip through this constant, so both
+// halves agreed with themselves. Found 2026-09-12 by pointing our own
+// writer at our own reader for the first time (W2) — the same shape as
+// the 2026-08-19 publish/fetch corridor, where two green halves were not
+// a working corridor either.
+//
+// Worth more than the fix: **the divergence had already been noticed and
+// filed as a coordination detail.** `publish/site_root_scope_test.go`
+// says in a comment that "our placement (`content/sites/{id}/`) and
+// theirs (`sites/{id}/`) put the same content under different keys", as
+// a note about how to scope a joint fixture — not as a finding about
+// which of the two is conformant. AP45's shape: a paragraph explaining a
+// difference closes the question permanently, where a `TODO` would have
+// invited the work.
+//
+// No migration is owed. Anything written at the old placement was
+// already unreadable by every surface that renders a site.
+//
+// [workbench.SitesSubpath] is this constant — one definition, so the two
+// halves cannot drift apart again.
+const SitesSubpath = "sites"
 
 // SitePrefix is the tree prefix that contains the entire site (manifest
 // + pages + assets). Trailing slash; safe to pass to entity-publish via
 // the -prefix flag.
 func SitePrefix(peerID, siteID string) string {
-	return fmt.Sprintf("/%s/%s/%s/", peerID, sitesSubpath, siteID)
+	return fmt.Sprintf("/%s/%s/%s/", peerID, SitesSubpath, siteID)
 }
 
 // SiteManifestPath is the bound path of a site's manifest entity.
 func SiteManifestPath(peerID, siteID string) string {
-	return fmt.Sprintf("/%s/%s/%s/manifest", peerID, sitesSubpath, siteID)
+	return fmt.Sprintf("/%s/%s/%s/manifest", peerID, SitesSubpath, siteID)
 }
 
 // SitePagesPrefix is the tree prefix that contains a site's pages.
 // Trailing slash.
 func SitePagesPrefix(peerID, siteID string) string {
-	return fmt.Sprintf("/%s/%s/%s/pages/", peerID, sitesSubpath, siteID)
+	return fmt.Sprintf("/%s/%s/%s/pages/", peerID, SitesSubpath, siteID)
 }
 
 // SitePagePath is the bound path of a single page entity within a site.
 // `slug` may itself contain "/" segments (nested pages, e.g. "docs/intro").
 func SitePagePath(peerID, siteID, slug string) string {
-	return fmt.Sprintf("/%s/%s/%s/pages/%s", peerID, sitesSubpath, siteID, slug)
+	return fmt.Sprintf("/%s/%s/%s/pages/%s", peerID, SitesSubpath, siteID, slug)
 }
 
 // --- put helpers (AppPeer-bound) ---

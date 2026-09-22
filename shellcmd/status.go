@@ -307,6 +307,14 @@ func (ws *ShellWorkspace) observeFolder(f workbench.FolderData) FolderStatus {
 		fs.OwnerConflictPolicy = o.OwnerConflictPolicy()
 	}
 
+	// A-33: a leg with no witness says so. Only where there IS an
+	// incoming leg — a folder we publish and never pull from has nothing
+	// arriving, and describing its absent leg as undefended is a
+	// confident answer to a question nobody asked.
+	if !fs.Local || len(fs.ReceiveFrom) > 0 {
+		fs.RollbackWitness = WitnessNotSupported
+	}
+
 	return fs
 }
 

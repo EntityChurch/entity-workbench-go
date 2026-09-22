@@ -18,11 +18,18 @@ package publish
 //
 // It also pins the two consequences a joint run has to be designed
 // around, both of which would otherwise surface as an unexplained red:
-//   - the comparison must be scoped to the SITE SUBTREE. At peer scope our
-//     placement (`content/sites/{id}/`, entitysdk/site.go:136) and theirs
-//     (`sites/{id}/`) put the same content under different keys, so the
-//     roots cannot agree and the disagreement says nothing about
-//     conformance.
+//   - the comparison must be scoped to the SITE SUBTREE, because peer-scoped
+//     roots commit the placement as part of the key. **This bullet used to
+//     read "our placement (`content/sites/{id}/`) and theirs (`sites/{id}/`)
+//     put the same content under different keys" — filed as a fixture-scoping
+//     note, which is how a four-month non-conformance stayed invisible.**
+//     It was not a difference to design a joint run around: SITE v0.5 §2
+//     drops `content/sites` by name and ours was the wrong one. Fixed
+//     2026-09-12; the placements now agree, and the scoping rule below
+//     stands on its own (`sites/` is a publisher-CHOSEN path under v0.5, so
+//     two publishers may still legitimately differ). AP45: a paragraph
+//     explaining a difference closes the question permanently, where a
+//     `TODO` would have invited the work.
 //   - `site_id` DOES enter the root, via the manifest body. Two publishers
 //     using different slugs for "the same" fixture diverge on a field
 //     neither is likely to consider part of the content.

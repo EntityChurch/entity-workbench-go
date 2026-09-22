@@ -821,9 +821,12 @@ func (m *BrowseModel) goTo(ctx context.Context, addr Address) error {
 	if err != nil {
 		return m.failedChain(nav, err, res)
 	}
-	nav.freshness = fmt.Sprintf("verified as of %s (the target's published_at); "+
-		"a withholding origin and a quiet publisher are indistinguishable from here",
-		freshnessOf(root.Data.PublishedAt))
+	// The scope of this chain comes from the ROOT, which got it from the
+	// source that answered — never from this function's memory of which
+	// consumer it built. See fetch/freshness.go: there is one composition
+	// and it switches on the mode, so a live read cannot be captioned
+	// with the static claim or the other way round.
+	nav.freshness = root.Freshness()
 
 	walk, err := consumer.Walk(ctx, root.Data.RootHash)
 	nav.record("target walk", err, fmt.Sprintf("%d CHAMP nodes, %d committed keys",
