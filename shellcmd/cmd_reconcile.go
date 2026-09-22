@@ -61,6 +61,14 @@ func cmdStatus(sh *Shell, args []string) (Result, error) {
 			switch {
 			case d.Paused:
 				state = "paused"
+			case d.Connected && !d.OutboundRoute:
+				// The pool holds a session in EITHER direction, so plain
+				// "connected" here was true of a peer we cannot dispatch
+				// to — the state where sharing is half-broken and the one
+				// an operator is most likely to be in, since a
+				// dial-by-address authorizes only the dialer (AP63). Never
+				// widen this back to one word.
+				state = "inbound only"
 			case d.Connected && d.Maintained:
 				state = "connected"
 			case d.Connected:

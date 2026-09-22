@@ -103,6 +103,8 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
     private readonly TextBlock _offersEmpty;
     private readonly TextBlock _foldersEmpty;
     private readonly Control _offersSection;
+    private readonly Control _problemsSection;
+    private readonly ObservableCollection<string> _problems = new();
     private readonly Button _shareBtn;
 
     private readonly StackPanel _shareForm;
@@ -150,6 +152,13 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
     public int OfferCount => _offers.Count;
     public string NoteText => _note.Text ?? "";
     public bool OffersSectionVisible => _offersSection.IsVisible;
+
+    // The reconciler's diagnosis as the operator reads it. A panel's prose
+    // is a surface with no reader in the suite (AP71) — this is the
+    // reader, and it exists because the last defect here was a correct
+    // sentence that reached no pixel.
+    public bool ProblemsSectionVisible => _problemsSection.IsVisible;
+    public IReadOnlyList<string> ProblemsForTests => _problems;
 
     // ReadForTests runs the panel's own read path. fetchOffers is a
     // DISPATCHED REMOTE READ per declared peer — real network, so a
@@ -267,8 +276,29 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
         var foldersList = BoundedList(_folders, FolderTemplate(), 320);
         var foldersSection = Section("Shared folders", foldersList, _foldersEmpty);
 
+        // Problems, directly under the identity line and above everything
+        // else on the panel.
+        //
+        // Placement is the feature. The reconciler has always produced a
+        // correct plain-language diagnosis of exactly the failure an
+        // operator hits — a refused dial, a folder with no mount — and it
+        // went to stderr, i.e. to a run log nobody opens. On 2026-09-08 an
+        // operator sat in THIS panel for 45 minutes while the sentence
+        // naming their problem was being computed on every pass.
+        //
+        // Not in the Sharing Status panel alone: that is a diagnostic
+        // surface, and a diagnosis only helps in the panel where the flow
+        // lives. Bounded like every other list here (AP64), so a peer
+        // storm degrades to scrolling rather than to an unreachable Share
+        // button.
+        var problemsList = BoundedList(_problems, ProblemTemplate(), 140);
+        _problemsSection = Section("Needs attention", problemsList, Muted(""));
+        _problemsSection.IsVisible = false;
+        AutomationProperties.SetAutomationId(_problemsSection, "sync.problems");
+
         var body = new StackPanel { Spacing = 4 };
         body.Children.Add(_identity);
+        body.Children.Add(_problemsSection);
         body.Children.Add(_offersSection);
         body.Children.Add(foldersSection);
         body.Children.Add(_shareBtn);
@@ -390,6 +420,14 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
         }
 
         _identity.Text = $"{view.LocalAlias}  {Short(view.LocalPeerId)}";
+
+        // The reconciler's own diagnosis, in the panel that owns the flow.
+        // Hidden when there is nothing wrong: a permanently-present
+        // "Needs attention" heading is chrome, and chrome is what an
+        // operator learns to skip.
+        _problems.Clear();
+        foreach (var p in view.Problems ?? new List<string>()) _problems.Add(p);
+        _problemsSection.IsVisible = _problems.Count > 0;
 
         // The peers we can ACT on are the reachable ones, not the
         // declared ones.
@@ -903,6 +941,23 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
         return stack;
     });
 
+    // Rows.Of, never `new FuncDataTemplate` (AP46): Avalonia calls the
+    // builder with null during container teardown, and all nineteen raw
+    // sites in this frontend shipped the same null dereference.
+    private IDataTemplate ProblemTemplate() => Rows.Of<string>((text, _) =>
+    {
+        var block = new TextBlock
+        {
+            Text = text,
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brushes.IndianRed,
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        AutomationProperties.SetAutomationId(block, "sync.problem");
+        return block;
+    });
+
     // --- Chrome ------------------------------------------------------------
 
     private static TextBlock Muted(string text) => new()
@@ -980,7 +1035,12 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
     // the browser's provenance fields, and no test noticed because none
     // read a value that had quietly become false.
 
-    private sealed class StatusView
+    // internal, not private: SyncPanelProblemsTests deserializes this DTO
+    // directly. An undeclared field is dropped in silence at this
+    // boundary (AP49), so the gate has to be able to see the shape rather
+    // than a rendered row — an empty list renders as nothing, which is
+    // also what "nothing is wrong" looks like.
+    internal sealed class StatusView
     {
         [JsonPropertyName("ok")] public bool OK { get; set; }
         [JsonPropertyName("error")] public string Error { get; set; } = "";
@@ -988,9 +1048,27 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
         [JsonPropertyName("localAlias")] public string LocalAlias { get; set; } = "";
         [JsonPropertyName("devices")] public List<DeviceDto> Devices { get; set; } = new();
         [JsonPropertyName("folders")] public List<FolderDto> Folders { get; set; } = new();
+
+        // **This field was not declared until 2026-09-09, and that is the
+        // whole of defect 2c.** The reconciler produced a correct,
+        // plain-language diagnosis — *"could not open our own connection to
+        // 192.168.68.160:9000 (connection refused) — until it succeeds,
+        // anything we write to a shared folder will not reach them"* —
+        // StatusRender put it on the wire, and System.Text.Json dropped it
+        // here in silence (AP49). So the panel that owns the flow could not
+        // have shown the answer even if it had wanted to, and the sentence
+        // went to a run log instead. An operator spent 45 minutes without
+        // it while it was being computed for them every pass.
+        //
+        // Asserted by SyncPanelProblemsTests, because an undeclared field
+        // fails nothing.
+        [JsonPropertyName("problems")] public List<string> Problems { get; set; } = new();
     }
 
-    private sealed class DeviceDto
+    // internal for the same reason StatusView is: it is reachable from a
+    // property on an internal type, so C# requires at least that
+    // accessibility.
+    internal sealed class DeviceDto
     {
         [JsonPropertyName("peerId")] public string PeerID { get; set; } = "";
         [JsonPropertyName("label")] public string Label { get; set; } = "";

@@ -110,6 +110,13 @@ func (ws *ShellWorkspace) StatusSnapshot() (ReconcileOutcome, error) {
 	for _, d := range devices {
 		ds := ws.observeDevice(d)
 		ds.Maintained = maintained[d.PeerID]
+		// Direction BEFORE the maintenance note, for reconcileDevice's
+		// reason: the useful sentence is the one about the route, and the
+		// maintenance note would otherwise be the only thing an operator
+		// reads for a peer that is half-connected.
+		if p := ds.directionProblem(ws.publishesTo(d.PeerID)); p != "" {
+			out.Problems = append(out.Problems, p)
+		}
 		if !ds.Maintained && !d.Paused {
 			// Named rather than left blank: a device with no maintenance
 			// session is not being reconnected by anything, and after a
@@ -181,6 +188,9 @@ func (ws *ShellWorkspace) observeDevice(d workbench.DeviceData) DeviceStatus {
 			break
 		}
 	}
+	// Direction, which the pool cannot express. See DeviceStatus.
+	// OutboundRoute for why a bare Connected is not an answer.
+	st.OutboundRoute = ws.hasDialedThisProcess(d.PeerID)
 	// Outbound authority, exactly knowable: this is our row, which we
 	// wrote. "(nothing)" is a real answer and a different one from "we
 	// could not look" — a peer we know and grant nothing is a peer whose

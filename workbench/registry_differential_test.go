@@ -224,6 +224,34 @@ func TestOurResolverResolvesEveryRustName(t *testing.T) {
 // `reviews/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`. If it
 // starts failing for a *different* reason, the divergence moved and the
 // packet is stale.
+//
+// # THE DIVERGENCE CLOSED ON 2026-09-09 AND THIS TEST CANNOT NOTICE
+//
+// `EXTENSION-REGISTRY` §246 ruled it on 2026-08-21 — `[MUST, v1.21]`,
+// hashes and not endpoint objects, our reading — and core-rust is
+// conformant. Measured at the live federation the same day with
+// `make consume-live`: `transport carried hash in the binding`, on a
+// binding reissued 2026-08-24.
+//
+// **So the exit condition written above is unreachable by construction.**
+// This fixture is FROZEN, and those bytes carry the inline form forever;
+// core-go will never resolve them however conformant everyone becomes.
+// The test will keep passing, in perpetuity, as a monument to a defect
+// that no longer exists — and, worse, the full agreement assertions it
+// disabled are the thing actually worth having, since they are the only
+// place two independent resolvers are required to agree on one set of
+// bytes.
+//
+// The action is a RE-CUT, not a deletion: re-emit the fixture from a
+// current `entity-browser-rust` federation, restore the agreement
+// assertions, and drop the vacuity caveat on
+// `TestBothResolversRefuseASubstitutedBinding` below. Kept until then,
+// because deleting it first would leave the differential harness with no
+// coverage at all in the window between.
+//
+// **Generalisation worth more than the fix: a self-retiring test whose
+// retirement depends on data the test itself owns can never retire.**
+// The exit condition has to be checkable against something that moves.
 func TestKernelCannotDecodeARustBinding(t *testing.T) {
 	srv := diffServer(t, nil)
 	be, hctx := kernelBackend(t, srv.URL)

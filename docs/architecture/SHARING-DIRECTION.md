@@ -733,3 +733,77 @@ The mechanism was never missing; seven models in `workbench/` already used
 `OnPrefixChange`. Each button was locally reasonable when it was added, and the
 sum was a feature the operator had to hand-crank while the rest of the
 application was live. AP73 carries the general form.
+
+## 11. Reach — the third operator report, 2026-09-08/09
+
+The first two reports were about the *shape* of the flow. This one was about
+whether the two machines can talk at all, and it is a different layer: nothing
+below is about declarations, modes, or panels.
+
+### 11.1 Discovery was inert, at every precedence
+
+Two machines on one LAN, discovering each other, one of them on a port the
+other's record predated. The app dialled the stale address for 45 minutes.
+
+The first diagnosis was a **precedence** bug — stored address consulted before
+discovery — and it was wrong in the way that matters: fixing the order alone
+would have changed nothing. `CandidateData.PeerID` is empty on every mDNS
+candidate (§2.1 makes it null until IDENTIFY; nothing calls the promotion that
+fills it), the claim lives in a `peer_id_hint` TXT key, and **all three
+consumers that needed to join an announcement to a peer read the field.** They
+matched nothing, always. The `peers` verb had never listed a discovered peer.
+
+It survived because the Nearby panel reads the hint and works — so the surface
+anyone would check to answer *"is discovery working?"* said yes, correctly,
+about a subsystem whose every consumer was doing nothing.
+
+**The design rule this earns:** where a peer *is* is an observable fact, and a
+stored address is a hypothesis about it. Durable is not authoritative. But the
+rule only has teeth if the observation can be *joined* to the peer, and the join
+is the part that failed silently. When two pieces of code read one announcement,
+check they read the same key.
+
+The resolution is a ladder (`dialLadderFor`) rather than a new precedence:
+announced address first, stored addresses behind, try them all, write back
+whichever answered. The fallback is load-bearing twice over — it is what keeps a
+sleeping peer reachable, and it is what makes trusting an unauthenticated mDNS
+claim safe, because a spoofed announcement then costs one failed handshake
+instead of the relationship.
+
+### 11.2 The connection is bilateral, and we are outside both gates
+
+The operator asked why, if a connection is established, a second one-way
+connection is needed. **The protocol agrees with them and the mechanism is
+built:** §6.11 reentry caches every accepted connection by peer-id so a handler
+can originate back over it, and §6.5(b) mints the acceptor's mirror capability —
+*"that single reciprocal grant is what makes the pair symmetric"*.
+
+Both are gated on predicates a LAN peering never satisfies. Reentry is consulted
+only when transport-profile resolution **errors**, so a profile that resolves to
+a dead address dials the corpse while the live inbound connection sits one map
+lookup away. The reciprocal grant requires a rendezvous establishment, and two
+laptops dial by address.
+
+The consequence for this document's model is worth stating plainly: **sharing is
+a mutual relationship expressed as two independent unidirectional dials**, and
+the reconciler's per-process outbound dial exists precisely to arrange the second
+one. That is a workaround for a gate, not a property of the design. Routed as
+`reviews/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md`; if the ask
+lands, `ensureOutboundRoute` becomes unnecessary rather than merely cheaper.
+
+### 11.3 Direction belongs on the reading
+
+`ConnectedPeers()` is the pool, and it holds both directions untagged, so an
+inbound-only session rendered as plain "connected" — the exact state in which
+sharing is half-broken, and the most likely one. `DeviceStatus.OutboundRoute`
+now carries it, with `directionProblem` as the single writer shared by the pass
+and the read.
+
+**One correction worth keeping, because the first draft got it backwards.** The
+warning was initially gated on *"do we publish to them"*, on the reasoning that a
+received folder needs their dial rather than ours. AP63 had already ruled: a sync
+is mutual, and the receiver dispatches out to subscribe and to pull the closure.
+An unreachable peer breaks an incoming folder just as completely; it merely
+presents as *"nothing is arriving"* rather than *"nothing is being sent"*, and
+those two symptoms send an operator to opposite machines. Direction changes the
+sentence, never the decision to say something.

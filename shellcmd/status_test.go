@@ -468,14 +468,35 @@ func TestReconcile_OpensOurOwnOutboundRouteOncePerProcess(t *testing.T) {
 	}
 }
 
-// TestReconcile_SaysNothingAboutDialingAPeerWeOnlyRECEIVEFrom.
+// TestReconcile_NamesTheRightConsequenceForAPeerWeOnlyRECEIVEFrom.
 //
-// The outbound route matters for a folder we PUBLISH; for one we only
-// receive, the other side dispatches to us and our own dial is not what
-// carries it. Reporting a problem there would be noise on a working
-// relationship, and noise on a status surface is how people learn to
-// ignore it.
-func TestReconcile_SaysNothingAboutDialingAPeerWeOnlyRECEIVEFrom(t *testing.T) {
+// **This test asserted the opposite until 2026-09-09, and its premise was
+// wrong.** It read: *"for a folder we only receive, the other side
+// dispatches to us and our own dial is not what carries it — reporting a
+// problem there would be noise."* The concern is right in general (noise
+// on a status surface is how people learn to ignore it) and the factual
+// claim underneath it is refuted by this repo's own measurements:
+//
+//   - AP63, measured in `shellboot/policy_probe_test.go`: **a sync is
+//     MUTUAL** — *"the receiver dispatches in to subscribe and fetch"* —
+//     and one direction alone gives an accepted subscription and an empty
+//     folder.
+//   - `walkRemoteFiles` (`shellcmd/sync_backfill.go`) lists
+//     `/{remotePeerID}/{prefix}`. A peer-qualified path is a REMOTE read
+//     (AP11): the receiver dispatches to the sender to enumerate, and
+//     again to pull the blob closure.
+//   - The catch-up supervisor re-derives truth by asking each sender what
+//     it holds, which is the same outbound dispatch on a timer.
+//
+// So an unreachable peer breaks an incoming folder just as completely as
+// an outgoing one. It is not noise; it is the actual failure, and
+// suppressing it is why "my folder just stopped updating" had no surface.
+//
+// What survives from the original concern is that the two symptoms are
+// DIFFERENT and send an operator to opposite machines — *"nothing is
+// arriving"* versus *"nothing is being sent"* — so direction changes the
+// sentence and never the decision to say something.
+func TestReconcile_NamesTheRightConsequenceForAPeerWeOnlyRECEIVEFrom(t *testing.T) {
 	ws, st := reconcileFixture(t)
 	if err := workbench.SaveDevice(st, workbench.DeviceData{PeerID: themPeer, Label: "desk-2"}); err != nil {
 		t.Fatal(err)
@@ -491,13 +512,26 @@ func TestReconcile_SaysNothingAboutDialingAPeerWeOnlyRECEIVEFrom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mentions(out.Problems, "we publish a folder to this peer") {
-		t.Errorf("the loop complained about dialing a peer we only receive from: %v", out.Problems)
+	// It IS reported — the receiver's own dispatch is what fetches, so an
+	// unreachable sender means this folder has quietly stopped updating.
+	if !mentions(out.Problems, "could not open our own connection") {
+		t.Errorf("the loop said nothing about a peer we receive from and cannot reach — "+
+			"the receiver dispatches out to subscribe and fetch, so this folder is "+
+			"dead: %v", out.Problems)
+	}
+	// And with the RECEIVE consequence, not the publish one. Getting this
+	// backwards sends the operator to the other machine.
+	if !mentions(out.Problems, "folder we receive will stop updating") {
+		t.Errorf("a receive-only peer was described with the wrong consequence: %v", out.Problems)
+	}
+	if mentions(out.Problems, "nothing we write") {
+		t.Errorf("a receive-only peer was described as a publishing failure: %v", out.Problems)
 	}
 
 	// Control arm: declare a folder we DO publish to them, and the same
-	// pass now says so. Without this the assertion above passes against a
-	// loop that never produces the message at all.
+	// pass now names the other consequence. Without this, a loop that
+	// emitted one fixed sentence for every peer would satisfy everything
+	// above.
 	if err := workbench.SaveFolder(st, workbench.FolderData{
 		ID: "photos", Label: "photos", Kind: "files", Root: "photos", Origin: "local",
 	}.WithPeerState(themPeer, workbench.FolderStateOffered, 1, "")); err != nil {
@@ -507,9 +541,9 @@ func TestReconcile_SaysNothingAboutDialingAPeerWeOnlyRECEIVEFrom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !mentions(out2.Problems, "we publish a folder to this peer") {
-		t.Errorf("control arm: a published folder with no dialable address produced no "+
-			"problem, so the assertion above proves nothing: %v", out2.Problems)
+	if !mentions(out2.Problems, "nothing we write to a shared folder will reach them") {
+		t.Errorf("control arm: a published folder produced no publish-side consequence, so "+
+			"the direction assertions above prove nothing: %v", out2.Problems)
 	}
 }
 

@@ -245,6 +245,57 @@ func (a *AppPeer) ReapStaleDiscoveredCandidates() int {
 	return removed
 }
 
+// CandidatePeerID is THE answer to "which peer is this announcement
+// from", and every consumer must use it rather than reading a field.
+//
+// # Why this exists — a whole feature was dead because of one field read
+//
+// `CandidateData.PeerID` is **empty for every mDNS candidate that exists
+// in this product**, and reading it is not a stricter check, it is a
+// guaranteed miss. Per EXTENSION-DISCOVERY §2.1 the field is null
+// pre-IDENTIFY; core-go's `candidateFromServiceEntry`
+// (`ext/discovery/mdns/mdns.go`) constructs the candidate with no PeerID
+// at all, and the only writer of the populated form is
+// `discovery.Handler.PromoteSuccessor` — which, measured 2026-09-09, has
+// **zero callers in either tree**. The claimed peer-id travels in the
+// `peer_id_hint` TXT key and nowhere else.
+//
+// So there were two readers of one announcement, using different keys:
+// the Nearby panel read the TXT hint and worked, while the reconciler's
+// address refresh and `dialableAddressFor` both read `cd.PeerID`, matched
+// nothing, and silently did nothing — for every peer, on every pass,
+// since they were written. That is why an operator watched their app dial
+// a stale port for 45 minutes while the panel showed the peer sitting on
+// the LAN announcing the right one: discovery HAD found it, and the code
+// that could have used it was comparing against a field that is never
+// filled in. AP58's shape at the level of a field rather than a wrapper —
+// the cheap fixture (and the panel) read the populated channel, so
+// nothing failed.
+//
+// # Why trusting the hint is correct here, and where it would not be
+//
+// The hint is a CLAIM. Anything on the LAN can announce any peer-id. That
+// is survivable for exactly one use — deciding **where to dial a peer we
+// have already declared** — because the peer-id is not what we are
+// learning, it is what we are matching against a device record we already
+// hold, and the dial then authenticates against that identity. A false
+// hint therefore costs a failed handshake, never a wrong peer: it can
+// waste a dial, it cannot redirect a relationship.
+//
+// It would NOT be sufficient to admit a peer, mint a grant, or bind an
+// identity — those need the IDENTIFY ceremony, which is exactly what
+// `PromoteSuccessor` is for and what nothing yet calls. Do not widen this
+// function's use to that class of decision.
+//
+// Prefers the substrate's own populated field when it is there, so this
+// becomes a no-op the day the ceremony is wired.
+func CandidatePeerID(cd types.CandidateData) string {
+	if cd.PeerID != "" {
+		return cd.PeerID
+	}
+	return peerIDHintFromCandidate(cd)
+}
+
 // peerIDHintFromCandidate extracts the `peer_id_hint` TXT key from a
 // candidate's endpoint_hint, returning empty string when absent or on
 // decode failure.

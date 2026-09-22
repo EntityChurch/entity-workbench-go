@@ -138,6 +138,70 @@ public sealed class SharingStatusPanelTests
         finally { window.Close(); }
     }
 
+    // A peer we cannot REACH must never render as plain "connected".
+    //
+    // `connected` is the connection POOL: it holds sessions in both
+    // directions and tags neither, so a peer that dialled US is in it —
+    // and a connection they opened does not authorize us to dispatch over
+    // it (AP63). On 2026-09-08 an operator watched this row say
+    // **connected** for 45 minutes while nothing they wrote left the
+    // machine, and while the run log said, correctly, that the outbound
+    // connection had never come up. The panel and the log contradicted
+    // each other and the reassuring one was on screen.
+    //
+    // Same rule as the inbound-authority test above — state what is
+    // knowable, never draw a health dot over what is not — one field
+    // across. If this fails because the state was collapsed back into one
+    // word, restore the distinction, not the assertion.
+    [AvaloniaFact]
+    public void An_Inbound_Only_Peer_Does_Not_Render_As_Connected()
+    {
+        var (window, panel) = Open();
+        try
+        {
+            panel.SeedDeviceForTests("12D3KooWInboundOnlyPeerIdentity", "s4-inbound-only",
+                maintained: true, connected: true, paused: false,
+                outboundGrant: "system/subscription:create",
+                outboundRoute: false);
+            Settle(window, panel);
+
+            var row = RowTextsFor(panel, "s4-inbound-only");
+
+            // The direction AND the consequence. "not maintained" was
+            // already on screen during the incident and told nobody what
+            // was wrong.
+            Assert.Contains(row, t => t.Contains("they can reach us"));
+            Assert.Contains(row, t => t.Contains("nothing we write will arrive"));
+            // And it must not claim the healthy state — the word that cost
+            // the 45 minutes.
+            Assert.DoesNotContain(row, t => t.Contains("relationship is being maintained"));
+        }
+        finally { window.Close(); }
+    }
+
+    // The control arm. Without it, a panel that says "they can reach us"
+    // on every row passes the test above — and a warning shown always is a
+    // warning read never.
+    [AvaloniaFact]
+    public void A_Peer_We_Can_Reach_Still_Renders_As_Healthy()
+    {
+        var (window, panel) = Open();
+        try
+        {
+            panel.SeedDeviceForTests("12D3KooWReachablePeerIdentity", "s4-reachable",
+                maintained: true, connected: true, paused: false,
+                outboundGrant: "system/subscription:create",
+                outboundRoute: true);
+            Settle(window, panel);
+
+            var row = RowTextsFor(panel, "s4-reachable");
+
+            Assert.Contains(row, t => t.Contains("relationship is being maintained"));
+            Assert.DoesNotContain(row, t => t.Contains("they can reach us"));
+        }
+        finally { window.Close(); }
+    }
+
     // A read must caption itself as a read.
     //
     // Both directions in one test, because a caption that never changes at

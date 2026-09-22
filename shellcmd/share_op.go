@@ -856,9 +856,20 @@ func (ws *ShellWorkspace) Peers() ([]DiscoveredPeer, error) {
 		if c.PeerID == "" {
 			continue
 		}
+		// A DIALABLE address, never the pool's observed one, when we have
+		// one. `PeerInfo.Address` is the connection's remote address, and
+		// for an INBOUND connection that is the dialer's ephemeral source
+		// port — `192.168.68.160:50026`, which looks exactly like an
+		// address and is refused by everything that tries it. The same
+		// trap dialableAddressFor's own comment records; this surface was
+		// still printing it, and it is the address an operator copies.
+		addr := ws.dialableAddressFor(c.PeerID)
+		if addr == "" {
+			addr = c.Address
+		}
 		byID[c.PeerID] = &DiscoveredPeer{
 			PeerID:    c.PeerID,
-			Address:   c.Address,
+			Address:   addr,
 			Alias:     ws.AliasFor(c.PeerID),
 			Connected: true,
 			Source:    "connected",
@@ -867,7 +878,15 @@ func (ws *ShellWorkspace) Peers() ([]DiscoveredPeer, error) {
 
 	if local.DiscoveryEnabled() {
 		for _, cand := range local.ReadDiscoveredCandidates() {
-			id := string(cand.PeerID)
+			// entitysdk.CandidatePeerID, never cand.PeerID — the third
+			// site of the same dead read. That field is empty on every
+			// mDNS candidate (see CandidatePeerID), so `id == ""` was true
+			// every time and **the `peers` verb has never listed a single
+			// discovered peer** — it only ever showed the connection pool
+			// under a heading that promised discovery. The GUI's Nearby
+			// panel looked fine throughout, because the bridge reads the
+			// TXT hint directly.
+			id := entitysdk.CandidatePeerID(cand)
 			if id == "" || id == local.PeerID() {
 				continue
 			}
@@ -982,15 +1001,28 @@ func (ws *ShellWorkspace) dialableAddressFor(peerID string) string {
 			return addr
 		}
 	}
+	return ws.discoveredAddressFor(peerID)
+}
+
+// discoveredAddressFor is the live-announcement arm, shared with the
+// reconciler's dial ladder.
+//
+// **entitysdk.CandidatePeerID, never cand.PeerID.** The comparison this
+// used to make — `cand.PeerID != peerID` — could not match anything: the
+// field is empty on every mDNS candidate (see CandidatePeerID), so the
+// discovery fallback was dead code wherever it appeared. It appeared in
+// both places that needed it.
+func (ws *ShellWorkspace) discoveredAddressFor(peerID string) string {
 	local := ws.Local.Peer
-	if local.DiscoveryEnabled() {
-		for _, cand := range local.ReadDiscoveredCandidates() {
-			if cand.PeerID != peerID {
-				continue
-			}
-			if addr := entitysdk.DialAddressForCandidate(cand); addr != "" {
-				return addr
-			}
+	if !local.DiscoveryEnabled() {
+		return ""
+	}
+	for _, cand := range local.ReadDiscoveredCandidates() {
+		if entitysdk.CandidatePeerID(cand) != peerID {
+			continue
+		}
+		if addr := entitysdk.DialAddressForCandidate(cand); addr != "" {
+			return addr
 		}
 	}
 	return ""

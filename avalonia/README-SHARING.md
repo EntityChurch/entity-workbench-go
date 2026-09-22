@@ -224,13 +224,28 @@ routed as such (`reviews/LIVE-GRANT-REFRESH-2026-09-08.md`): a permission
 change should not require destroying a working connection, and it should
 certainly never surface as an instruction.
 
-**Two things here are genuinely NOT measured, and you are the first person
-in a position to measure them.** Every automated gate types an address and
-presses Connect explicitly, and the two-peer harness says so in its own
-header — mDNS across a podman bridge is not a product claim. So:
+**One of these WAS measured on 2026-09-08, and discovery did not carry it —
+because of a defect, now fixed.** This section used to list it as merely
+unverified; here is what the first real two-machine run found.
 
-- whether **discovery alone** carries the whole flow, with no address ever
-  typed, is unverified on a real LAN;
+Discovery announced correctly and the Peer Connections panel showed the
+other machine the whole time. But three consumers that needed a peer-id
+from an announcement read `CandidateData.PeerID`, which is **empty on
+every mDNS candidate** — the claimed id travels in a `peer_id_hint` TXT
+key, and the field is only filled in by an IDENTIFY step nothing calls. So
+the reconciler could never learn an address from discovery, and the shell's
+`peers` verb had never listed a discovered peer at all. The visible cost
+was an app dialling a port the other machine had moved off, for 45
+minutes, while that machine announced its real one on the LAN.
+
+Fixed 2026-09-09 (`entitysdk.CandidatePeerID`, and a dial ladder that tries
+the announced address first and writes back whichever answers). **Discovery
+alone should now carry the flow with no address ever typed — and that is a
+claim from one operator session plus unit gates, not from a harness**, so
+it is the thing to check hardest on the next real run.
+
+Still genuinely NOT measured:
+
 - whether the publisher's dial is still needed at all, or whether the
   reconciler's outbound route covers it, is unverified **because every
   harness performs that dial** — a stage a fixture always performs is a

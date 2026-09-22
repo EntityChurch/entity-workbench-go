@@ -37,7 +37,7 @@ D12–D27 here are ours, earned on the eight crash-hunt commits, two feedback ep
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP81, and the promotion
+  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP83, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -65,6 +65,59 @@ Three rules about work that crosses a repo boundary, each earned the hard way:
   them"* row forward, establish the other side actually has it. Search for the **subject**, not the
   filename — people cite your commits and your claims, never your file paths, so a filename miss
   means nothing. One row here sat blocked for 24 days on a document that had never arrived.
+  **And ARCHIVING is not delivering** — the corollary, earned 2026-09-09. We fixed a publisher
+  defect, wrote the result packet, filed it in `reviews/archive/` as done, and never sent it; three
+  weeks later arch's board still carried a **⛔ blocker against us for the defect it reports as
+  fixed**, source-read at a commit that predates the fix by hours. Archive on **delivery plus
+  reply**, never on our own side of the work being finished.
+- **There are exactly three counterpart seats, and each has ONE tracker at a PREDICTABLE PATH:
+  `docs/status/TRACKER-<counterpart-repo>.md`** — `TRACKER-entity-core-go.md` (upstream substrate:
+  a defect in an implementation of something already decided), `TRACKER-entity-system-architecture.md`
+  (the specs: anything whose answer is a sentence in a document),
+  `TRACKER-entity-browser-rust.md` (the peer application tier: shared shapes and interop, where
+  neither side can rule anything). The path and the four sections — *Open — asks · Corrections we
+  owe them · Filed, nothing owed back to us · Closed* — are the **ecosystem-wide** convention from
+  arch's `SEAT-CLEANUP-INSTRUCTIONS-2026-09-09`, adopted 2026-09-09; ours started in
+  `reviews/` and moved. **Other seats reconcile against the tracker, not against the directory**,
+  so a packet that is not on one does not exist: the `localfiles.Handler.Load` packet was written,
+  was missing from the index, and read as unwritten from two directions at once — including from
+  arch, who had opened a row offering to carry it for us.
+  Four rules carry the weight. **Stable ids, never renumbered** (a closed ask keeps its id).
+  **An ask is ONE SENTENCE naming what must be decided**, not a summary — the packet carries the
+  detail. **"Filed, nothing owed back to us" is a real section and most documents belong in it**;
+  counting a for-information review as an open ask is how one seat's private notes were read as a
+  44-item inbox when the true number was eleven. **Say what state delivery is in** — *filed* ≠
+  *routed* ≠ *answered*, default *not established*.
+  **The split that is easy to get wrong is core-go vs arch**, and the error runs one way: filing
+  an implementation bug about behaviour a spec already decided. Grep
+  `../entity-system-architecture/docs/proposals/` — **including `implemented/`** — before deciding
+  a gate is a defect.
+- **IN A PACKET, MARK WHICH SENTENCES ARE MEASURED — an unmeasured claim in the grammar of a
+  measured one is the failure mode of this whole channel** (2026-09-09, three instances in one
+  day, all in documents whose subject *was* measurement). We routed a naming collision found by
+  measurement — file, symbol, type tag, all real — and in the same paragraph ranked alternatives
+  on the claim that one *"collides with nothing in either tree"*, **which we did not check and
+  which is false**: it is `EXTENSION-TREE`'s own `get` return type (`entity? | listing`), 292
+  occurrences in one sibling and 70 in ours. Hours earlier we wrote *"what we need first: a
+  WebSocket listener"* into a tracker about a listener **this repo has shipped, wired and gated**
+  since before the row was written. The reader cannot tell the two voices apart, and neither can
+  the next session.
+  Two rules. **The party that MOVES a claim owns re-checking it, however short the move** — arch
+  moved ours one document and it failed there; that is the check that caught it, and it is the one
+  to run on anything inherited. **And a negative claim about your OWN tree needs the same evidence
+  as one about a sibling** — *"we don't have X"* feels like recall and is a search, which is why
+  D20's sixth payout was scored against ourselves rather than against the kernel.
+- **A new outbound packet is `docs/status/ROUTING-<date>-<letter>-<recipient>-<slug>.md`**, opening
+  with an addressee block whose three fields are each **on their own line** — `**To:**` naming
+  **repositories** (never a person or a nickname; a brace list is fine), `**From:**`, `**cc:**`.
+  `cc:` means *you are not on the hook*: if it needs acting on, it goes in `To:`. Never reuse a
+  letter within a day. This is `AGENTS-STANDARD`'s existing convention, unadopted here until
+  2026-09-09; **the packets already in `docs/architecture/reviews/` stay exactly where they are**
+  — do not move or rename history, and do not re-file anything to flush a backlog.
+  **Cite a packet by its FULL stem.** `ROUTING-2026-09-06-b` names a day and a letter, which is
+  unique to one repo on one day and therefore not unique — three such ids in this ecosystem
+  already reach three different packets each. A packet is cited far more often than it is opened,
+  so a citation the reader cannot resolve is the failure that matters.
 - **When you read another repo, its git is read-only.** `git status` first, stage specific paths,
   never `git add -A` outside your own working directory.
 
@@ -529,7 +582,7 @@ one — name the recurring cycle first, then let each step own one lever of it.
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
 - The project measures everything against the **27 disciplines (D1–D27)**, ten review
-  questions, and anti-pattern catalog (AP1–AP81) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+  questions, and anti-pattern catalog (AP1–AP83) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A COPY OF A LIVE SQLITE STORE IS NOT THE STORE, AND THE MISSING WRITES READ AS ZERO ROWS**
   (AP76). File-backed `SqliteStore` opens **WAL** (`core/store/sqlite.go`, `buildSqliteDSN`
   defaults `JournalMode` to `"WAL"`), so everything since the last checkpoint is in the `-wal`
@@ -768,27 +821,103 @@ one — name the recurring cycle first, then let each step own one lever of it.
   `docs/architecture/reviews/FIRST-CHANGE-AFTER-RESTART-IS-LOST-2026-09-03.md` before touching
   this — §4 lists what has not been ruled out, and the first question to answer is whether the
   loss is on the send side or the receive side, which nobody has instrumented.
-- **A REMEMBERED ADDRESS IS A HYPOTHESIS, NOT AN AUTHORITY — AND DISCOVERY CANNOT CURRENTLY
-  OVERRIDE ONE** (open, found 2026-09-08 on the first real two-machine run).
-  `dialableAddressFor` (`shellcmd/share_op.go:969`) consults this session's connections, then
-  **the stored declaration**, then discovery — so once an address is recorded, a live mDNS
-  announcement can never correct it, and we dial a stale address forever while the peer announces
-  its real one on the LAN. `observeDevice` (`shellcmd/status.go:173`) is stricter still: stored
-  declaration **only**, discovery nowhere in the reconcile path. Measured: 45 minutes of
+- **`CandidateData.PeerID` IS EMPTY ON EVERY mDNS CANDIDATE — USE `entitysdk.CandidatePeerID`**
+  (AP82, fixed 2026-09-09). Per EXTENSION-DISCOVERY §2.1 the field is null until IDENTIFY, and the
+  only writer of the populated form — `discovery.Handler.PromoteSuccessor` — has **zero callers in
+  either tree**. The claimed peer-id travels in the `peer_id_hint` TXT key and nowhere else. So
+  reading the field is not a stricter check, it is a **guaranteed miss**, and three consumers here
+  joined on it: the reconciler's address refresh, `dialableAddressFor`, and the `peers` verb.
+  All three did nothing at all, for every peer, on every pass, since they were written — **the
+  `peers` verb had never listed a single discovered peer.** The Nearby panel read the TXT hint and
+  worked, which is why discovery looked healthy while every consumer of it was inert.
+  **Two readers of one announcement using different keys, and only one of the keys is ever
+  populated.** The tell is a join that silently yields nothing rather than failing; a fixture that
+  fills the field in cannot reproduce it, which is AP58's shape at the level of a value. Trusting
+  the hint is correct **only** for deciding where to dial a peer we have already declared — the
+  peer-id is matched against a record we hold and the dial authenticates, so a false hint costs a
+  failed handshake, never a wrong peer. It is not sufficient to admit a peer, mint a grant or bind
+  an identity. Gates: `entitysdk/candidate_peerid_test.go`, `shellcmd/discovery_address_test.go`,
+  both with an anti-vacuity arm asserting the field really is still empty.
+- **A REMEMBERED ADDRESS IS A HYPOTHESIS; A LIVE ANNOUNCEMENT IS AN OBSERVATION** (fixed
+  2026-09-09, found 2026-09-08 on the first real two-machine run). Measured: 45 minutes of
   `connection refused` at a port the peer had moved off, **zero** successful connections, and the
-  operator's folder syncing one way because inbound worked and outbound never came up. The intent
-  is right — a stored address is the only source that survives a restart — and **the error is
-  treating *durable* as *authoritative*.** Where a peer is, is observable; when the stored
-  hypothesis has just been refused, the observation must win and be written back. Reach for this
-  wherever a cached fact outranks a live one.
-- **`ConnectedPeers()` RENDERS "CONNECTED" FOR A PEER WE CANNOT DISPATCH TO, AND AN OPERATOR SAW
-  IT** (open, same run). `observeDevice` sets `st.Connected` from the connection **pool**, and an
-  inbound-only session — they dialled us, we never dialled them — is indistinguishable from a
-  working one. That is the exact state in which sharing is half-broken, and the most likely one,
-  since a dial-by-address authorizes only the dialer (AP63). **The panel and the run log
-  contradicted each other in the same session and the reassuring one was on screen.** Direction
-  belongs on the reading, the way inbound authority already is: a peer we hold no outbound route
-  to must say so, not show a green word.
+  operator's folder syncing one way because inbound worked and outbound never came up — while
+  that peer sat on the LAN announcing its real address the whole time. The intent was right — a
+  stored address is the only source that survives a restart — and **the error was treating
+  *durable* as *authoritative*.** Now: `dialLadderFor` (`shellcmd/reconcile.go`) puts **discovery
+  first and the declaration behind it**, `ensureOutboundRoute` tries EVERY address rather than the
+  preferred one, and the address that answered is written back through `RememberDeviceAddress`.
+  Walking the ladder is also what makes trusting the mDNS claim safe: a spoofed announcement costs
+  one failed handshake and we fall through, instead of replacing a working address. Keep the
+  fallback — dropping it turns "discovery first" into "discovery only" and breaks every peer that
+  is asleep or on a network with no multicast.
+- **A PEER WE CANNOT DISPATCH TO MUST NOT RENDER AS "CONNECTED"** (fixed 2026-09-09, same run).
+  `ConnectedPeers()` is the connection **pool**: it holds sessions in both directions and tags
+  neither, so an inbound-only session — they dialled us, we never dialled them — was
+  indistinguishable from a working one. That is the exact state in which sharing is half-broken
+  and the most likely one, since a dial-by-address authorizes only the dialer (AP63). **The panel
+  and the run log contradicted each other in the same session and the reassuring one was on
+  screen.** `DeviceStatus.OutboundRoute` now carries the direction, sourced from
+  `dialedThisProcess`; the shell prints `inbound only`, the Sharing Status panel says *"they can
+  reach us — we have no connection to them"* in Goldenrod and never DarkSeaGreen, and
+  `DeviceStatus.directionProblem` is the **one writer** of the sentence, shared by the pass and
+  the read so the two surfaces cannot drift. **It fires for a RECEIVE-only folder too** — that
+  was a live error while writing it, and AP63 already had the answer: a sync is mutual, the
+  receiver dispatches out to subscribe and pull the closure, so an unreachable peer breaks an
+  incoming folder just as completely and merely presents as *"nothing is arriving"*. The
+  consequence sentence differs by direction because those two symptoms send an operator to
+  opposite machines. Direction is **not observable from core-go** (`Connections()` concatenates
+  and tags nothing; `IsConnected` conflates the pool with the §6.11 reentry map) — routed as
+  `reviews/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md`.
+- **AN UNREACHABLE PEER WRITES A PERMANENT ENTITY PER STATUS TRANSITION, AND THE CAUSE IS THAT
+  `maintain-peer` READS AN IN-MEMORY MAP TO DECIDE WHETHER A RELATIONSHIP EXISTS** (measured
+  2026-09-09; core-go's, routed as
+  `reviews/CORE-GO-MAINTAIN-SESSION-DIES-AND-THE-GRAPH-DOES-NOT-2026-09-09.md`).
+  The reconnect lifecycle has two halves with **different lifetimes**: the continuation graph
+  (`system/inbox/network/{peer}/*`) and the lifecycle subscriptions are tree-resident and restored
+  at open; the maintain **session** is a map on the handler and dies with the process. So
+  `existed` is false on the first call of every new process, `maintain-peer` takes
+  `dropSession` + 502 instead of the arm-the-retry + 200 branch core-go added *specifically to
+  stop this marker family*, and every later peer-status transition dispatches
+  `system/network:restore-subscriptions` into an empty map → **404 not_found** → one permanent
+  `chain-errors/lost/…/notif-sub-…` marker, forever.
+  **The op is `restore-subscriptions` and NOT `reconnect`, and the marker's own body is what
+  says so** (corrected 2026-09-09 by audit, after the first write-up named `reconnect` in three
+  documents). `advance.go` binds this marker **only** when the continuation has no `on_error`,
+  and sets `reason` to the failed op's `code` verbatim — so `reason=not_found` reaches the
+  resubscribe continuation and nothing else: `reconnect`'s continuation *has* an `on_error`
+  (routing to the backoff path, which is exactly the fix that works), and the backoff's own
+  `maintain-peer` answers 502 `connection_failed`. **Consequence worth more than the correction:
+  the trigger is the far peer RECONNECTING TO US, not going away** — both lifecycle
+  subscriptions fire on `created`/`updated` with no filter on the status value, so an
+  inbound-only peer whose retry loop keeps succeeding writes one marker per success. That is why
+  the cadence matched their dial interval.
+  **Four arms, and the two NEGATIVES are the load-bearing ones** (`shellboot/chain_error_growth_probe_test.go`):
+  a peer never reachable → 0 markers (no session, so no graph); established-then-closed in one
+  process → 0; **restart, then one status transition → the operator's marker, exact shape**;
+  and `CollectExpiredMarkers` on expired markers → 1→0, a **real** removal. That last arm is not
+  optional — `HistoryConfigData.MaxDepth` looks identical and prunes nothing, and a second no-op
+  knob would have inverted the conclusion. **So the growth is BOUNDED at one retention window**
+  (24 h default, knob at `system/config/chain-errors` → `retention_ms`), ~6,000 entities at the
+  observed rate — noisy, not disk-filling. Do not set a local retention override to mask it: that
+  discards real chain forensics for someone else's bug, and the trigger is the peer we cannot
+  reach, which the dial ladder above is the actual fix for.
+  **Every arm that runs in ONE process measures zero**, and one process is what every test in both
+  trees uses — the defect lives exactly at the boundary a suite does not cross.
+- **THE CONNECTION IS BILATERAL IN THE PROTOCOL, AND BOTH HALVES ARE GATED OUT OF OUR TOPOLOGY**
+  (measured 2026-09-09; the operator's question, and a better one than our bug).
+  The kernel has **§6.11 reentry** — `registerInboundForReentry` caches every accepted connection
+  by peer-id so a handler can originate back over it — and **§6.5(b) reciprocal grant**, whose own
+  comment says *"that single reciprocal grant is what makes the pair symmetric"*. So "why do we
+  need two one-way connections" has a real answer: **we should not, and the mechanism exists.**
+  Both are gated on predicates a LAN peering never satisfies. Reentry is consulted only when
+  transport-profile resolution **errors** (`establishRemote`, `core/peer/remote.go:935`) — so a
+  profile that resolves to a *dead* address dials the corpse forever while the peer's live inbound
+  connection sits one map lookup away, which is exactly the operator's 45 minutes. The reciprocal
+  grant is sent only when `EstablishedViaRendezvousKey()`, and two laptops on a LAN dial by
+  address, so it is never sent in either direction and each peer must independently dial the
+  other. **Do not build around this locally** — the ask is routed in the review above; our own
+  outbound dial per process is the correct workaround meanwhile.
 - **THE ADDRESS AN OPERATOR TYPES IS A DURABLE FACT AND BELONGS IN THE DECLARATION.** `connect`
   used to put it in `ShellWorkspace.Conns` and the kernel's pool — both process memory — so it
   died with the process and the reconciler had nothing to dial after a restart.
@@ -1486,9 +1615,17 @@ entities):
   greppable when the fold lands and the diff is re-derivable if a token's spelling moves.
   *(Not the same as AP20: that one is about inventing a constant whose referent exists in no
   document. A ruling is a referent.)*
-- **`publish/` (the CDN corridor) emits a real signed root as of 2026-08-18.** `{out}/manifest`
+- **`publish/` (the CDN corridor) emits a real signed root as of `0a7423d`, 2026-08-25.**
+  `{out}/manifest`
   is the signed `system/peer/published-root`; the http-poll transport profile moved to
   `{out}/transport-profile` (§6.5.4 / D5); the §6.5.3 closure of `root_hash` is uploaded in full.
+  **This line said "as of 2026-08-18" until 2026-09-09 and that was the DRAFTING date, not the
+  landing date** — the result packet was written against a working tree and the commit followed a
+  week later. Three documents inherited the wrong date and a correction packet to another seat
+  repeated it; *they* found the real commit. **Date a capability by the commit that carries it**,
+  and note that this is our own *"an artifact that exists only in your working tree does not
+  exist"* rule failing in the one direction it is hard to see: the artifact did land, so nothing
+  ever came back to flag it.
   Three rules that came out of building it:
   - **A signed root and a filtered publish are incompatible** — `Opts.IncludePath`/`IncludeType`
     now **refuse**. The closure obligation would upload the filtered-out entities' bytes anyway
@@ -1510,12 +1647,43 @@ entities):
     and `entity-fetch` links neither. The split is held by
     `workbench/registry_differential_test.go`, which runs both over the same frozen bytes — **if
     that test goes, `fetch`'s resolver goes with it.**
-  - **`transports` on a §3 binding has two live readings and they do not interoperate.** core-rust
-    emits an inline endpoint object, core-go's `BindingData` says `[]hash.Hash`, and core-go's
-    backend therefore **cannot decode any binding in the cohort's only live federation**. Ours
-    reads both and keeps them distinguishable (`TransportRef.Kind`) rather than normalizing.
-    Routed: `reviews/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`. **Do not "fix" this by
-    making our SDK succeed where the reference implementation fails** — that hides it in our tree.
+  - **`transports` on a §3 binding — CLOSED 2026-09-09, and our reading was the normative one.**
+    It carries **hashes**: `EXTENSION-REGISTRY` §246 is a `[MUST, v1.21]` — *"An implementation MUST
+    NOT inline an endpoint object, a profile body, or any other map in this field"* — ruled
+    2026-08-21 and folded, which we did not know because **a ruling that lands in a spec is
+    invisible to the seat that asked for it unless someone says so** (arch's words; the third
+    instance here). core-rust is conformant, and **the live federation now serves the hash form**:
+    `make consume-live` prints `transport carried hash in the binding` where it used to print
+    *"carried inline"*, on a binding reissued 2026-08-24, three days after the ruling. Keep
+    `TransportRef.Kind` — it is what let a one-command check answer this, and an origin can still
+    serve a pre-ruling binding until its ttl runs out.
+    **What is NOT closed is our gate.** `workbench/registry_differential_test.go` pins the
+    divergence against a **frozen** fixture, so its own stated exit condition — *"if core-go
+    resolves, delete this test"* — is **unreachable by construction**: those bytes carry the inline
+    form forever. Re-cut the fixture from a current emission, restore the full agreement
+    assertions, and drop the vacuity caveat on `TestBothResolversRefuseASubstitutedBinding`. **A
+    gate whose success condition cannot occur is not a gate, it is a monument** — and the tell is a
+    self-retiring test whose retirement depends on data it owns.
+  - **A CROSS-IMPL CLAIM IN A DOC COMMENT IS INVISIBLE TO REVIEW FOREVER, AND A "DETERMINISTIC
+    ENCODING" TEST IS NOT THE GATE FOR IT** (AP83, 2026-09-09). `entitysdk/site.go`'s header said we
+    *"hold to byte-equivalence with [browser-rust's] `to_entity` output"*, which reads as settled and
+    was never run. The nearest test, `TestSiteManifest_DeterministicEncoding`, encodes **twice and
+    compares** — self-consistency, green for any encoder that is merely stable, and green with the
+    other implementation deleted from the universe. The two files that *do* carry their vectors
+    verbatim cover link classification and asset refs, so the one shape
+    `APP-CONVENTION-SEMANTIC-CONTENT-SITE` §9 turns into a ratification gate was the one nothing
+    measured. **The tell is a test whose name states a cross-impl property and whose body names only
+    our own types.** Now gated: `fetch/site_entity_crossimpl_test.go` decodes every site entity in
+    their frozen emission through our types and re-encodes it (byte-identical, 3 manifests + 11
+    pages), and rebuilds **their** CHAMP root from **their** bindings in a **fresh** store.
+    Two things worth more than the fix. **The round trip is its own anti-vacuity arm** — `ecf.Decode`
+    into a Go struct silently drops undeclared fields (AP49's shape), so a dropped field cannot
+    survive the re-encode; it returns as a byte difference. And **before designing a joint rig with
+    another seat, ask what the frozen fixture you already hold answers on its own**: the question
+    browser-rust had scoped as needing a live two-peer run — *"can two independent publishers produce
+    a byte-identical root at all?"* — was answerable offline, from bytes both seats had been sitting
+    on since August, and two of its three links came back green in an afternoon. That is D20 pointed
+    sideways at a counterpart's artifacts rather than down at the kernel.
   - **The walk is the authority; a served listing is a menu** (§6a.3a). `Registry.Enumerate` walks
     the signed root over the `by-name/` prefix and reports both sets *and their disagreement*.
     The spec authors' standing ask: say which one produced a row **in the artifact**, not only

@@ -169,11 +169,17 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
     // in the app. That is the part worth gating: a test that asserts on a
     // view model passes against a row whose buttons are clipped, or absent,
     // or wired to nothing.
+    //
+    // `outboundRoute` defaults to TRUE — i.e. to the healthy peer — so
+    // existing callers keep meaning what they meant. It is a parameter at
+    // all because a seed helper that cannot express the distinction a test
+    // is named after makes the test decoration (AP70), and "connected but
+    // unreachable" is precisely the distinction this panel now has to draw.
     internal void SeedDeviceForTests(string peerId, string label, bool maintained,
-        bool connected, bool paused, string outboundGrant)
+        bool connected, bool paused, string outboundGrant, bool outboundRoute = true)
     {
-        _devices.Add(new DeviceVm(peerId, label, "", maintained, connected, paused,
-            outboundGrant, ""));
+        _devices.Add(new DeviceVm(peerId, label, "", maintained, connected, outboundRoute,
+            paused, outboundGrant, ""));
         _devicesEmpty.IsVisible = false;
     }
 
@@ -837,7 +843,7 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         foreach (var d in dto.Devices ?? new List<DeviceDto>())
         {
             _devices.Add(new DeviceVm(d.PeerId, d.Label, d.Address, d.Maintained, d.Connected,
-                d.Paused, d.OutboundGrant, d.Note));
+                d.OutboundRoute, d.Paused, d.OutboundGrant, d.Note));
         }
         _devicesEmpty.IsVisible = _devices.Count == 0;
 
@@ -1193,19 +1199,35 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
 
     private sealed record DeviceVm(
         string PeerId, string LabelRaw, string Address, bool Maintained, bool Connected,
-        bool Paused, string OutboundGrant, string Note)
+        bool OutboundRoute, bool Paused, string OutboundGrant, string Note)
     {
         public string Label => string.IsNullOrEmpty(LabelRaw) || LabelRaw == PeerId
             ? Short(PeerId)
             : $"{LabelRaw}  ({Short(PeerId)})";
 
-        // "connected" and "maintained" are different claims and this panel
-        // exists because collapsing them hid a restart defect for months: a
-        // peer can be connected by something else entirely while nothing is
-        // keeping the relationship alive, and after a restart that is the
-        // normal state until a pass runs.
+        // THREE claims, not two, and none of them may be collapsed.
+        //
+        // "connected" and "maintained" are different, and this panel exists
+        // because collapsing them hid a restart defect for months: a peer
+        // can be connected by something else entirely while nothing is
+        // keeping the relationship alive.
+        //
+        // **"connected" and "we can reach them" are different too, and that
+        // one put the wrong word on an operator's screen for 45 minutes.**
+        // `connected` is the connection POOL, which holds sessions in both
+        // directions and tags neither. A peer that dialled US is in it. A
+        // connection they opened does not authorize us to dispatch over it
+        // (AP63), so that row is `connected` while nothing we write can
+        // leave the machine — and the run log said so correctly at startup
+        // while this panel said the reassuring thing.
+        //
+        // Inbound-only is checked FIRST because it is the state that most
+        // needs saying and the one most easily hidden by a truer-sounding
+        // line about maintenance.
         public string StateLine => Paused
             ? "paused — nothing is being kept alive for this peer"
+            : (Connected && !OutboundRoute)
+                ? "they can reach us — we have no connection to them, so nothing we write will arrive"
             : (Connected, Maintained) switch
             {
                 (true, true) => "connected, and the relationship is being maintained",
@@ -1214,8 +1236,12 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
                 _ => "offline, and nothing is retrying it — run a re-check",
             };
 
+        // Never DarkSeaGreen for an inbound-only peer. A green dot there is
+        // a health claim about a route we do not have, and it is wrong in
+        // exactly the case an operator is trying to diagnose.
         public IBrush StateBrush => Paused
             ? Brushes.Gray
+            : (Connected && !OutboundRoute) ? Brushes.Goldenrod
             : (Connected && Maintained) ? Brushes.DarkSeaGreen
             : Maintained ? Brushes.Goldenrod
             : Brushes.IndianRed;
@@ -1401,6 +1427,14 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         [JsonPropertyName("address")] public string Address { get; set; } = "";
         [JsonPropertyName("maintained")] public bool Maintained { get; set; }
         [JsonPropertyName("connected")] public bool Connected { get; set; }
+
+        // Direction. **Must be declared, or System.Text.Json drops it in
+        // silence and this panel goes back to drawing a green row over a
+        // peer nothing can be dispatched to** (AP49 — that is exactly how
+        // the provenance fields were lost). Asserted by
+        // The_Render_Envelope_Does_Not_Drop_The_Direction_Field.
+        [JsonPropertyName("outboundRoute")] public bool OutboundRoute { get; set; }
+
         [JsonPropertyName("paused")] public bool Paused { get; set; }
         [JsonPropertyName("note")] public string Note { get; set; } = "";
         [JsonPropertyName("outboundGrant")] public string OutboundGrant { get; set; } = "";

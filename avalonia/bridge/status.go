@@ -75,6 +75,23 @@ type statusDeviceDTO struct {
 	Paused     bool   `json:"paused"`
 	Note       string `json:"note"`
 
+	// OutboundRoute reports that WE hold a connection to this peer, i.e.
+	// that we can dispatch to them. **A renderer must not draw
+	// `connected` without it.**
+	//
+	// `connected` alone is the connection POOL, which holds sessions in
+	// both directions and tags neither. An inbound-only peer — they
+	// dialled us, we never dialled them — is `connected: true` while
+	// nothing we write can leave the machine, and that is the most likely
+	// half-broken state there is, because a dial-by-address authorizes
+	// only the dialer (AP63). An operator watched that exact row say
+	// "connected" for 45 minutes on 2026-09-08 while the run log
+	// correctly said the outbound connection had never come up.
+	//
+	// This is the field an undeclared-DTO bug would silently drop, so
+	// StatusEnvelopeTests asserts it arrives (AP49).
+	OutboundRoute bool `json:"outboundRoute"`
+
 	// OutboundGrant is what WE grant THEM, summarized. Exactly knowable,
 	// because it is our own policy row.
 	//
@@ -311,6 +328,7 @@ func statusOutcomeToDTO(localPeerID, localAlias string, ws *shellcmd.ShellWorksp
 			Address:        d.Address,
 			Maintained:     d.Maintained,
 			Connected:      d.Connected,
+			OutboundRoute:  d.OutboundRoute,
 			Paused:         d.Paused,
 			Note:           d.Note,
 			OutboundGrant:  d.OutboundGrant,

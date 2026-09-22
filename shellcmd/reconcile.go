@@ -155,8 +155,43 @@ type DeviceStatus struct {
 	// for this peer — the difference between "we connected once" and
 	// "this relationship is being kept alive".
 	Maintained bool
-	// Connected is the pool's view right now.
+	// Connected is the pool's view right now — a session exists, in
+	// EITHER direction. On its own it is NOT the answer to "can we reach
+	// them"; see OutboundRoute.
 	Connected bool
+
+	// OutboundRoute reports that WE opened a connection to this peer in
+	// this process, i.e. that we can actually dispatch to them.
+	//
+	// # Why this is a separate field and not a nicer word for Connected
+	//
+	// A connection has a direction for AUTHORITY and none for display. A
+	// dial-by-address authorizes the DIALER only (AP63), so deliveries
+	// from us to them ride the connection WE opened — and the pool holds
+	// theirs and ours indistinguishably. An INBOUND-ONLY session (they
+	// dialled us, we never dialled them) therefore renders as plain
+	// "connected" while nothing we write can leave the machine.
+	//
+	// That is not a rare corner. It is the most likely half-broken state
+	// there is, because a dial-by-address is asymmetric by design, and it
+	// is what an operator hit on 2026-09-08: the panel said connected for
+	// 45 minutes while the run log correctly said the outbound connection
+	// had never come up. **The panel and the log contradicted each other
+	// and the reassuring one was on screen.**
+	//
+	// So this is the same discipline the Sharing Status panel already
+	// applies to inbound authority — state what is knowable, never draw a
+	// health dot over what is not — moved one field across. A surface
+	// rendering Connected without this one is reporting a fact it does
+	// not have.
+	//
+	// Sourced from dialedThisProcess, which is the honest local signal:
+	// core-go's Connections() concatenates inbound and outbound without
+	// tagging them, and IsConnected() conflates the pool with the §6.11
+	// reentry map, so neither can answer this. Routed upstream in
+	// reviews/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md.
+	OutboundRoute bool
+
 	// Paused mirrors the declaration.
 	Paused bool
 	// Note explains a false Maintained.
@@ -333,10 +368,21 @@ func (ws *ShellWorkspace) refreshDeviceAddresses(devices []workbench.DeviceData,
 	if !local.DiscoveryEnabled() {
 		return devices
 	}
+	// entitysdk.CandidatePeerID, NEVER cand.PeerID. That field is empty on
+	// every mDNS candidate this product has ever seen (§2.1: null until
+	// IDENTIFY, and nothing calls PromoteSuccessor), so the `cand.PeerID
+	// != ""` guard this line used to carry made the entire address refresh
+	// unreachable — for every peer, on every pass, silently. See
+	// CandidatePeerID's own comment for the measurement and for why
+	// trusting the claim is correct at this one decision.
 	seen := map[string]string{}
 	for _, cand := range local.ReadDiscoveredCandidates() {
-		if addr := entitysdk.DialAddressForCandidate(cand); addr != "" && cand.PeerID != "" {
-			seen[cand.PeerID] = addr
+		pid := entitysdk.CandidatePeerID(cand)
+		if pid == "" {
+			continue
+		}
+		if addr := entitysdk.DialAddressForCandidate(cand); addr != "" {
+			seen[pid] = addr
 		}
 	}
 	for i, d := range devices {
@@ -590,42 +636,151 @@ func (ws *ShellWorkspace) ensureOutboundRoute(ctx context.Context, d workbench.D
 	if ws.hasDialedThisProcess(d.PeerID) {
 		return
 	}
-	addr := st.Address
-	if addr == "" {
+	addrs := ws.dialLadderFor(d)
+	if len(addrs) == 0 {
 		// Nothing to dial. Named rather than silently skipped: for a
 		// folder we PUBLISH, this is the difference between working and
 		// not, and it reads as "connected" everywhere else.
-		if ws.publishesTo(d.PeerID) {
-			st.Note = "connected, but this peer has never given us an address to dial — " +
-				"our own outbound connection is what carries deliveries, so nothing we " +
-				"write will reach them until one of us dials the other"
-			out.Problems = append(out.Problems, fmt.Sprintf(
-				"%s: we publish a folder to this peer and have no address to dial them at — "+
-					"run `connect <alias> <host:port>`, or have them dial us", st.Label))
+		st.Note = "no address has ever been recorded for this peer, and it is not " +
+			"announcing one on this network — run `connect <alias> <host:port>`, " +
+			"or have them dial us"
+		return
+	}
+
+	// Try EVERY address we know, not just the preferred one.
+	//
+	// A remembered address is a hypothesis about where a peer is; a live
+	// announcement is an observation. Dialling only the stored one is what
+	// let an operator's app spend 45 minutes refusing at a port the peer
+	// had moved off, while that peer sat on the LAN announcing its real
+	// one. Walking the ladder is also what makes trusting the mDNS claim
+	// safe: a spoofed announcement costs one failed handshake and we fall
+	// through to the address that works, rather than replacing it.
+	var tried []string
+	for _, addr := range addrs {
+		dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_, err := ws.Local.Peer.Connect(dialCtx, addr)
+		cancel()
+		if err != nil {
+			tried = append(tried, fmt.Sprintf("%s (%v)", addr, err))
+			continue
 		}
+		ws.markDialed(d.PeerID)
+		// Write the WORKING address back, so the next process starts from
+		// a fact rather than from the guess that just failed. This is the
+		// half that makes the correction durable: without it the ladder
+		// re-derives the same answer every launch and the declaration
+		// stays wrong forever.
+		//
+		// Deliberately NOT ws.rememberAddress: that invents a shell alias
+		// from the peer-id when none exists, and the loop doing so made
+		// the operator's own `connect b <addr>` fail with *"already bound
+		// to alias 2k7u4nx2"*. RememberDeviceAddress updates the
+		// DECLARATION only, which is where a durable fact belongs.
+		if addr != d.PreferredAddress() {
+			ws.RememberDeviceAddress(d.PeerID, addr)
+			out.Actions = append(out.Actions, fmt.Sprintf(
+				"%s: %s answered where %s did not — recorded it as the address to use",
+				st.Label, addr, d.PreferredAddress()))
+		}
+		// maintain-peer needs the address that actually answered, not the
+		// one observeDevice read out of the declaration a moment ago.
+		if hp := dialHostPort(addr); hp != "" {
+			st.Address = hp
+		}
+		st.Connected = true
+		st.OutboundRoute = true
+		out.Actions = append(out.Actions,
+			fmt.Sprintf("%s: opened our outbound connection to %s so deliveries can reach them",
+				st.Label, addr))
 		return
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if _, err := ws.Local.Peer.Connect(dialCtx, addr); err != nil {
-		st.Note = fmt.Sprintf("could not dial %s: %v", addr, err)
-		out.Problems = append(out.Problems, fmt.Sprintf(
-			"%s: could not open our own connection to %s (%v) — until it succeeds, "+
-				"anything we write to a shared folder will not reach them",
-			st.Label, addr, err))
-		return
+
+	st.Note = "could not dial " + strings.Join(tried, "; ")
+}
+
+// directionProblem is the ONE writer of the sentence an operator needs
+// when we cannot reach a peer, shared by the pass and the read.
+//
+// It is a method on the status rather than a line appended at the point
+// of failure because the pass and the panel were describing this state
+// differently — the pass said "could not dial X" into a run log, and the
+// panel said "connected". A single function means the two surfaces cannot
+// drift, and it means the READ can report the state even though a read
+// never dials: the observation "a session exists and none of it is ours"
+// needs no attempt to make it.
+//
+// `publishes` changes the WORDING and never the decision, and the
+// difference was a real error while this was being written.
+//
+// The first version reported nothing unless we published a folder to the
+// peer, on the reasoning that a folder we only RECEIVE needs their dial
+// and not ours. **That is wrong, and AP63 already says so: a sync is
+// MUTUAL.** The receiver dispatches out to subscribe and to pull the blob
+// closure — the backfill runs entirely on authority the receiver holds —
+// and the publisher dispatches back to deliver. So a peer we cannot reach
+// breaks a folder we receive just as completely as one we publish; it
+// simply breaks it in a way that looks like "nothing is arriving" rather
+// than "nothing is being sent". Both need saying.
+//
+// What `publishes` buys is naming the consequence the operator will
+// actually observe, because those two symptoms send someone to look in
+// opposite places.
+func (st DeviceStatus) directionProblem(publishes bool) string {
+	if st.Paused || st.OutboundRoute {
+		return ""
 	}
-	ws.markDialed(d.PeerID)
-	// Deliberately NOT ws.rememberAddress: that invents a shell alias
-	// from the peer-id when none exists, and the loop doing so made the
-	// operator's own `connect b <addr>` fail with *"already bound to
-	// alias 2k7u4nx2"*. The address is already in the DECLARATION, which
-	// is where a durable fact belongs; dialableAddressFor reads it from
-	// there.
-	st.Connected = true
-	out.Actions = append(out.Actions,
-		fmt.Sprintf("%s: opened our outbound connection to %s so deliveries can reach them",
-			st.Label, addr))
+	detail := ""
+	if st.Note != "" {
+		detail = " — " + st.Note
+	}
+	consequence := "we cannot fetch from them, so a folder we receive will stop updating"
+	if publishes {
+		consequence = "nothing we write to a shared folder will reach them"
+	}
+	if st.Connected {
+		// The exact state that cost an operator 45 minutes: the pool says
+		// connected because THEY dialled US, and a connection they opened
+		// authorizes them, not us (AP63).
+		return fmt.Sprintf(
+			"%s: they can reach us, but we could not open our own connection to them — %s%s",
+			st.Label, consequence, detail)
+	}
+	return fmt.Sprintf(
+		"%s: could not open our own connection to this peer — %s%s",
+		st.Label, consequence, detail)
+}
+
+// dialLadderFor is every address worth trying for a peer, best first, and
+// it is the one place the discovery-vs-declaration precedence is decided.
+//
+// **Discovery first.** The stored address is the only source that survives
+// a restart, which is why it exists — but "durable" is not "authoritative".
+// A candidate in the discovery set was observed within
+// DiscoveryCandidateMaxAge (15s), so it is a live statement about where the
+// peer is listening right now, whereas the declaration may be months old.
+// The declaration follows immediately behind, so a peer that is asleep, or
+// on a LAN with no multicast, still gets dialled at the address that
+// worked last time.
+//
+// Nothing here is trusted on its own: the dial authenticates against the
+// peer-id we already declared, so the ladder can only ever waste a dial.
+func (ws *ShellWorkspace) dialLadderFor(d workbench.DeviceData) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(addr string) {
+		addr = strings.TrimSpace(addr)
+		if addr == "" || seen[addr] {
+			return
+		}
+		seen[addr] = true
+		out = append(out, addr)
+	}
+	add(ws.discoveredAddressFor(d.PeerID))
+	for _, a := range d.Addresses {
+		add(a)
+	}
+	return out
 }
 
 // publishesTo reports whether any declared folder is shared OUT to this
@@ -684,6 +839,15 @@ func (ws *ShellWorkspace) reconcileDevice(ctx context.Context, d workbench.Devic
 	// us to dispatch over it (AP63). So this has to happen first, and it
 	// has to happen even when everything already looks connected.
 	ws.ensureOutboundRoute(ctx, d, &st, out)
+
+	// Read the direction problem HERE, before maintain-peer overwrites
+	// st.Note with its own failure. The two are different faults — "we
+	// have no route to them" and "the reconnect graph did not install" —
+	// and the second is a consequence of the first often enough that
+	// letting it overwrite the cause is how the useful sentence gets lost.
+	if p := st.directionProblem(ws.publishesTo(d.PeerID)); p != "" {
+		out.Problems = append(out.Problems, p)
+	}
 
 	// The kernel's relationship lifecycle. This is the call that answers
 	// "why do I have to press connect again after a restart".
