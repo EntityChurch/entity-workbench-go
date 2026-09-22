@@ -1,8 +1,8 @@
 # entity-workbench-go — status
 
-_Updated: 2026-08-31 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
+_Updated: 2026-09-01 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
-> **Start here:** **§0F — the browser got usable, 2026-08-31**, immediately below.
+> **Start here:** **§0G — two spec defects browser-rust found, 2026-09-01**, immediately below.
 > Everything after it is the running history.
 >
 > **What this file is.** The rolling engineering log for entity-workbench-go — our tree, our
@@ -10,6 +10,46 @@ _Updated: 2026-08-31 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > project's own state lives in `docs/status/`, which publishes nothing: dated snapshots,
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
+
+## §0G NEW (2026-09-01) — browser-rust read our tree and found two spec defects we could not see
+
+`entity-browser-rust` reviewed `entitysdk/workspace_state.go` and sent three findings. All three
+verified against `GUIDE-ENTITY-WORKBENCH-APP` in the arch repo; two are fixed here, one is a
+design fork and is below.
+
+**We were accusing conformant peers of non-conformance (AP52).** §5.4 rule 3 retires exactly
+three Selection fields — `source_window`, `source_panel`, `content_type` — and MUSTs a WARN when
+one is read. Our `legacySelectionFields` had **four**; the fourth was `paths`, which the same
+section's schema block declares **live and optional** (*"the wider selection set when the user has
+shift-clicked / ctrl-clicked"*). So a correct multi-select emitter got named NON-CONFORMANT on the
+one channel the ecosystem has for finding emitters that actually are. The unit test **pinned it**
+— it looped over all four names asserting each produced a WARN, so green meant conformant to a
+rule nobody wrote. That test is now the regression guard, inverted.
+
+**`app/state/window` MUSTs a `content_type` field and we wrote `content-type`.** §4.2's slot
+table is explicit, and the hyphen meant a reader looking for the field the spec names found
+nothing — the MUST satisfied in spirit and failed in fact. Now written with the underscore, with
+the legacy spelling read as a fallback and **dropped on the next save**, so a tree written by an
+older build converges instead of carrying two fields that disagree.
+
+The transferable half is one sentence: **an implementation does not get to retire a field the
+schema still declares, or rename one the schema spells.** When a list or a key mirrors a normative
+document, diffing it against that document *is* the review.
+
+**Still open — §8's persist-arm obligation, and it is a design fork, not a fix.** An application
+persisting per-window state MUST be able to say at startup which window each persisted entity
+belongs to, satisfied by *either* an `app/state/window-index` *or* a startup sweep before
+allocating any id. We satisfy neither: `window-index` has **zero hits** in the tree, the only
+reference to `workspace/windows/` is the path builder, and the sole id allocator is `ws.nextID++`
+(`console/workspace.go:88`), a per-process counter that restarts at zero. We persist
+(`workspace_state.go:429`) and read back live on a session ordinal (`workbench/log_model.go:143`),
+so session 2's window 1 inherits session 1's window 1 state — precisely the third case the rule
+exists to prevent. Bites with `-storage sqlite`; the default in-memory peer is unaffected.
+
+It is not a one-liner because the two arms mean different products: the sweep arm makes per-window
+state *safely non-resuming* (and log display level stops persisting, which today it does
+incorrectly), the index arm keeps resumption and costs a new persisted entity. **Sequencing that
+is an operator call**, so it is here and not guessed at.
 
 ## §0F NEW (2026-08-31) — an operator drove the browser for real, and it was slow, silent and picture-less
 

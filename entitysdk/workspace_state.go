@@ -68,9 +68,54 @@ func (ws *WorkspaceState) AppID() string { return ws.appID }
 
 // --- Per-window bundled state ---
 
+// WindowContentTypeField is the field name the generic per-window
+// fallback carries, per GUIDE-ENTITY-WORKBENCH-APP §4.2's slot table:
+// `app/state/window` **MUST carry a `content_type` field** naming what the
+// window is showing.
+//
+// It is spelled with an underscore, like every other field in this schema.
+// We wrote `content-type` with a hyphen from the day this was added until
+// 2026-09-01, which satisfies the MUST in spirit and fails it in fact —
+// a reader looking for the field the spec names finds nothing.
+//
+// Note this is *not* the `content_type` §5.4 retires from
+// `app/state/selection`. That one was source attribution and is gone; this
+// one names the window's own content type and is REQUIRED, because under
+// the fallback every window's state entity carries the identical entity
+// type, so the payload is the only thing that can say what it is.
+const WindowContentTypeField = "content_type"
+
+// legacyWindowContentTypeField is the misspelling above, retained for one
+// purpose: recognising it on read so a bundle written by an older build is
+// migrated rather than left carrying both spellings forever.
+const legacyWindowContentTypeField = "content-type"
+
 // SaveWindowContent records what content type a window is showing.
+//
+// Writes the spec's field name and drops the legacy misspelling from the
+// bundle in the same put, so a tree written by an older build converges on
+// first save rather than accumulating two fields that disagree.
 func (ws *WorkspaceState) SaveWindowContent(windowID uint32, contentType string) {
-	ws.updateWindowState(windowID, "content-type", contentType)
+	state := ws.readWindowState(windowID)
+	delete(state, legacyWindowContentTypeField)
+	state[WindowContentTypeField] = contentType
+	ws.store.Put(ws.windowsStatePath(windowID), "app/state/window", state)
+}
+
+// ReadWindowContent returns the content type recorded for a window, or ""
+// if none is recorded.
+//
+// Reads the spec spelling and falls back to the legacy one, because a
+// bundle persisted by an older build still carries the hyphen until
+// something saves that window again. The fallback is a read-side courtesy
+// to our own old data and nothing more — we never write it.
+func (ws *WorkspaceState) ReadWindowContent(windowID uint32) string {
+	state := ws.readWindowState(windowID)
+	if v, ok := state[WindowContentTypeField].(string); ok && v != "" {
+		return v
+	}
+	v, _ := state[legacyWindowContentTypeField].(string)
+	return v
 }
 
 // SaveWindowScreen records which screen a window belongs to.
@@ -223,9 +268,22 @@ func (ws *WorkspaceState) ReadSelection(screenIdx int) (Selection, bool) {
 // GUIDE-ENTITY-WORKBENCH-APP §5.4 post-absorption. Reading an
 // entity that carries any of these emits a violation log per arch's
 // landed Amendment A (Option 2: MUST log violation pre-publication; silent
-// tolerance is NON-CONFORMANT). See feedback_no_legacy_pre_release in
-// workbench-go auto-memory for the stance.
-var legacySelectionFields = []string{"content_type", "source_window", "source_panel", "paths"}
+// tolerance is NON-CONFORMANT).
+//
+// **`paths` is NOT one of them, and adding it was a live defect** (found by
+// entity-browser-rust, 2026-09-01). §5.4's schema block declares
+// `paths [text]?` a *current optional* field — "the wider selection set when
+// the user has shift-clicked / ctrl-clicked ... multi-select-aware renderers
+// populate" — and rule 3's read-side MUST names only `source_window`,
+// `source_panel` and `content_type`. Carrying `paths` here meant a perfectly
+// conformant multi-select emitter was told it "is NON-CONFORMANT", in the one
+// channel the ecosystem has for finding emitters that actually are. A false
+// accusation on a conformance channel is worse than silence: it is acted on.
+//
+// The list is exactly rule 3's three. Extending it is a spec change, not a
+// local judgement call — an implementation does not get to retire a field the
+// schema still declares.
+var legacySelectionFields = []string{"content_type", "source_window", "source_panel"}
 
 // readSelectionAt reads + decodes a Selection at any tree path. Shared
 // between ReadSelection (screen aggregate), ReadPanelSelection
@@ -233,11 +291,12 @@ var legacySelectionFields = []string{"content_type", "source_window", "source_pa
 //
 // Pre-publication legacy-field handling per GUIDE-ENTITY-WORKBENCH-APP §5.4
 // (absorption): the retired fields (content_type, source_window,
-// source_panel, paths) trigger a WARN-level violation log naming the path
-// + offending field(s). The entity is still decoded (MAY-reject permitted
-// by spec; we choose log-only at this layer to keep readers permissive for
-// in-flight migration probing). Post-publication, behavior shifts to spec-
-// V7 §2.6 skip-unknown-fields per a published cutover date.
+// source_panel) trigger a WARN-level violation log naming the path
+// + offending field(s). `paths` is a live optional field and is NOT one of
+// them — see [legacySelectionFields]. The entity is still decoded (MAY-reject
+// permitted by spec; we choose log-only at this layer to keep readers
+// permissive for in-flight migration probing). Post-publication, behavior
+// shifts to spec-V7 §2.6 skip-unknown-fields per a published cutover date.
 func (ws *WorkspaceState) readSelectionAt(path string) (Selection, bool) {
 	r, ok := ws.resolve(path)
 	if !ok {

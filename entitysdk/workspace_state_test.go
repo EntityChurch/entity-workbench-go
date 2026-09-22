@@ -64,7 +64,9 @@ func TestWorkspaceState_WindowContent(t *testing.T) {
 	_ = pc // cache removed
 
 	// Bundled state lives at windows/{id}/state with type
-	// app/state/window. The content-type is one field in the bundle.
+	// app/state/window. The content_type is one field in the bundle —
+	// spelled with an underscore, which GUIDE-ENTITY-WORKBENCH-APP §4.2
+	// makes a MUST for this fallback slot.
 	r, ok := pc.Resolve(ws.WindowStatePath(1))
 	if !ok {
 		t.Fatal("expected entity at window state path")
@@ -76,8 +78,11 @@ func TestWorkspaceState_WindowContent(t *testing.T) {
 	if !ok {
 		t.Fatal("expected map")
 	}
-	if m["content-type"] != "tree-browser" {
-		t.Errorf("content-type = %v, want tree-browser", m["content-type"])
+	if m["content_type"] != "tree-browser" {
+		t.Errorf("content_type = %v, want tree-browser", m["content_type"])
+	}
+	if _, present := m["content-type"]; present {
+		t.Error("the hyphenated legacy spelling must never be written")
 	}
 }
 
@@ -100,8 +105,8 @@ func TestWorkspaceState_WindowBundle(t *testing.T) {
 	if !ok {
 		t.Fatal("expected map")
 	}
-	if m["content-type"] != "log-viewer" {
-		t.Errorf("content-type = %v", m["content-type"])
+	if m["content_type"] != "log-viewer" {
+		t.Errorf("content_type = %v", m["content_type"])
 	}
 	if m["log-display-level"] != "verbose" {
 		t.Errorf("log-display-level = %v", m["log-display-level"])
@@ -118,8 +123,8 @@ func TestWorkspaceState_WindowBundle(t *testing.T) {
 	_ = pc // cache removed
 	r, _ = pc.Resolve(ws.WindowStatePath(5))
 	m = r.Decoded.(map[interface{}]interface{})
-	if m["content-type"] != "log-viewer" {
-		t.Errorf("content-type lost on update: %v", m["content-type"])
+	if m["content_type"] != "log-viewer" {
+		t.Errorf("content_type lost on update: %v", m["content_type"])
 	}
 	if m["screen"] != "2" {
 		t.Errorf("screen lost on update: %v", m["screen"])
@@ -542,12 +547,18 @@ func TestWorkspaceState_ShellAlias(t *testing.T) {
 
 // TestWorkspaceState_SelectionLegacyFieldsLogViolation verifies arch's
 // landed Amendment A (Option 2): reading a Selection entity that carries
-// any retired field (content_type/source_window/source_panel/paths) MUST
+// any retired field (content_type/source_window/source_panel) MUST
 // log a WARN-level violation naming the path + field. Silent tolerance
 // is NON-CONFORMANT pre-publication.
 //
-// See GUIDE-ENTITY-WORKBENCH-APP §5.4 (absorption) and
-// feedback_no_legacy_pre_release in workbench-go auto-memory.
+// **`paths` is deliberately absent from that list**, and this test used to
+// assert the opposite — it required a WARN for `paths` and so pinned the
+// defect in place rather than catching it. §5.4's schema block declares
+// `paths [text]?` a live optional field and rule 3 names three fields, not
+// four. The `paths` case below is now the regression guard: a conformant
+// multi-select emitter must be able to populate it and hear nothing.
+//
+// See GUIDE-ENTITY-WORKBENCH-APP §5.4 (absorption).
 func TestWorkspaceState_SelectionLegacyFieldsLogViolation(t *testing.T) {
 	ws, pc := testWorkspaceState(t)
 
@@ -558,10 +569,10 @@ func TestWorkspaceState_SelectionLegacyFieldsLogViolation(t *testing.T) {
 	payload := map[string]interface{}{
 		"path":          "tree/foo",
 		"updated_at":    uint64(1_700_000_000_000),
-		"content_type":  "entity",             // legacy
-		"source_window": uint32(7),            // legacy
-		"source_panel":  uint32(3),            // legacy
-		"paths":         []string{"tree/foo"}, // legacy
+		"content_type":  "entity",             // legacy, retired by rule 3
+		"source_window": uint32(7),            // legacy, retired by rule 3
+		"source_panel":  uint32(3),            // legacy, retired by rule 3
+		"paths":         []string{"tree/foo"}, // NOT legacy — live optional field
 	}
 	if _, err := ws.store.Put(path, "app/state/selection", payload); err != nil {
 		t.Fatal(err)
@@ -583,13 +594,77 @@ func TestWorkspaceState_SelectionLegacyFieldsLogViolation(t *testing.T) {
 	}
 
 	logOutput := buf.String()
-	for _, field := range []string{"content_type", "source_window", "source_panel", "paths"} {
+	for _, field := range []string{"content_type", "source_window", "source_panel"} {
 		if !strings.Contains(logOutput, field) {
 			t.Errorf("expected WARN log naming legacy field %q; got %q", field, logOutput)
 		}
 	}
 	if !strings.Contains(logOutput, "NON-CONFORMANT") {
 		t.Errorf("expected WARN log to mark legacy emit as NON-CONFORMANT; got %q", logOutput)
+	}
+
+	// The regression guard. `paths` is a current optional field per §5.4's
+	// schema block, so accusing its emitter is a false positive on the one
+	// channel that exists to find real non-conformance — and a false
+	// accusation there is worse than silence, because it gets acted on.
+	//
+	// Asserted on the whole log rather than on a substring of the WARN
+	// text: the field name appears nowhere in any other line this read
+	// produces, so a bare Contains is exact here and stays exact if the
+	// message is reworded.
+	if strings.Contains(logOutput, "paths") {
+		t.Errorf("`paths` is a live optional field per GUIDE-ENTITY-WORKBENCH-APP §5.4 "+
+			"and must not be reported as legacy; got %q", logOutput)
+	}
+	if sel.Path != "tree/foo" {
+		t.Errorf("the live selection must still decode alongside a populated `paths`")
+	}
+}
+
+// TestWorkspaceState_WindowContentTypeMigratesFromLegacySpelling covers the
+// other half of the 2026-09-01 pair: `app/state/window` MUST carry a
+// `content_type` field (GUIDE-ENTITY-WORKBENCH-APP §4.2 slot table), and we
+// wrote `content-type` with a hyphen from the day it was added. A tree
+// written by an older build still carries the hyphen, so the read falls back
+// and the next save converges — the bundle must never end up holding both.
+func TestWorkspaceState_WindowContentTypeMigratesFromLegacySpelling(t *testing.T) {
+	ws, pc := testWorkspaceState(t)
+
+	// A bundle as an older build left it: hyphenated, alongside an
+	// unrelated field that must survive the migration untouched.
+	legacy := map[string]interface{}{
+		"content-type":      "tree-browser",
+		"log-display-level": "verbose",
+	}
+	if _, err := ws.store.Put(ws.WindowStatePath(9), "app/state/window", legacy); err != nil {
+		t.Fatal(err)
+	}
+	_ = pc
+
+	if got := ws.ReadWindowContent(9); got != "tree-browser" {
+		t.Errorf("ReadWindowContent fell back wrong: got %q, want tree-browser", got)
+	}
+
+	// Saving converges the bundle on the spec spelling.
+	ws.SaveWindowContent(9, "log-viewer")
+
+	r, ok := pc.Resolve(ws.WindowStatePath(9))
+	if !ok {
+		t.Fatal("expected window state entity")
+	}
+	m, ok := r.Decoded.(map[interface{}]interface{})
+	if !ok {
+		t.Fatal("expected map")
+	}
+	if m["content_type"] != "log-viewer" {
+		t.Errorf("content_type = %v, want log-viewer", m["content_type"])
+	}
+	if _, present := m["content-type"]; present {
+		t.Error("the legacy hyphenated field must be dropped on save, not left to " +
+			"disagree with the spec-named one forever")
+	}
+	if m["log-display-level"] != "verbose" {
+		t.Errorf("migration clobbered an unrelated field: %v", m["log-display-level"])
 	}
 }
 
