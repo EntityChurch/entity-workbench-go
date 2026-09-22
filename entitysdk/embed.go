@@ -221,14 +221,135 @@ type EmbedData struct {
 // contract's sixth clause (§8) rather than a nicety: it is the one rung of §6's
 // ladder that is always available, so an embed without one is an embed that can
 // become invisible on any substrate that lacks its handler.
-func (d EmbedData) Validate() error {
+func (d EmbedData) Validate() error { return d.validate(EmbedFallbackStateFor(d.Fallback, true)) }
+
+// EmbedFallbackState is §3's `fallback` rule split into the two ways it
+// is broken, because they name different faults by different parties.
+//
+// **MISSING** is a producer that has not implemented §3 — the key is not
+// on the wire at all, so nothing there was trying to be a fallback.
+// **EMPTY** is a producer that implemented it and shipped an empty
+// string, which is a bug in one authoring path rather than an absent
+// feature. An operator who meets the first should go and read the other
+// implementation's emitter; one who meets the second should report a
+// single broken entry.
+//
+// C-6: `entity-browser-rust` splits these and we did not — theirs is the
+// absent-vs-withheld principle at the smallest available scale, which is
+// the same distinction `fetch.ErrEmptyEnumeration` draws about a whole
+// signed root and `RefNotCommitted` draws about one key.
+type EmbedFallbackState int
+
+const (
+	// EmbedFallbackPresent is the conformant case.
+	EmbedFallbackPresent EmbedFallbackState = iota
+	// EmbedFallbackMissing means the key was absent from the encoded map.
+	EmbedFallbackMissing
+	// EmbedFallbackEmpty means the key was present and blank.
+	EmbedFallbackEmpty
+)
+
+// EmbedFallbackStateFor classifies a fallback given whether its key was
+// present on the wire.
+//
+// `present` is a parameter rather than something derived from the string
+// because **a decoded Go string cannot answer it**: `ecf.Decode` yields
+// `""` for both an absent key and an empty one, which is exactly why
+// this distinction has to be taken from the raw bytes and cannot be
+// recovered afterwards. [EmbedFallbackPresence] is what reads it.
+func EmbedFallbackStateFor(fallback string, present bool) EmbedFallbackState {
+	switch {
+	case !present:
+		return EmbedFallbackMissing
+	case strings.TrimSpace(fallback) == "":
+		return EmbedFallbackEmpty
+	default:
+		return EmbedFallbackPresent
+	}
+}
+
+// EmbedFallbackPresence reports whether an encoded `embed-data` carries
+// a `fallback` key at all, independent of its value.
+//
+// Best-effort by construction: a body that does not decode as a map has
+// bigger problems, and this reports `true` for it so the caller's real
+// decode error is the one that surfaces rather than being pre-empted by
+// a misleading "no fallback".
+func EmbedFallbackPresence(raw []byte) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var probe struct {
+		Fallback *string `cbor:"fallback"`
+	}
+	if err := ecf.Decode(raw, &probe); err != nil {
+		return true
+	}
+	return probe.Fallback != nil
+}
+
+// ValidateDecoded is [EmbedData.Validate] for the READ side, where the
+// raw bytes are still in hand and the two failures can be told apart.
+//
+// `raw` is the encoded `embed-data` map — the same bytes this value was
+// decoded from, NOT an enclosing entity. See
+// [EmbedNestedFallbackPresence] for a node carried as a field of
+// something else.
+func (d EmbedData) ValidateDecoded(raw []byte) error {
+	return d.validate(EmbedFallbackStateFor(d.Fallback, EmbedFallbackPresence(raw)))
+}
+
+// EmbedNestedFallbackPresence answers [EmbedFallbackPresence] for an
+// embed node carried as a named field of an enclosing entity — a feed
+// entry's `body`, most importantly.
+//
+// It exists because the presence question **cannot be asked of a decoded
+// value**, and a caller holding an enclosing entity has raw bytes for
+// the enclosure and none for the nested node. Passing the enclosure's
+// bytes to [EmbedFallbackPresence] is not a near-miss: it looks for
+// `fallback` at the top level, does not find it, and reports MISSING for
+// every entry including conformant ones — a confidently wrong answer on
+// a surface whose whole job is to say which of two faults occurred.
+func EmbedNestedFallbackPresence(enclosing []byte, field string) bool {
+	if len(enclosing) == 0 {
+		return true
+	}
+	var probe map[string]struct {
+		Data struct {
+			Fallback *string `cbor:"fallback"`
+		} `cbor:"data"`
+	}
+	if err := ecf.Decode(enclosing, &probe); err != nil {
+		return true
+	}
+	node, ok := probe[field]
+	if !ok {
+		return true
+	}
+	return node.Data.Fallback != nil
+}
+
+// ValidateDecodedNested is [EmbedData.ValidateDecoded] for a node
+// carried at `field` of `enclosing`.
+func (d EmbedData) ValidateDecodedNested(enclosing []byte, field string) error {
+	return d.validate(EmbedFallbackStateFor(d.Fallback, EmbedNestedFallbackPresence(enclosing, field)))
+}
+
+func (d EmbedData) validate(state EmbedFallbackState) error {
 	if err := d.Payload.Validate(); err != nil {
 		return err
 	}
-	if strings.TrimSpace(d.Fallback) == "" {
+	switch state {
+	case EmbedFallbackMissing:
 		return NewError(400, "invalid_embed",
-			"embed carries no fallback; it is MANDATORY and non-empty (APP-CONVENTION-EMBED §3, §6, §8 clause 6) "+
-				"— it is the rung of the degradation ladder that is always available")
+			"embed carries no `fallback` key; it is MANDATORY and non-empty (APP-CONVENTION-EMBED §3, §6, "+
+				"§8 clause 6) — it is the rung of the degradation ladder that is always available, and a "+
+				"producer omitting the key entirely has not implemented §3 rather than filled it in badly")
+	case EmbedFallbackEmpty:
+		return NewError(400, "invalid_embed",
+			"embed carries an EMPTY `fallback`; the key is present, so §3 is implemented and one authoring "+
+				"path filled it with nothing — it is MANDATORY and non-empty (APP-CONVENTION-EMBED §3, §6, "+
+				"§8 clause 6), and an embed without one becomes invisible on any substrate lacking its handler")
 	}
 	for k := range d.Params {
 		if k == "" {
@@ -358,6 +479,15 @@ func EmbedNodeFromEntity(e entity.Entity) (EmbedNode, error) {
 	}
 	var d EmbedData
 	if err := ecf.Decode(e.Data, &d); err != nil {
+		return EmbedNode{}, err
+	}
+	// C-6. Until 2026-09-15 this returned here: `ToEntity` refused an
+	// embed with no fallback and this accepted one, so the rule held
+	// against embeds WE authored and against nobody else's. A read side
+	// that is more permissive than the write side does not make the
+	// system tolerant — it makes the write-side check untested against
+	// the only inputs it exists to catch.
+	if err := d.ValidateDecoded(e.Data); err != nil {
 		return EmbedNode{}, err
 	}
 	return EmbedNode{Type: e.Type, Data: d}, nil

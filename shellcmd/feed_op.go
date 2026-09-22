@@ -62,6 +62,17 @@ type FeedPostOutcome struct {
 	Entry entitysdk.PostedEntry
 	Text  string
 
+	// ReplyTo echoes the entry this one replies to, zero when it is not a
+	// reply.
+	//
+	// Carried so the surface can say what a reply does NOT do. `FEED-R9`
+	// is a **MUST NOT** on describing replies as notifying the author
+	// absent a delivery grant, and a verb that says nothing at all is one
+	// reasonable reading away from the thing the rule exists to prevent:
+	// "reply" means notification everywhere else a person has used the
+	// word. Inbound delivery is granted, not ambient (§3).
+	ReplyTo hash.Hash
+
 	// Reach is the same reading `feed` renders, taken after the post, so
 	// the operator sees the consequence in the same breath as the act.
 	Reach FeedReach
@@ -141,9 +152,10 @@ func (ws *ShellWorkspace) Post(ctx context.Context, req FeedPostRequest) (FeedPo
 		return FeedPostOutcome{}, err
 	}
 	return FeedPostOutcome{
-		Entry: entry,
-		Text:  req.Text,
-		Reach: ws.feedReach(ctx, author),
+		Entry:   entry,
+		Text:    req.Text,
+		ReplyTo: req.ReplyTo,
+		Reach:   ws.feedReach(ctx, author),
 	}, nil
 }
 

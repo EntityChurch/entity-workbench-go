@@ -61,6 +61,12 @@ type MintOpts struct {
 	// At pins `published_at`. Zero means time.Now(). See Opts.At for
 	// why a caller producing a reproducible emission must set it.
 	At time.Time
+
+	// AllowWholePeer is the operator's explicit acknowledgement that
+	// this publish commits to `system/` keys as well as application
+	// ones. See [disclosureAcrossSystem] — absent it, a prefix that
+	// spans the boundary is REFUSED rather than published quietly.
+	AllowWholePeer bool
 }
 
 // MintRoot performs the publishing act and stops there: build the trie
@@ -78,7 +84,7 @@ type MintOpts struct {
 // [Publish] calls the same two helpers in the same order and then emits
 // the static corridor on top.
 func MintRoot(ctx context.Context, opts MintOpts) (SignedRoot, error) {
-	entries, err := prepareMint(opts.Peer, opts.Prefix)
+	entries, err := prepareMint(opts.Peer, opts.Prefix, opts.AllowWholePeer)
 	if err != nil {
 		return SignedRoot{}, err
 	}
@@ -171,7 +177,7 @@ func RootNow(ap *entitysdk.AppPeer, prefix string) (hash.Hash, error) {
 // different machine or a different store. Same discipline as
 // `fetch.NameSet.Diagnosis` and `TransportOptions.Offered`: when you
 // refuse, say what was on offer.
-func prepareMint(peer *entitysdk.AppPeer, prefix string) ([]store.LocationEntry, error) {
+func prepareMint(peer *entitysdk.AppPeer, prefix string, allowWholePeer bool) ([]store.LocationEntry, error) {
 	if peer == nil {
 		return nil, fmt.Errorf("publish: Peer required")
 	}
@@ -184,7 +190,90 @@ func prepareMint(peer *entitysdk.AppPeer, prefix string) ([]store.LocationEntry,
 				"wrong question of. %s",
 			prefix, treeShape(peer))
 	}
+	if !allowWholePeer {
+		if d := disclosureAcrossSystem(peer, entries); d != "" {
+			return nil, fmt.Errorf("publish: %s", d)
+		}
+	}
 	return entries, nil
+}
+
+// disclosureAcrossSystem returns a refusal when a prefix spans the
+// system boundary, or "" when it does not.
+//
+// # Why this guard exists and why it is not `prefix == ""`
+//
+// `A-36` (arch, ruled 2026-09-15) says a feed's detached per-entry
+// signatures have to be inside the committed key set for a STATIC reader
+// to attribute anything, and the prescribed fix is to publish over the
+// peer root — because `system/signature/…` and `app/feed/…` share no
+// shorter prefix. That fix works (`a36_peer_root_probe_test.go`). It
+// also takes this peer's committed key set from 4 to 386 and its static
+// emit from 7 entities to 400, and the emitted directory then contains
+// the operator's mount paths, other peers' addresses and the bodies of
+// documents from folders nobody shared. **On the static road there is no
+// grant between that directory and the public** — the operator's next
+// action is an upload.
+//
+// So the refusal is not *"don't do that"*. It is **say it out loud
+// first**: a publish that discloses the peer's private declarations is a
+// legitimate thing to want and an illegitimate thing to do by typing an
+// empty string. `AllowWholePeer` is the operator saying it.
+//
+// **Keyed on spanning the boundary rather than on the prefix's spelling**
+// for the reason AP97 taught: `mintSignedRoot`'s empty-prefix guard was
+// written against the root hash, which is never zero, so it could never
+// fire. Guard on the fact — *this publish commits to `system/` keys AND
+// to application keys* — not on a proxy for it. A deliberate
+// `-prefix system/config/` names one side and is not caught; nothing is
+// being protected from an operator who typed the thing they meant.
+func disclosureAcrossSystem(peer *entitysdk.AppPeer, entries []store.LocationEntry) string {
+	bySeg := map[string]int{}
+	for _, e := range entries {
+		for _, s := range strings.Split(e.Path, "/") {
+			if s == "" || s == peer.PeerID() {
+				continue
+			}
+			bySeg[s]++
+			break
+		}
+	}
+	system := bySeg["system"]
+	if system == 0 {
+		return ""
+	}
+	var app []string
+	appKeys := 0
+	for seg, n := range bySeg {
+		if seg == "system" {
+			continue
+		}
+		app = append(app, fmt.Sprintf("%s (%d)", seg, n))
+		appKeys += n
+	}
+	if len(app) == 0 {
+		// Only `system/`. The operator named it; there is no second
+		// category being swept along, so there is nothing to disclose
+		// that the prefix did not already say.
+		return ""
+	}
+	sort.Strings(app)
+
+	return fmt.Sprintf(
+		"this prefix spans the system boundary, so the signed root would commit to %d keys under "+
+			"`system/` as well as %d application keys (%s) — and every one of them is emitted into "+
+			"the output directory, where the next step is an upload.\n\n"+
+			"On this peer that means the published set includes whatever these hold: peer "+
+			"declarations and their last-known addresses, folder declarations and their local "+
+			"filesystem paths, ingested documents from mounted folders, and the capability policy "+
+			"table naming who has been granted what.\n\n"+
+			"A verifying reader also needs no further authorization for any of it: the walk is "+
+			"content-addressed, so committing to a key discloses its bytes.\n\n"+
+			"If that is what you mean, say so — `-whole-peer` — and it will publish. If you are "+
+			"here because a feed's per-entry signatures are not in the committed set, that is "+
+			"`A-36`, it is real, and widening the prefix is the ruled fix whose cost this message "+
+			"is; the narrow prefix is still `-prefix app/feed/`",
+		system, appKeys, strings.Join(app, ", "))
 }
 
 // treeShape describes what the peer's tree DOES hold, as the second half

@@ -486,6 +486,16 @@ public class App : Application
         // exposes per-stage controls (resync, forget, unsync) that Sync
         // deliberately does not, and those are what you reach for when a
         // share will not establish.
+        // Feeds. Registered under Network and not "This peer": the whole
+        // point of the panel is other people's feeds, and the one thing on
+        // it that is about this peer — where our own follow records live —
+        // is a warning rather than a feature.
+        PanelRegistry.Register("feed", "Feeds — follow a peer and read what they posted",
+            (handle, host) => new FeedPanel(handle, host),
+            PanelRegistry.Category.Network,
+            "Follow a peer's feed (pull-only — they are never told), read what they published "
+            + "through the same verified road a page takes, and resolve one reference to see "
+            + "which of its four outcomes you got.");
         PanelRegistry.Register("share", "Shared Folders (every control, one stage at a time)",
             (handle, _) => new SharePanel(handle),
             PanelRegistry.Category.Diagnostics,

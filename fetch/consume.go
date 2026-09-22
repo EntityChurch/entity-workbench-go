@@ -607,6 +607,51 @@ func (c *Consumer) leafAt(ctx context.Context, treePath string) (entity.Entity, 
 	return ent, locator, err
 }
 
+// SignatureOver resolves and verifies this publisher's detached §5.2
+// signature over an entity they served — the same two hops
+// [Consumer.VerifiedRoot] runs for the published-root, one level down,
+// for a caller that needs to know whether a *body* is attributable.
+//
+// **A detached signature is the one thing worth reading OUTSIDE the
+// signed root, and the reason is that it is self-verifying.** The root
+// commits to keys under its prefix; `system/signature/{hex}` lives
+// outside every feed-shaped prefix a publisher can choose (V7 §3.5 fixes
+// the location), so no root over `app/feed/` can carry it and a reader
+// that insisted on the committed set could never attribute an entry at
+// all. What makes reaching past the root safe here is that the bytes
+// prove themselves: the pointer is derived from the hash the caller
+// already recomputed, the signature is checked against the key the
+// publisher's own peer-id carries, and a host that substitutes one gets
+// `signature_invalid`. **The most a hostile party can do is withhold it**
+// — which is `FEED-R4`'s *present as unattributed*, and is why this
+// returns an error a caller is expected to render rather than to fail on.
+//
+// It is deliberately narrow: there is no general "fetch me any path this
+// publisher binds" on this type, because that door would hand back bytes
+// no signature and no root vouched for, wearing the same UI as bytes that
+// came out of the walk.
+func (c *Consumer) SignatureOver(ctx context.Context, what string, signed entity.Entity) (types.SignatureData, string, error) {
+	if signed.ContentHash.IsZero() {
+		// Everything this consumer returns carries a recomputed hash, so a
+		// zero one means the caller built the entity rather than fetching
+		// it — and deriving the pointer from a hash nobody checked is the
+		// exact steering this two-hop shape exists to prevent.
+		return types.SignatureData{}, "", fmt.Errorf(
+			"fetch: cannot verify a signature over an entity with no recomputed content hash")
+	}
+	pub, keyType, err := publishedroot.DeriveKey(c.src.PeerID())
+	if err != nil {
+		return types.SignatureData{}, "", err
+	}
+	sigEnt, locator, err := c.leafAt(ctx, publishedroot.SignatureRelPath(signed.ContentHash))
+	if err != nil {
+		return types.SignatureData{}, locator, fmt.Errorf("resolving the §5.2 signature pointer at %s: %w",
+			locator, err)
+	}
+	sig, err := publishedroot.VerifySignatureOver(what, locator, signed, sigEnt, pub, keyType)
+	return sig, locator, err
+}
+
 // AbsolutePrefix resolves a published root's **configured** `prefix`
 // into the absolute form EXTENSION-TREE §3.3's reconstruction rule is
 // stated over — the operand for `absolute_prefix + relative_key`.

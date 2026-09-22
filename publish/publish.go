@@ -134,6 +134,12 @@ type Opts struct {
 	// and signature-sibling walkers plug in. Returned hashes that
 	// don't resolve in the local store are skipped with a warning.
 	References func(ent entity.Entity) []hash.Hash
+
+	// AllowWholePeer is [MintOpts.AllowWholePeer]. It matters MORE here
+	// than on the mint: a mint puts the committed set in this peer's own
+	// tree, and this writes every byte of it into a directory whose
+	// purpose is to be uploaded.
+	AllowWholePeer bool
 }
 
 // Result summarises what got emitted.
@@ -193,7 +199,7 @@ func Publish(ctx context.Context, opts Opts) (Result, error) {
 
 	// The empty-prefix refusal (AP97) lives in prepareMint, so the
 	// static and live projections cannot drift apart on it. See mint.go.
-	entries, err := prepareMint(opts.Peer, opts.Prefix)
+	entries, err := prepareMint(opts.Peer, opts.Prefix, opts.AllowWholePeer)
 	if err != nil {
 		return Result{}, err
 	}

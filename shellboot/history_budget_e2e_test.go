@@ -160,7 +160,7 @@ func TestHistoryBudget_StopsARunawayPathAndLeavesTheFolderRecording(t *testing.T
 		t.Fatalf("status snapshot: %v", err)
 	}
 	if len(snap.HistoryLimits) == 0 {
-		t.Errorf("StatusSnapshot carries no history limits — the guard acted "+
+		t.Errorf("StatusSnapshot carries no history limits — the guard acted " +
 			"and no surface can say so")
 	}
 	if !anyContains(snap.Problems, runaway) {

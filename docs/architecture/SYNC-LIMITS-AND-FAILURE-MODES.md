@@ -480,11 +480,23 @@ silent.
 ### Still open here
 
 - **Nothing propagates a conflict to the other peer.** They do not know their change landed on
-  your edit, and there is no wire message for it. Both sides notice only their own. It is not a
-  small local fix: a conflict record lives at `app/workbench/conflicts/…`, which nothing
-  replicates, and telling the *owner* of a one-way share needs a **receiver→owner channel that
-  does not exist** — the same missing piece that stops `Mode: both` working, so the two are one
-  piece of work rather than two.
+  your edit, and there is no wire message for it. Both sides notice only their own. A conflict
+  record lives at `app/workbench/conflicts/…`, which nothing replicates, and telling the *owner*
+  of a one-way share needs a **receiver→owner channel that does not exist**. It is a real gap and
+  it is a **small, separate** item.
+
+  > **Corrected 2026-09-10; the error is kept visible because it is the reusable part.** This
+  > entry used to end *"— the same missing piece that stops `Mode: both` working, so the two are
+  > one piece of work rather than two."* That inference was wrong, and wrong in the direction that
+  > costs the most: it bundled a small problem with a large one and made the small one look
+  > blocked. **`Mode: both` did not need a channel.** It needed the owner to *read* the receiver's
+  > own declaration — an authority the receiver has already granted, because the reverse leg
+  > exists only when they publish — and it shipped that day along with the asymmetric-root defect
+  > underneath it. The general lesson: *"these two need the same missing thing"* is a claim about
+  > a design that does not exist yet, and it is the cheapest possible way to make work look bigger
+  > than it is. (The sibling statement in `FILE-REPLICATION-LANDSCAPE.md` was corrected on the
+  > day; **this one was missed for five days**, which is the failure mode of recording a
+  > supersession in one document and not in the one a reader opens next.)
 
   **One form of it does already work, and it is the one every comparable product uses.** A
   `keep-both` sibling is a real file in the shared folder, so in a **two-way** folder it

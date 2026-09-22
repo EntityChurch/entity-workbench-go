@@ -418,6 +418,40 @@ func init() {
 		Handler: cmdFeed,
 	})
 	r.Register(Command{
+		Name:  "follow",
+		Usage: "follow <peer> [-label NAME]",
+		Help: "Follow a peer's feed. Private and pull-only: it asks nobody's permission " +
+			"and the peer is never told.",
+		Handler: cmdFollow,
+	})
+	r.Register(Command{
+		Name:    "unfollow",
+		Usage:   "unfollow <peer>",
+		Help:    "Stop following a peer, and forget where you had read to.",
+		Handler: cmdUnfollow,
+	})
+	r.Register(Command{
+		Name:    "follows",
+		Usage:   "follows",
+		Help:    "Who this peer follows, where it has read to, and what is in the way.",
+		Handler: cmdFollows,
+	})
+	r.Register(Command{
+		Name:  "timeline",
+		Usage: "timeline [<peer>] [-limit N] [-new]",
+		Help: "Read the feeds this peer follows, through each publisher's signed root, " +
+			"with every entry attributed or marked unattributed.",
+		Handler: cmdTimeline,
+	})
+	r.Register(Command{
+		Name:  "ref",
+		Usage: "ref <entity+ref://...>",
+		Help: "Resolve one reference against the publisher it names, and say which outcome " +
+			"it got: current, moved, fell back to what the linker saw, dangling, or a root " +
+			"that commits elsewhere.",
+		Handler: cmdRef,
+	})
+	r.Register(Command{
 		Name:  "publish",
 		Usage: "publish [-prefix P | -site ID] [-out DIR -origin URL] [-public|-private] | publish status",
 		Help: "Sign a root over this peer's sites and choose who may read it. " +

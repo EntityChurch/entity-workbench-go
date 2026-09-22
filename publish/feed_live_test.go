@@ -67,19 +67,36 @@ func seedLiveFeed(t *testing.T, ap *entitysdk.AppPeer, n int) []entitysdk.Posted
 	return out
 }
 
-// readFeedGrants is the scoped grant a reader of a published FEED needs.
+// readPublishedGrants is the scoped grant a reader of a published prefix needs.
 //
 // It is `readSiteGrants` with one prefix changed, and the two `system/` rows
 // unchanged — which is the point worth pinning. The verification evidence sits
 // outside whatever prefix is published, so the shape of a "read my published
 // X" grant does not depend on X at all.
-func readFeedGrants() []types.GrantEntry {
+//
+// The prefix is a parameter rather than a second literal for that same reason:
+// the two `system/` rows are the part that must not drift between two
+// spellings of "a reader of this peer's published X", and a copy is how they
+// would.
+func readPublishedGrants(prefix string) []types.GrantEntry {
+	// An empty prefix is the whole peer namespace. `workbench.PublicSiteGrants`
+	// REFUSES to derive a public grant for it, deliberately and correctly, so
+	// there is no product grant to copy here — this is the harness standing one
+	// up in order to measure what a peer-root publish exposes
+	// (`a36_peer_root_probe_test.go`). Spelled `*` rather than `/*` because the
+	// latter is a pattern §PR-8 canonicalization does not make mean "everything",
+	// and a grant that silently covers nothing would make the probe measure the
+	// absence of authority instead of the presence of disclosure.
+	treeResource := strings.TrimSuffix(prefix, "/") + "/*"
+	if strings.Trim(prefix, "/") == "" {
+		treeResource = "*"
+	}
 	return []types.GrantEntry{
 		{
 			Handlers:   types.CapabilityScope{Include: []string{"system/tree"}},
 			Operations: types.CapabilityScope{Include: []string{"get"}},
 			Resources: types.CapabilityScope{Include: []string{
-				"app/feed/*",
+				treeResource,
 				"system/peer/published-root",
 				"system/signature/*",
 			}},
@@ -102,6 +119,33 @@ type liveFeedPair struct {
 
 func newLiveFeedPair(t *testing.T, posts int) liveFeedPair {
 	t.Helper()
+	return newLiveFeedPairUnder(t, posts, "app/feed/")
+}
+
+// newLiveFeedPairUnder is the same pair with the published prefix as a
+// parameter.
+//
+// The live-reference gate needs a root that commits to more than the feed —
+// §2.2.2's rows 3 and 4 are about a path DISAPPEARING from what a publisher
+// commits to, and a feed is append-only, so there is nothing in `app/feed/`
+// that can go away. Rather than stand up a second two-peer harness beside this
+// one (which is how the four mutual-authorization facts in AP63 would come to
+// live in two places), the prefix moved out into an argument.
+func newLiveFeedPairUnder(t *testing.T, posts int, prefix string) liveFeedPair {
+	t.Helper()
+	return newLiveFeedPairSeeded(t, posts, prefix, nil)
+}
+
+// newLiveFeedPairSeeded is the same pair with a hook that runs on the
+// publisher AFTER the feed is authored and BEFORE the root is minted.
+//
+// The ordering is the whole reason it is a hook rather than something a
+// caller does to the returned pair: a root commits to the trie as it
+// stood at mint time, so state written afterwards is absent from the
+// commitment. A probe that seeded after the mint would measure an empty
+// set and pass while reporting that nothing is exposed.
+func newLiveFeedPairSeeded(t *testing.T, posts int, prefix string, seed func(*entitysdk.AppPeer)) liveFeedPair {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
@@ -118,12 +162,19 @@ func newLiveFeedPair(t *testing.T, posts int) liveFeedPair {
 	t.Cleanup(func() { reader.Close() })
 
 	authored := seedLiveFeed(t, publisher, posts)
+	if seed != nil {
+		seed(publisher)
+	}
 
 	if _, err := publish.MintRoot(ctx, publish.MintOpts{
 		Peer:   publisher,
-		Prefix: "app/feed/",
+		Prefix: prefix,
+		// A harness measuring what a whole-peer publish exposes has to be
+		// able to perform one. The guard it is opting out of is gated on
+		// its own, in `a36_peer_root_probe_test.go`.
+		AllowWholePeer: true,
 	}); err != nil {
-		t.Fatalf("MintRoot over the feed: %v", err)
+		t.Fatalf("MintRoot over %q: %v", prefix, err)
 	}
 
 	// AP63: assembled at handshake, so the row precedes the dial.
@@ -131,7 +182,7 @@ func newLiveFeedPair(t *testing.T, posts int) liveFeedPair {
 	if _, err := publisher.Store().Put(policyPath, types.TypeCapPolicyEntry,
 		types.CapabilityPolicyEntryData{
 			PeerPattern: reader.PeerID(),
-			Grants:      readFeedGrants(),
+			Grants:      readPublishedGrants(prefix),
 			Notes:       "feed live gate: this peer may read the published feed and verify it",
 		}); err != nil {
 		t.Fatalf("write publisher policy row: %v", err)

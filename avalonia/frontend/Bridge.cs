@@ -773,6 +773,51 @@ public static class Bridge
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "PublishNow")]
     public static extern IntPtr PublishNow(long peerHandle, int makePublic);
 
+    // --- Feeds: following, reading a timeline, resolving a reference ------
+    //
+    // THREE SAFETY CLASSES, and the split is load-bearing. `status.go`
+    // draws the same line and this one is sharper, because two of the
+    // three reach other machines.
+    //
+    //   FeedFollowsRender   reads THIS peer's tree. Dials nobody. Safe on
+    //                       a wake, and it IS on one — follows are tree
+    //                       data, and a refresh button on tree data is a
+    //                       bug report about a missing subscription.
+    //   FeedTimelineRead    DIALS every followed publisher. Must never be
+    //                       on a wake or a timer: an open panel would
+    //                       become a thing that contacts everyone you
+    //                       follow whenever the window is focused.
+    //   FeedTimelineCatchUp dials AND moves durable cursors. Separate from
+    //                       the read so a surface somebody refreshes
+    //                       cannot quietly change durable state.
+    //
+    // `advanced` in the reply means a position MOVED, not that the
+    // catch-up entry point was the one called.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FeedFollowsRender")]
+    public static extern IntPtr FeedFollowsRender(long peerHandle);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FeedFollowPeer")]
+    public static extern IntPtr FeedFollowPeer(long peerHandle, string subject, string label);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FeedUnfollowPeer")]
+    public static extern IntPtr FeedUnfollowPeer(long peerHandle, string subject);
+
+    // subject empty = every follow; limit 0 = everything the read reaches.
+    // Thread-pool worker: one round trip per followed publisher, and a
+    // followed peer that is switched off is the normal case.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FeedTimelineRead")]
+    public static extern IntPtr FeedTimelineRead(long peerHandle, string subject, int limit);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FeedTimelineCatchUp")]
+    public static extern IntPtr FeedTimelineCatchUp(long peerHandle, string subject, int limit);
+
+    // One reference, and WHICH of APP-CONVENTION-FEED §2.2.2's outcomes it
+    // got. FEED-R7 is a MUST about the ability to TELL, so the reply
+    // carries `row` and `moved` both — an enum a caller can forget a case
+    // of, and a boolean a provenance line reads directly.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FeedResolveRef")]
+    public static extern IntPtr FeedResolveRef(long peerHandle, string reference);
+
     // --- The declared-state wake -----------------------------------------
     //
     // The sharing surfaces were the only three panels in the app with no

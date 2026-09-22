@@ -1,13 +1,24 @@
 # entity-workbench-go — status
 
-_Updated: 2026-09-12 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
+_Updated: 2026-09-15 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
 > **STARTING WORK? Read
-> `docs/status/HANDOFF-2026-09-13-a-the-vocabulary-agrees-and-the-fixture-found-our-defect.md`**
-> — its §0 is the current scorecard and §5 is the recommended order. Then
+> `docs/status/HANDOFF-2026-09-15-c-the-release-check-two-gates-a-correction-routed-and-the-changelog-had-stopped-two-weeks-back.md`**
+> — the release-readiness pass: the measured tree state, the one thing the release still needs from
+> us (a version number, which is not ours to guess), and `C-7`, a correction routed to two seats
+> about what it takes for a post to be readable. Then
+> `docs/status/HANDOFF-2026-09-15-b-the-inbox-is-clear-the-corridor-is-cut-and-one-thing-is-parked-on-arch.md`
+> — what landed, the one item parked on somebody else, the three packets owed routing, and the
+> finding worth carrying (a conformance fallback will hide a broken primary path). Then
+> `docs/status/HANDOFF-2026-09-15-a-two-of-five-obligations-done-and-the-plan-was-wrong-about-one-of-them.md`
+> — its §0 and §3 are history; **§2 is still the plan** for W6's remaining obligations and §4's
+> traps are all still live. Then
+> `docs/status/HANDOFF-2026-09-13-a-the-vocabulary-agrees-and-the-fixture-found-our-defect.md`
+> — its §0 is the scorecard for the vocabulary work. Then
 > `docs/status/HANDOFF-2026-09-10-d-the-live-peer-implementation-plan.md`, which is still the work
-> list (**W0–W5 done, W6 next**); the architecture it assumes is
-> `docs/architecture/LIVE-PEER-DIRECTION.md` §4.
+> list (**W0–W5 done, W6 in progress — obligations 1 and 3 landed 2026-09-15**); the architecture it
+> assumes is `docs/architecture/LIVE-PEER-DIRECTION.md` §4, whose §5 step 4 carries the state of all
+> five obligations.
 >
 > **CONTINUING THE FEED WORK?** `HANDOFF-2026-09-10-c`'s **§0 scorecard is superseded** (bannered
 > there) — pieces 2, 3 and 4 landed 2026-09-13 and the joint fixture agrees 5/5. **Its §2 is still
@@ -21,7 +32,34 @@ _Updated: 2026-09-12 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > into ours / waiting-on-architecture / waiting-on-core-go, in the order to do them, with the
 > one piece of work that is deliberately sequenced behind somebody else named as such.
 >
-> **Start here:** **§41 — a peer publishes a feed now, and the thing that attributes an
+> **Start here:** **§50 — every feed reader test was green while the road a user takes was
+> broken** (a test that builds the reader's transport cannot fail on the transport the product
+> chooses; assert which path produced the answer, and gate the chooser separately), then
+> **§48 — posting is not publishing on the live road either** (measured against a
+> neighbouring project's correction, and against a sentence of our own that had never been run),
+> then
+> **§47 — the speed-up had a test for the mechanism and none for the
+> wiring** (a counter summed over several users keeps moving while all but one are dead; assert
+> on something belonging to one user at a time), then
+> **§46 — following a peer reaches a pixel** (three actions with three
+> different costs; one verifying reader per peer, because that is what remembers the highest
+> version it has accepted), then
+> **§45 — the joint corridor is cut, and reading it back found a defect a conformance rule
+> was hiding** (a fallback built to survive a hostile publisher will equally survive your own
+> broken primary path — assert which path answered), then
+> **§44 — the fix for our own finding works, and it would put the operator's
+> private tree on a CDN** (the prescribed scope change moves the committed set from 4 keys to
+> 386 and puts private state in the upload directory; a ruling that answers the objection as
+> filed can still miss the defect), then
+> **§43 — a peer reads another peer's feed, and the plan said to build it the
+> one way the convention rules out** (`follow` / `timeline` over a real reader; four reader
+> MUSTs with a gate each; a one-line role descriptor was read as naming a protocol mechanism
+> and the plan of record is corrected in place), then
+> **§42 — a live reference resolves now, and the absence it reports has two
+> causes that must never be one** (the four outcomes are typed, named and gated against a
+> publisher that republishes between reads; a root commits to a prefix, so *"not in the key
+> set"* and *"not covered by this root"* are different answers), then
+> **§41 — a peer publishes a feed now, and the thing that attributes an
 > entry is outside everything a publisher can commit to** (the vocabulary reached a verb and a
 > signed root; a second peer reads it back over the wire; the per-entry signature is in no
 > published prefix), then
@@ -112,7 +150,507 @@ _Updated: 2026-09-12 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
 
-## §41 NEW (2026-09-14) — a peer publishes a feed now, and the thing that attributes an entry is outside everything a publisher can commit to
+## §50 NEW (2026-09-15) — every feed reader test was green while the road a user actually takes was broken
+
+Reading somebody else's feed has two halves that are easy to mistake for one. There is the
+**reader** — resolve the index, check who signed each entry, fall back to a slower complete method
+when the index is missing, resume when the position you were holding has been deleted. And there is
+the **road**: deciding how to reach that publisher at all, remembering the highest version of their
+data you have already accepted, and refusing when you are not in touch with them.
+
+The reader had a gate for every rule. The road had none. Every one of those tests constructed its
+own connection to the publisher and handed it to the reader — so **a test that builds the reader's
+transport cannot fail on the transport the product chooses.**
+
+Measured rather than argued. We changed one token so that the only call any feed surface makes
+asks for the wrong kind of connection, and re-ran everything: the reader tests, both halves of the
+cross-implementation fixture, and the publish-and-read pair **all stayed green**. Only a gate
+written this session went red. Counted the other way, which is the cleaner evidence: before this
+work, **no test in this project mentioned the timeline feature or its command at all** — the thing
+between the verified reader and the operator was reached by nothing.
+
+⭐ **The reason it stayed invisible is worth more than the fix.** The slower complete method exists
+precisely so a publisher cannot lie by omission about their own posts — so it is built to survive a
+publisher who withholds the index. **It survives your own broken index lookup identically**, and
+returns the right answer while doing it. A count of entries therefore proves nothing. The fields
+that discriminate are *which path produced this list*, and both the command line and the desktop
+panel already showed them; what was missing was anything that would notice if they stopped.
+
+So the rule this project now applies: **assert which path produced the answer, not the answer, and
+gate the chooser separately from the thing it chooses for.** Three separate breakages were
+introduced deliberately to confirm the new gates fail on each — a wrong road, a reader that claims
+the index named entries it found by the slow method, and a view that gives up on the first
+unreachable publisher instead of naming it and carrying on.
+
+Two smaller things fell out of it. The new two-peer harness authorises its reader with the real
+operator gesture rather than a test-only wildcard, and that was checked rather than assumed: remove
+the gesture and the read is refused for lack of permission, so the permission stage is genuinely
+part of the test. And a desktop test that guards against fields being dropped between the two
+languages opened by naming three fields as its dangerous category and then asserted none of them —
+a criterion written in prose, never applied, and invisible to review because it reads as a
+description of what the test does. Two of the three are now asserted, proven by renaming the field
+and watching it fail. **The other two are still not covered there and the comment now says so**
+rather than implying otherwise: they need a reachable second machine, which that test environment
+deliberately does not have.
+
+## §49 NEW (2026-09-15) — where a convention existed the two file implementations agree exactly, and every place they diverge is a place nothing was written
+
+This project builds file **synchronisation**; an independently written application on the same
+protocol builds a file **manager**. Both put files in a tree, both name them, and until now nobody
+had measured where the two vocabularies meet. Measured this session in both code bases, by
+enumerating every type name each one writes.
+
+**Where a shared convention exists, they agree completely.** The sharing vocabulary is five type
+names, and both implementations carry those five, spelled identically, with no local additions and no
+casing drift — two application tiers built separately, converging with no coordination beyond the
+convention's text and one exchanged test fixture. The one defect that comparison did surface was
+**ours**, found by decoding the other implementation's own bytes rather than bytes we had built to
+our own reading. The filesystem-facing namespace agrees too, because it belongs to the layer
+underneath and neither of us chose it.
+
+**Every divergence is on an axis where no convention was ever written.** Three of them:
+
+- **What a file *is*, once ingested, was invented twice.** We classify into five buckets by file
+  extension; the other implementation has its own, unrelated set. Neither name appears in any
+  specification, and neither code base references the other's. Ours sits in a **top-level namespace
+  we minted**, which is the more exposed of the two placements — the other implementation put its
+  set under its own application prefix, which is what that prefix is for.
+- **"I am offering you a file" exists in both, under two different authorities.** That may be
+  deliberate: the convention is explicit that an offer is a *label* and not a permission, so a user
+  interface's own offer card is legitimately not the same object as a recorded share. But both
+  projects reached for the same word, which is usually a sign that one sentence is missing.
+- **A "peer roster entry" now exists in three places, in two namespaces, under two spelling
+  conventions** — and ours is the misplaced one. We put it in the namespace that is meant to be
+  *portable and canonical*, where consumers are told to follow the schema, in order to match one
+  other implementation. The file manager put the same idea under its own application prefix.
+  Whichever placement is right, the two cannot read each other, and ours is the one that made the
+  portability promise. It also uses the wrong word separator for a rule that is supposed to be
+  enforced.
+
+⭐ **The inference worth more than any of the three:** the checks that would catch a misplaced or
+misspelled type name read the specifications, not the source, so they cannot see any of this. The
+portability promise is made *in code*, and nothing reads the code to see whether it was kept. And
+since the one axis with a written convention is the one where two independent implementations landed
+on identical names, the problem may not be that names get promoted to shared status too readily —
+it is that **nothing proposes a name for sharing until two projects have already shipped their own.**
+
+We are flagging all three rather than fixing them. This release ships feeds and individual entries;
+the alignment work is real, it is small, and it is not this week's. Saying so now beats discovering
+later that both sides assumed the other had raised it.
+
+---
+
+## §48 NEW (2026-09-15) — posting is not publishing on the live road either, and we had asserted that without measuring it
+
+A neighbouring project corrected itself this week on what it takes to publish a post: that writing
+the entry into your own tree **is** publishing, and that a peer people can connect to therefore needs
+nothing further — the exported copy being an extra step rather than the definition. The first half is
+a fair description of authoring. The second does not hold for the readers that exist.
+
+> **⚠ Corrected the same day, and the correction is ours.** This section first said the second half
+> was *"false for any reader that checks signatures, which is every reader the convention
+> describes."* **That overstates the convention and is withdrawn.** No conformance requirement
+> obliges a reader to anchor a read on a signed root — we checked every one of them — and the
+> convention says the opposite on the axis it names: an entry *"should verify alone … without a root
+> that may be many publishes stale"*, the root answering a separate question it calls
+> **anti-omission** — *was this in their published tree, as of sequence N?* **So an entry needs no
+> root to be attributable, and the neighbouring project was right about that half.** What is
+> root-anchored is **discovery**, and only as built. We were reading a prose sentence about
+> verification as a requirement about reading — which is the same error as an unmeasured claim in the
+> grammar of a measured one, one category over, and we had a rule for the second and none for the
+> first. The check is thirty seconds: look for the conformance row before attributing a sentence to
+> a specification.
+
+Measured here, two real machines, real verification: a reader sees **three** entries after the author
+publishes, **three** after a fourth entry is written with no new signature over the tree, and **four**
+once that signature is made. The middle reading is the dangerous one. The reader does not fail, does
+not warn, and does not fall back to its slower path — it answers from the index with the previous set,
+which is indistinguishable from an author who never posted. Everything on the writing side reports
+success.
+
+**The act has three steps and the middle one is the one that publishes.** Writing the entry is local
+and needs nobody. Signing a new root over your feed is *also* local and cheap — and it is the only
+one of the three a reader can observe. Exporting the directory to a host is the third, and applies
+only to the exported road. Collapsing the first two is easy precisely because neither touches the
+network, and it drops the one step whose absence says nothing.
+
+**The part that is ours:** this project's own notes already said a post is invisible "on both roads".
+That sentence was written from the exported road and had never been measured on the live one. It is
+measured now, and the note says which of its claims were run — an assertion in the grammar of a
+measurement is the failure mode this project keeps writing rules about.
+
+The finding was routed the same day rather than filed, because another implementation is building a
+composer against the corrected sentence this week.
+
+**What survives the correction is sharper than what it replaced.** A reader has two ways to find a
+feed's entries: the index, and a fallback that exists precisely so the index is never treated as the
+authority. **In both implementations the fallback is scoped to the signed root as well** — so the
+rule written to escape one anchor inherits it, and cannot recover a post the root does not cover.
+Ours enumerates the keys the root commits to; the other implementation reached all its entries by
+index and none by fallback. A reader talking directly to an author has a channel an exported-copy
+reader does not — it can ask the author's peer to list — and nothing in the convention says whether
+the fallback may use it. That question is now open and correctly stated, rather than answered wrongly
+in our favour.
+
+**And it has since been answered, against us, on a better argument than ours.** There is no
+*published* flag on an entry. So if merely writing an entry into your own tree made it published,
+an author could never **draft** — the act of typing would be the act of publishing, with nothing in
+the data model able to express the difference. Signing the root is what separates them. We had argued
+from what readers happen to do; the answer argues from what the author loses, and it settles the
+open question as a by-product: if signing is the act, the set a reader may enumerate is the set the
+signature covers.
+
+One practical rule came out of it and is worth stating on its own: **compute "your published copy is
+behind" from the root, never from a count of what is published.** One post rewrites the index page in
+place and changes no count at all, so a count-based indicator reads clean on exactly the case it
+exists to catch.
+
+Worth recording alongside it: the same conflation has now appeared three times in one week at three
+different layers — a signature whose *path* is computable but whose *bytes* are unreachable; a rule
+answered for one road that only bites on the other; and bytes that are in a tree but not covered by
+anything a reader anchors on. Every one is "the artifact exists" standing in for "a reader can get
+there". Two of the three were caught by the seat that made them.
+
+---
+
+## §47 NEW (2026-09-15) — the speed-up had a test for the mechanism and none for the wiring, and the counter that looked like proof was measuring somebody else
+
+Two weeks ago this project stopped re-downloading pages it had already verified. A page is
+addressed by a hash of its own bytes, so the second read of one is free; only the small mutable
+pointer at the top of the chain has to be re-checked, and that is what makes a second visit fast
+without making it a stale claim. That work had a test proving the cache itself holds bytes. It had
+nothing proving the **browser actually reaches it**.
+
+The difference is not academic. Deleting the connection between the browser and its cache — one
+argument, in one function — leaves every test in this project green and every page on screen
+correct, while a reader that checked a page against the publisher directly and then fell back to
+the published copy pays the full download again for bytes it had just proved. Nothing fails,
+because nothing about the answer changes. This is the same finding as yesterday's, one layer down:
+when there are two legitimate ways to get an answer, the answer cannot tell you which one you got.
+
+**The part worth carrying is how the first version of the new test failed.** It asserted on the
+cache's own hit and miss counters, which is the obvious thing to reach for, and it passed with the
+connection deleted. One cache is shared between the part that looks up names and the part that
+reads pages — so the name lookups alone kept the counters climbing while every page read went
+uncached. *A counter added up across several users keeps moving while all but one of them are
+dead.* The fix was to assert on something that belongs to one user at a time: a page's traversal of
+the publisher's tree, one per publisher, which is the expensive thing the cache exists to avoid
+repeating.
+
+Two gates now, because neither can see the other's failure — one that a second visit re-downloads
+nothing, one that checking a publisher directly and then reading its published copy does not pay
+twice, each with a control arm proving the measurement can move at all. Both were checked by
+breaking the code on purpose and confirming they go red. In both, the assertion that *the page is
+correct* is written last and labelled as the only one the defect also passes.
+
+A second deliberate break — removing an unrelated shortcut while leaving the cache connected —
+correctly does **not** trip either gate, because the property still holds. A test that fired there
+would be pinning how the code is written rather than what it has to do.
+
+The same sweep cleared two other places where a fallback could have been hiding a dead path. The
+name-resolution chain already reports which of its two legal reads produced a binding, and says in
+plain words which is stronger — that one was already right, and is the model. The recovery pass
+that re-checks shared folders already counts and displays what it had to recover, which is exactly
+the signal that the live path missed something. Reporting those as clean is part of the result: an
+instrument that finds nothing has to be shown capable of finding something.
+
+---
+
+## §46 NEW (2026-09-15) — following a peer reaches a pixel, and one of the rules is about being able to tell outcomes apart
+
+Following a peer's feed, reading a timeline and resolving a reference all shipped as shell commands
+with nothing in the desktop app behind them. That is the fourth time a model has landed here with no
+surface. For the reference resolver it is sharper than the usual case, because the obligation is
+**that a reader be able to tell four outcomes apart** — so a resolver whose outcome no renderer
+shows satisfies it nowhere at all. There is a panel now, with the verbs in it.
+
+**Three actions, three different costs, and collapsing them would be the defect.** Listing who you
+follow reads this machine's own tree and contacts nobody, so it updates itself. Reading a timeline
+**dials every publisher you follow**, so it is a button and never a timer — an open panel that
+contacted everyone you follow on each window focus is a thing somebody leaves running overnight.
+Catching up dials *and* moves your saved reading positions, so it is a separate control, and the
+result says whether a position actually moved rather than that the button was pressed.
+
+One verifying reader per peer, for the whole process, because that reader is what remembers the
+highest version number it has accepted from each publisher. Building one per read would give every
+read a fresh memory, and a correctly-signed **rollback** replayed between two reads would be
+undetectable — the same defect we fixed two days ago, reintroduced at a different seam.
+
+Two things the panel is deliberate about. Whether a followed peer is currently reachable renders as
+an observation and never as an error: following requires nothing of the far end, so following
+someone whose laptop is shut is a perfectly good follow. And a view assembled from several
+publishers always shows what it was assembled from, including when every source is fine — a
+provenance block that only appears on failure teaches an operator that its absence means one source.
+
+---
+
+## §45 NEW (2026-09-15) — the joint corridor is cut, and reading it back found a defect a conformance rule was hiding
+
+The other application implementation asked for a fixture in a specific shape: a static tree we
+publish and their reader reads, **34 entries against a 32-entry page size**, because every feed
+fixture either side had produced so far was one page — so the multi-page index rules had been
+unfalsifiable on both of us at once. It is cut, deterministic (byte-identical across two runs; an
+entry's timestamp is inside its hashed bytes, so an unpinned clock moves all 34 entry hashes and all
+34 signature paths), and it is cut **twice**: once over the peer root, where the per-entry
+signatures are inside what the root commits to, and once over the feed prefix, where they are not.
+
+| cut | committed bindings | entry signatures committed |
+|---|---|---|
+| peer root | 438 | **34 / 34** |
+| feed prefix | 37 | **0 / 34** |
+
+That pair is the check neither side had, and it is the point of cutting twice: a single-prefix
+fixture passes against both rules and measures neither. The emitter prints those two numbers itself,
+rather than a README asserting them — a README claim about emitted bytes is what goes stale
+silently.
+
+⭐ **Then reading it back with our own reader found the better finding.** The reader joined a
+committed key to its published prefix by concatenation, which is exactly what the specification
+says — and the universal tree is the one prefix spelled with a trailing-slash-only form, so the
+join produced a leading slash and **every index lookup missed**. The reader then did precisely what
+the standard requires of it: an index is an optimization, its absence is a cost rather than an
+answer, so it fell back to enumerating the whole committed set and returned **the same 34 entries**.
+Right answer. No error. Nothing a caller would read as a defect.
+
+Measured: **0 of 34 found by index and 34 by fallback**, against 34 and 0 on the narrow cut.
+
+So the rule worth keeping is not *"get the prefix join right"*. It is that **a conformance fallback
+built to survive a hostile publisher will equally survive your own broken primary path, and hide it
+completely** — no assertion phrased over the *answer* can fail, because the answer was right. Assert
+which path produced it. The field that says so had existed, unasserted, since the reader was
+written; the new assertion was mutation-tested against the pre-fix code rather than merely observed
+to pass after it. Two further teeth: a helper that already resolved all three prefix shapes was
+sitting in the consumer package with a doc comment recording this same lesson, so the defect is a
+reimplementation of something that existed; and the fallback was not even answer-identical, because
+the publisher's newest-first ordering lives on an index page, so the *set* matched and the *order*
+did not.
+
+Recorded as `AP106`. It was unreachable until this fixture existed, because every feed this tree had
+ever read was published over one prefix — **a fixture that models one value of a parameter cannot
+fail on the others**, which is the third time that shape has cost us something.
+
+---
+
+## §44 (2026-09-15) — the fix for our own finding works, and it would put the operator's private tree on a CDN
+
+The per-entry signature problem reported in §41 was ruled on: **our objection was wrong.** We had
+said no prefix contains both a feed and its signatures except the whole tree; the prefix that
+contains both is the **publishing peer's own namespace**, which is one peer's subtree and not the
+universal tree. That correction stands and the refusal it was used to justify — a public grant over
+everything — is confirmed correct and unchanged.
+
+**So we built the prescribed fix and measured it** (`publish/a36_peer_root_probe_test.go`, three
+arms). It works: publishing over the peer root puts every detached entry signature inside the
+committed key set, which is exactly what a statically-published feed needs and what it had no route
+to. The arm that says so carries its own negative control — the same feed published over `app/feed/`
+commits to no signature key — so it is measuring the prefix and not something else.
+
+**And it is not shipped.** Same peer, same feed, two prefixes:
+
+| published prefix | committed keys | entities in the upload directory |
+|---|---|---|
+| `app/feed/` | **4** | **7** |
+| the peer root | **386** | **400**, across 379 paths |
+
+The wide emit contains a filesystem path on the operator's machine, another peer's LAN address out
+of a device declaration, and the body of a document from a folder nobody shared — as bytes, in the
+directory whose next step is an upload.
+
+⭐ **The reason the gap survived a careful ruling is worth more than the finding.** We filed the
+problem and argued it from the **capability grant**, because that is where this repo's last two
+disclosure bugs were. The ruling refuted that argument correctly. But the obligation is about the
+**static** road, and on the static road there is no grant at all — the closure is written to a
+directory and copied to an origin, so there the disclosure control *is* the published prefix, which
+is the one thing the fix moves. **A ruling that answers the objection as filed can still miss the
+defect, because the filing party chose which objection to raise.** Recorded as `AP103`.
+
+The structural version, which we think is the real finding: **the signature location is fixed by the
+protocol, not chosen by the author.** A published root that commits to exactly one contiguous prefix
+therefore cannot commit to an artifact *and* its evidence unless it widens far enough to contain
+everything between them — here, an application prefix and a system prefix, i.e. the whole peer. That
+is not specific to feeds and not specific to this implementation. Three options are on the table and
+the question is open; a publisher-side guard that makes a whole-peer publish enumerate what it is
+about to disclose is right under all three and is being built regardless.
+
+**Also measured while reviewing a proposed schema change** (`AP105`): a canonical CBOR map's key
+order is the bytewise order of the *encoded* keys, so for short text keys it is **length-first**,
+not lexicographic. Where a specification says a set is ordered by a key that is also a map key,
+iterating the map is the obvious implementation and it picks a different winner — deterministically,
+silently, and differently in each implementation, which is the exact failure the ordering rule
+exists to prevent. Measured with ids chosen so the two orders disagree. In the same probe: an
+array-of-pairs carriage gives **different bytes for the same logical set** depending on the
+producer's insertion order, while the map is byte-identical — so the map is the right shape and what
+is missing is a sentence, not a redesign.
+
+**And a read side that was more permissive than our write side** (`AP104`): the mandatory
+degradation text on an embedded object was enforced when we authored one and not when we read one,
+so the rule held against our own output and against nobody else's — green everywhere, because every
+fixture was ours. Fixed, with the two ways of failing it reported as two different refusals, because
+*the key is absent* and *the key is present and blank* name different producers and different next
+actions. The distinction cannot be recovered after decoding, so the check reads the raw bytes.
+
+---
+
+## §43 (2026-09-15) — a peer reads another peer's feed, and the plan said to build it the one way the convention rules out
+
+**This peer can now follow another peer and read what they posted**, through their signed root:
+`follow` / `unfollow` / `follows` / `timeline`, over `workbench.ReadFeed`. Driven end to end on two
+real peers on a loopback network — publish, connect, follow, read, catch up, read again and get
+nothing, post, read again and get exactly the new one.
+
+### 1. The correction, which is worth more than the feature
+
+`docs/architecture/LIVE-PEER-DIRECTION.md` §3 obligation 3 said **"`app/feed/follow` as a
+subscription, not a poll"**, and proposed the kernel subscription engine as the mechanism. It quoted
+the convention's one-line role for the type — *"a reader's durable subscription to a peer's feed"*.
+
+**§2.4 of the same document says the opposite about the model.** A feed-follow follows a
+**namespace**: *public, pull-only, requiring no grant and no permission*, and *"the publisher does
+not know the follower exists."* That is the entire discriminator against `app/share/follow`, which
+follows a **grant** and therefore does tell the publisher who you are. A kernel subscription is
+registered **at** the publisher — it needs authorization and it announces a follower — so building a
+follow on one would have made the feed-follow the thing §2.4 says it is not, and collapsed a
+distinction the convention draws deliberately.
+
+**The mechanism was read into an ordinary English word.** "Subscription" names a protocol extension
+in this corpus and also means *a standing interest in something*, and the role line means the second.
+The lesson generalises past this instance: **a plan that quotes a one-line role descriptor has quoted
+the summary, not the rule** — the section that defines the type is where the authorization model
+lives, and a summary line cannot contradict it because it was never making that claim.
+
+What a live peer is actually for here: §7.6's reader loop is *verify one signature, read the index
+head, read down to your cursor, stop*. Over a static origin a host stands between reader and author
+and can serve an arbitrarily old correctly-signed root while saying nothing. Asking the peer directly
+removes that party. It does not make the read a delivery. Delivery stays available as an
+**optimization for a publisher who granted one**, which is what `share` already runs on, and which
+must never be described as how following works.
+
+### 2. What the reader does, and the four rules with a gate each
+
+`workbench.ReadFeed` reads through a `fetch.Consumer` — verified root, two-hop signature, `seq`
+floor, fail-closed CHAMP walk — so nothing reaches a surface that the publisher's own signed root did
+not commit to.
+
+| rule | what it requires | how it is driven |
+|---|---|---|
+| `FEED-R1` | reject an entry whose `author` is not the namespace it was found under | an entry authored by a third peer, planted in the publisher's tree and named by their own index |
+| `FEED-R4` | an entry with no verified signature is **unattributed**, not attributed | an unsigned entry beside signed ones; both arms asserted |
+| `FEED-R13` | the index is an optimization and **MUST NOT** be the authority | remove the head and every page, republish, and assert the enumeration returns **the same set** |
+| `FEED-R14` | if the cursor's `applied` no longer resolves, resume from `page` | remove the entry the reader was holding as its position, as an author removes one |
+
+**`FEED-R13`'s arm is the comparison, not the count.** *Slower, same answer* is the rule; a fallback
+that returned fewer entries would satisfy a did-not-error check while leaving the publisher able to
+lie by omission, which is the exact hole the rule closes. And the fallback filters by **type**, not
+by key prefix — where entries live is this implementation's choice and not normative, so a prefix
+scan would find another implementation's feed empty and report it as an absence.
+
+**A rejected entry keeps its row and loses its body.** Dropping it would make the reader's list
+disagree with the index it was read from, and the rejected row is the interesting one.
+
+### 3. Three distinctions the build had to make, none of them in the spec's text
+
+**A read and a catch-up are different operations.** `timeline` reads and does not touch the cursor;
+`timeline -new` reads from the stored position and advances it. Same split as `status` versus the
+reconcile pass: a surface somebody refreshes must not quietly change durable state. *And "advanced"
+means a position moved, not that the flag was passed* — a read that found nothing new and reported
+"positions were advanced" is a surface describing its own mode instead of what happened.
+
+**A position is a listing, not a fetch.** If the cursor's entry is still named by a page but its
+bytes are withheld, the reader stops there and reports nothing unusual; `FEED-R14` is about the row
+being **gone**. Treating a withheld body as a lost position would hand a publisher a way to make
+every reader re-show old entries. Both arms are gated, and the distinction is the reason the second
+one exists.
+
+**⚠ A follow record stored under `app/feed/` is published by the ordinary act of publishing your
+feed.** §2.4 makes a follow the reader's private data and publishing a follow list *"a separate,
+voluntary act"*; a feed publish commits to `app/feed/`. The type tag is the cross-implementation
+contract and the path is not, so the records live under `app/workbench/feed/` — and `follows` checks
+what this peer actually publishes and says so if the prefix covers them, because nothing else in the
+chain will: the records are well-formed and the publish is correct.
+
+### 4. What is not done
+
+No GUI for any of it. No mirror (obligation 4) and no removal verb (obligation 5). The reply-delivery
+grant (obligation 2) is not built — only the sentence saying a reply notifies nobody. Nothing here is
+cross-implementation: one reader, ours, against one publisher, ours.
+
+## §42 (2026-09-15) — a live reference resolves now, and the absence it reports has two causes that must never be one
+
+**A reference is the atom every social vocabulary in this cohort is built out of, and until this
+change nothing in this tree resolved one.** `entitysdk.LiveRef` had a constructor and no consumer;
+`APP-CONVENTION-FEED` §2.2.2's four outcomes existed as a table nobody had run.
+
+`workbench/ref_resolve.go` is the resolver, `ref <entity+ref://…>` is the verb, and
+`publish/ref_outcomes_live_test.go` drives every outcome against a real publisher that republishes
+between reads.
+
+### 1. The deliverable is the outcome, not the entity
+
+§2.2.2 gives a live reference four outcomes and **`FEED-R7` MUSTs that a reader be able to tell
+which one it got** — *the normative half is the ability to tell, not which policy it picks.* A
+`(entity, error)` signature cannot carry that. It collapses rows 2, 3 and 4 into *"something went
+wrong"*, and **row 2 is not a failure at all**: a document that has evolved since somebody linked
+to it is the ordinary case, and the honest answer is the current bytes plus the fact that they
+moved. So the resolver returns a typed outcome and keeps its error return for faults about the
+**publisher** — unreachable, never published, root did not verify, committed bytes not served.
+
+| outcome | condition |
+|---|---|
+| `current` | the path resolves and matches `seen`, or the link carried no expectation |
+| `moved` | the path resolves to something else — **`FEED-R7`'s fact**, carried as its own field |
+| `fell-back-to-seen` | the path is gone from the signed root; `seen` named bytes something still holds |
+| `dangling` | nothing resolves and nothing falls back |
+| `not-committed` | the publisher's root commits to a different part of its tree |
+
+**Resolution goes through the verified walk.** A dispatched `system/tree:get` would answer in one
+round trip and prove the wrong thing — an authenticated connection proves WHO, not WHAT — and a
+second verification path is the thing that must not exist. The verb goes through the browser's own
+road chooser and consumer cache, which is also what keeps the `seq` floor one per publisher (AP100):
+a resolution and a navigation against the same peer share a floor.
+
+### 2. The finding: a root commits to a PREFIX, so "the key is not there" has two causes
+
+§2.2.2's table has four rows and the world has five states. A reference names a `(peer, path)`; a
+published root commits to a **prefix**. A path outside that prefix is not row 3 — **the publisher
+has unpublished nothing.** It minted its one root over a different region of its tree, and that root
+says nothing whatever about the path, in either direction.
+
+Folding the two together produces a confident wrong answer in the direction that costs most: *"that
+document is gone"* about a document that is fine, blamed on the machine that is behaving correctly.
+The two send an operator to different places — one is *"ask the author what happened to it"*, the
+other is *"you asked the wrong root"* — so `not-committed` is its own outcome and its sentence names
+what the root **does** commit to. This is `fetch.ErrEmptyEnumeration`'s argument one layer up:
+absence carries information only once you know the question was in scope.
+
+**The same rule caught a second case.** An empty signed root answers *absent* to every key, so a
+reference resolved against one reports `not-committed` and not `dangling` — reporting a fact about
+the root as a finding about the path is how a publisher's mistake becomes a link's obituary.
+
+### 3. Row 3 is the elegant one, and both of its legs are measured
+
+`seen` is a hash, so the bytes are self-validating: **any** store that has them satisfies the link
+and none can substitute for it. That is why a live reference survives its author unpublishing the
+path with no link database anywhere. Both legs are driven in one run and asserted apart, because one
+passing says nothing about the other: a document this reader had already read comes back **from its
+own store**, and a document it had never seen comes back **from the publisher's content store, by
+hash, after the signed root stopped committing to the path.**
+
+### 4. What was found by typing the commands, and what is still owed
+
+`post -reply` said nothing about what a reply does or does not reach. It claimed no notification, so
+it was not yet a `FEED-R9` violation — but *"reply"* means notification everywhere else a person has
+used the word, and silence was the wrong amount to say. Both the verb's help and its output now say
+it: a reply is published in **this** peer's namespace, and the peer replied to sees it only if they
+poll or have granted delivery. Inbound delivery is granted, never ambient.
+
+⚠ **Still owed, named rather than left to be discovered.** The outcome reaches a shell verb and **no
+GUI control** — a resolver whose fact a renderer drops satisfies `FEED-R7` nowhere, and that half is
+only done for one of the two frontends. Nothing here is cross-implementation: one resolver, ours.
+And of the four reader-side `[MUST]`s §40 listed as ungated, **two now have gates** (§1.1's namespace
+check, §2.2.2's outcomes) and two do not — §4.3 rule 6's fall-back-to-enumeration and §4.4's
+resume-from-page, both of which need a feed **reader**, which this seat still has not built.
+
+## §41 (2026-09-14) — a peer publishes a feed now, and the thing that attributes an entry is outside everything a publisher can commit to
 
 **The feed vocabulary reached a verb, a signed root and a second peer.** `post` and `feed` are
 shipped shell verbs; `entitysdk.FeedAuthor` is the authoring path behind them; and
@@ -7616,16 +8154,18 @@ needed to assert was that the boards were *independent*.
 > shared shapes and interop, where neither of us can rule anything and the exchange is running
 > each other's bytes.
 
-- **⚠ meta / release team — the release NUMBER, and it is the last thing our `CHANGELOG` is
-  missing.** Arch cut **0.8.2** tracking the protocol; `entity-core-py`/`rust`/`go` went
-  **0.9.0**; we are public at `v0.8.0` and our heading is still `[Unreleased]`. **Deliberately
-  not guessed** — core-go spent a commit on exactly this failure mode (`13a42ea`, *"stop
-  restating the release version in status prose — it went false on py/rust the moment they
-  cut"*). Sub-question in the same breath: the CHANGELOG's *"Initial public research-preview
-  release"* line predates the `v0.8.0` tag and had never been filed under a heading; we attached
-  it to `[0.8.0]` as a **reconstruction from the tag**, not from a record. If the release record
-  says otherwise, one line fixes it. **Blocked on us: nothing** — the entry is written and the
-  number is a heading edit. Routed in `reviews/RELEASE-READINESS-REPLY-2026-08-24.md` §6.
+- **⚠ meta / release team — the release NUMBER for the next cut.** ⚠ **This row said we were
+  public at `v0.8.0`, and that went false without anybody noticing: the published branch carries
+  a written-out `## [0.9.0]` section.** Checked against the **published remote**, which is the
+  only thing that answers it — a local `master` drifts from what is actually published and gives
+  the wrong answer confidently. The row is corrected rather than deleted, because *how* it went
+  stale is the reusable part: it described a state, the state changed elsewhere, and nothing in
+  this tree can fail on a sentence. What is actually open is the **next** number. Our
+  `[Unreleased]` section is written and now covers the whole span since 0.9.0 (sharing, the file
+  explorer, publishing, the live road, the feed, conflicts, catch-up), so the remaining act is a
+  heading edit and it is **deliberately not guessed** — core-go spent a commit on exactly this
+  failure mode (`13a42ea`, *"stop restating the release version in status prose — it went false
+  on py/rust the moment they cut"*). **Blocked on us: nothing.**
 - **⚠ operator / arch (ledger M-4) — [ADR-0030]'s disposition.** It is **retracted** and its own
   text still reads `Status: Accepted`; arch reverted their copy, we kept ours and annotated it
   (§0A). We are stable either way. The only thing we are asking is that it not sit indefinitely

@@ -36,7 +36,7 @@ without a second live participant** — and a static origin is not one.
 |---|---|---|
 | A site is read from | a host serving files over HTTP, against a signed root | the peer that authored it, over an authenticated connection |
 | A reference resolves against | a frozen emission | a tree that can change underneath the reader |
-| Following someone is | polling an origin on a timer | a subscription that delivers |
+| Following someone is | polling an origin on a timer | asking them directly, on your own schedule |
 | A reply reaches an author | not at all — nothing carries it | over a delivery grant the author issued |
 | A second opinion comes from | another origin, if one happens to exist | any peer that kept a copy |
 | Publishing is | emit a directory and upload it | serve it, from the machine that wrote it |
@@ -71,11 +71,36 @@ one-directional grant gives you a relationship that establishes cleanly and carr
 `FEED-R9` (MUST NOT describe replies as notifying the author absent a grant) is a rule an
 implementation is most likely to get right after having tried the alternative.
 
-**(3) `app/feed/follow` as a subscription, not a poll.**
-The type is *"a reader's durable subscription to a peer's feed"*. We have a subscription engine, a
-delivery path, a restart-safe binding layer, an adaptive catch-up supervisor, and measured numbers
-for what delivery costs (~2.3 s fixed + ~0.36 ms/file; 6.5–8.2 queue slots per item). A follow over
-that path is a feed that arrives. A follow over HTTP is a timer.
+**(3) `app/feed/follow` — a durable local declaration, and a reader that asks the publisher
+directly.**
+
+> ⚠ **CORRECTED 2026-09-15, and the original is kept because the error is the interesting part.**
+> This item read *"`app/feed/follow` as a subscription, not a poll"*, on the strength of the
+> convention's one-line role for the type — *"a reader's durable subscription to a peer's feed"* —
+> and proposed the kernel subscription engine as the mechanism. **The convention's own §2.4 says the
+> opposite about the model**: a feed-follow follows a *namespace*, and is *"public, pull-only,
+> requiring no grant and no permission"*, with *"the publisher does not know the follower exists."*
+> That is the entire discriminator against `app/share/follow`, which follows a **grant** and
+> therefore does tell the publisher who you are. A kernel subscription is registered **at** the
+> publisher: it needs authorization, and it announces a follower. Building a follow on one would
+> have made the feed-follow the thing §2.4 says it is not. **"Subscription" in that role line is the
+> ordinary English word, in a corpus where it is also the name of a protocol mechanism**, and the
+> mechanism was read into it here.
+
+What a live peer is for, once that is straight: it is what makes following **not** a poll against a
+third party. §7.6 states the reader loop the convention specifies — *fetch
+`system/peer/published-root`, verify one signature, check `seq` has not gone backward, read the index
+head, read down to your cursor and stop* — and everything under that root is committed to by that one
+signature. Over a static origin, a host stands between the reader and the author and can serve an
+arbitrarily old correctly-signed root while saying nothing. Asking the peer directly removes that
+party. It does not make the read a delivery, and it does not make the publisher aware of anybody.
+
+Delivery remains available and is an **optimization for a publisher who has granted one** — the
+subscription engine, the delivery path, the restart-safe binding layer, the adaptive catch-up
+supervisor and the measured costs (~2.3 s fixed + ~0.36 ms/file; 6.5–8.2 queue slots per item) are
+all still here and are what `share` runs on. What must never happen is describing *that* as how
+following works, because it would require of every reader exactly the permission §2.4 says following
+does not need.
 
 **(4) `FEED` §7.1's one honest hole — the second source.**
 *"A quiet publisher and a withholding origin are byte-identical at the consumer… Distinguishing the
@@ -331,6 +356,17 @@ promise. A-21 (the naming ask) does not block this; if the word changes, it is a
 
 **Step 4 — the live obligations in §3, in order 1 → 3 → 4 → 2 → 5.**
 Live references first because that is the MUST with no other route to it.
+
+*As of 2026-09-15:* **(1) is done** — `workbench.ResolveRef` returns §2.2.2's outcome as a typed
+value, all four rows plus the fifth state are driven against a publisher that republishes between
+reads, and `ref` is the verb. **(3) is done on the corrected reading above** — a follow is a durable
+private declaration, `workbench.ReadFeed` is the reader, and `follow` / `unfollow` / `follows` /
+`timeline` are the verbs; `FEED-R1`, `R4`, `R13` and `R14` each have a gate driven by the condition
+that defines it. **(2)'s cheap half is done** — `post -reply` now states what a reply does not reach
+— and its grant route is not built. **(4) and (5) are not started**, and (4) wants a joint decision
+with the other application seat first: they are rebuilding their gatherer against the same reshaped
+section, and two implementations building one section in parallel with no fixture between them is how
+a divergence gets published.
 
 ## 6. What this deliberately is not
 

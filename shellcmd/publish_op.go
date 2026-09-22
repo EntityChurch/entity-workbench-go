@@ -88,6 +88,21 @@ type PublishRequest struct {
 	// does not know what they asked for.
 	Unpublic bool
 
+	// AllowWholePeer acknowledges that the chosen prefix spans the
+	// system boundary — the root will commit to this peer's own device
+	// declarations, folder declarations with their local filesystem
+	// paths, ingested documents and capability policy table, and with
+	// `-out` every one of those is written into a directory whose next
+	// step is an upload.
+	//
+	// Refused without it (`publish.disclosureAcrossSystem`). It is a
+	// separate field from Prefix rather than a magic prefix value
+	// because **the disclosure is the thing being consented to, not the
+	// prefix** — an operator widening a prefix for `A-36`'s reason is
+	// solving an attribution problem and has no reason to be thinking
+	// about their folder list.
+	AllowWholePeer bool
+
 	// At pins `published_at`. Zero means now.
 	At time.Time
 }
@@ -306,15 +321,18 @@ func (ws *ShellWorkspace) Publish(ctx context.Context, req PublishRequest) (Publ
 	// `seq` advancing by two for one operator action.
 	if req.OutputDir != "" {
 		static, err = publish.Publish(ctx, publish.Opts{
-			Peer:      ap,
-			Prefix:    prefix,
-			OutputDir: req.OutputDir,
-			OriginURL: req.OriginURL,
-			At:        req.At,
+			Peer:           ap,
+			Prefix:         prefix,
+			OutputDir:      req.OutputDir,
+			OriginURL:      req.OriginURL,
+			At:             req.At,
+			AllowWholePeer: req.AllowWholePeer,
 		})
 		signed = static.SignedRoot
 	} else {
-		signed, err = publish.MintRoot(ctx, publish.MintOpts{Peer: ap, Prefix: prefix, At: req.At})
+		signed, err = publish.MintRoot(ctx, publish.MintOpts{
+			Peer: ap, Prefix: prefix, At: req.At, AllowWholePeer: req.AllowWholePeer,
+		})
 	}
 	if err != nil {
 		return PublishOutcome{}, err

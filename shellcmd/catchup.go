@@ -162,11 +162,11 @@ const (
 //
 // An idle pass costs ~0.24 ms/file (SYNC-LIMITS §1), so:
 //
-//	     files   pass    ceiling  steady-state duty
-//	       10    ~0 s      60 s   negligible
-//	    1,000   0.24 s     60 s   0.4 %
-//	   10,000   2.4 s       4 min 1 %
-//	  100,000    24 s      10 min 4 %   (hard cap)
+//	   files   pass    ceiling  steady-state duty
+//	     10    ~0 s      60 s   negligible
+//	  1,000   0.24 s     60 s   0.4 %
+//	 10,000   2.4 s       4 min 1 %
+//	100,000    24 s      10 min 4 %   (hard cap)
 //
 // So an ordinary folder now rests at the base rate — which is also
 // Syncthing's default rescan interval, and that is not a coincidence: it is

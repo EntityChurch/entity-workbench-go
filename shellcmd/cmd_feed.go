@@ -36,7 +36,13 @@ supply one afterwards.
 POSTING IS NOT PUBLISHING. A post writes four keys into this peer's tree
 and moves none of them into the signed root, so a reader sees nothing new
 until ` + "`publish`" + ` runs again. This verb says so every time the root is
-behind.`
+behind.
+
+A REPLY NOTIFIES NOBODY. It is published in THIS peer's namespace like
+any other entry; the peer you replied to learns of it only if they poll
+for entries naming theirs, or if they have granted you delivery. There is
+no unsolicited inbox in this system (FEED §3), which is the same property
+that means there is no spam route.`
 
 const feedUsage = `feed [-limit N]             — this peer's own feed, newest first
 
@@ -136,6 +142,17 @@ func renderPost(out FeedPostOutcome) []string {
 			"rewritten", e.Page, e.Page-1))
 	}
 	lines = append(lines, "  signed — "+e.SignaturePath)
+	if !out.ReplyTo.IsZero() {
+		// `FEED-R9`, said at the moment the word "reply" is used. The verb
+		// did not claim a notification before this, so it was not yet a
+		// violation — and an operator's reasonable reading of "reply" is
+		// exactly what the MUST NOT exists to head off, so silence was the
+		// wrong amount to say.
+		lines = append(lines,
+			"  this reply notifies nobody: it is published in THIS peer's namespace, and the peer",
+			"  you replied to sees it only if they poll for entries naming theirs, or have granted",
+			"  you delivery — inbound delivery is granted, never ambient")
+	}
 	lines = append(lines, feedReachLines(out.Reach, true)...)
 	return lines
 }

@@ -32,6 +32,10 @@ Flags:
   -public       write the ` + "`default`" + ` policy row: any peer that can dial
                 this one may read the published prefix and verify it
   -private      remove that row
+  -whole-peer   acknowledge that the prefix spans the system boundary, so
+                the root commits to this peer's own declarations as well as
+                to the thing you meant to publish. REFUSED without it, and
+                the refusal names what is on offer
 
 Publishing is one act — signing a root over a prefix — and the flags pick
 which projections of it you want. With no flags it signs and tells you
@@ -85,6 +89,8 @@ func cmdPublish(sh *Shell, args []string) (Result, error) {
 			req.Public = true
 		case "-private":
 			req.Unpublic = true
+		case "-whole-peer":
+			req.AllowWholePeer = true
 		default:
 			return Result{}, fmt.Errorf("publish: unknown flag %q\n%s", args[i], publishUsage)
 		}
