@@ -182,15 +182,35 @@ func (ws *ShellWorkspace) Sync(req SyncRequest) (SyncOutcome, error) {
 			targetRoot)
 	}
 
-	// Narrowest possible capability: the single receive op the
-	// subscription dispatches. The handler's own grant does the
-	// content-fetch and local-write work inside its scope.
-	grants := []types.GrantEntry{
+	// THE DISPATCH CAPABILITY IS THE AMBIENT GRANT OF THE DELIVERED
+	// EXECUTION, so post-E1 it gates the content fetch too.
+	//
+	// This used to be one entry — `blob-resolve:receive` — under a comment
+	// saying *"the handler's own grant does the content-fetch and
+	// local-write work inside its scope."* That was true until 2026-09-10
+	// and is now exactly half right: a subscription delivery runs the
+	// handler under THIS capability, and the kernel's E1 change
+	// (0.8.2.19) makes the executing grant the gate on every outbound
+	// sub-dispatch. So a cap that authorizes only being invoked produces a
+	// handler that runs and then cannot fetch a byte.
+	//
+	// Measured, and the measurement is the useful part: with the handler's
+	// own installed grant widened and this one left alone, a `resync`
+	// materializes the folder and LIVE DELIVERY STILL FAILS — because a
+	// backfill runs the handler under the peer's own authority and a
+	// delivery runs it under this. Two paths, two ambient grants, one of
+	// them fixed. That asymmetry is why the migration test asserts on a
+	// file written after the fix rather than on a resync's counters.
+	//
+	// Composed from the handler's declared scope rather than retyped, so
+	// the delivered execution can do exactly what the handler may do and
+	// no more, and so the two cannot drift (workbench.BlobResolveInternalScope).
+	grants := append([]types.GrantEntry{
 		{
 			Handlers:   types.CapabilityScope{Include: []string{workbench.BlobResolvePattern}},
 			Operations: types.CapabilityScope{Include: []string{"receive"}},
 		},
-	}
+	}, workbench.BlobResolveInternalScope()...)
 	capPath := "system/capability/grants/chain/blob-resolve/" + targetRoot
 	if _, err := local.MintChainCapabilityBound(grants, capPath); err != nil {
 		return SyncOutcome{}, fmt.Errorf("mint chain cap: %w", err)

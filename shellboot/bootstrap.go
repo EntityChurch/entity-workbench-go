@@ -518,6 +518,41 @@ func Bootstrap(ctx context.Context, cfg Config) (*entitysdk.AppPeer, *shellcmd.S
 		}
 	}
 
+	// THE HANDLER GRANT IS THE OUTBOUND GATE NOW, AND IT IS INSTALL-ONCE.
+	//
+	// The kernel made the executing handler's own grant the gate on every
+	// outbound sub-dispatch (0.8.2.19 Delta E1, the F67 confused-deputy
+	// fix). blob-resolve's cross-peer `system/content:get` — the one
+	// dispatch that moves a byte between two peers — is a sub-dispatch, so
+	// its manifest scope now has to name a peers dimension it never
+	// needed before. `workbench.BlobResolveInternalScope` does.
+	//
+	// A manifest change alone reaches NEW peers only: `createHandlerGrants`
+	// skips a pattern whose grant is already bound, deliberately, because
+	// a handler grant is Class I. So every peer an operator is already
+	// running keeps the grant it was constructed with and stays unable to
+	// fetch a single blob. This closes that, once, idempotently, by
+	// content — see entitysdk/handler_grant_remint.go.
+	//
+	// It runs at bootstrap and NOT in the reconciler: this rewrites the
+	// peer's own installed authority, which is exactly the class of thing
+	// a control loop must not touch on every pass (same argument as
+	// MigrateFolderIDs below).
+	if remitted, err := ap.RemintHandlerGrant(
+		workbench.BlobResolvePattern, workbench.BlobResolveInternalScope(),
+	); err != nil {
+		// NAMED, never swallowed. A peer that fails this migration cannot
+		// receive a shared file and every other surface will report
+		// healthy — which is the exact failure mode that cost days.
+		fmt.Fprintf(os.Stderr,
+			"warning: could not update the blob-resolve handler grant — this peer "+
+				"cannot fetch file contents from another peer until it succeeds (%v)\n", err)
+	} else if remitted {
+		fmt.Fprintf(os.Stderr,
+			"migrated the blob-resolve handler grant to the scope this build declares "+
+				"(cross-peer content reads)\n")
+	}
+
 	// Pre-S6 folder records were keyed on the bare root name, so the same
 	// folder had a different id on each peer and no field joined the two
 	// — there was no object either side could point at. One idempotent

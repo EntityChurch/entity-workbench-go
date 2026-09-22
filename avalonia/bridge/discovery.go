@@ -58,9 +58,7 @@ type discoveryHandle struct {
 	peerHandleID int64
 	hp           *shellboot.HostedPeer
 
-	wakeCh     chan struct{}
-	doneCh     chan struct{}
-	wakeDoneCh chan struct{}
+	wakeChans
 	scanDoneCh chan struct{}
 	cancelEv   func()
 }
@@ -94,8 +92,7 @@ func DiscoveryOpen(peerHandle C.int64_t) (result *C.char) {
 	ch := &discoveryHandle{
 		peerHandleID: hp.Handle,
 		hp:           hp,
-		wakeCh:       make(chan struct{}, 1),
-		doneCh:       make(chan struct{}),
+		wakeChans:    newWakeChans(),
 	}
 	// Subscribe to the candidate prefix — that's where the substrate
 	// writes new mDNS observations. Any change here means a new peer
@@ -170,18 +167,10 @@ func DiscoveryRegisterWake(h C.int64_t, cb unsafe.Pointer) *C.char {
 	if !ok {
 		return C.CString(`{"ok":false,"error":"unknown discovery handle"}`)
 	}
-	ch.wakeDoneCh = make(chan struct{})
-	go func() {
-		defer close(ch.wakeDoneCh)
-		for {
-			select {
-			case <-ch.doneCh:
-				return
-			case <-ch.wakeCh:
-				C.invoke_tree_wake_discovery(cb, C.int64_t(handle))
-			}
-		}
-	}()
+	// Through wakeChans (wake_pump.go): stop() waits for this goroutine,
+	// so the caller freeing its .NET delegate the instant the export
+	// returns is safe by construction.
+	ch.run(func() { C.invoke_tree_wake_discovery(cb, C.int64_t(handle)) })
 	return C.CString(`{"ok":true}`)
 }
 
@@ -277,10 +266,9 @@ func DiscoveryClose(h C.int64_t) {
 	if ch.cancelEv != nil {
 		ch.cancelEv()
 	}
-	close(ch.doneCh)
-	if ch.wakeDoneCh != nil {
-		<-ch.wakeDoneCh
-	}
+	// WAIT for the pump, do not merely ask it to stop. Outside any mutex
+	// the callback path takes (AP60).
+	ch.stop()
 	if ch.scanDoneCh != nil {
 		<-ch.scanDoneCh
 	}
@@ -302,10 +290,9 @@ func cascadeDiscoveries(h int64) {
 		if ch.cancelEv != nil {
 			ch.cancelEv()
 		}
-		close(ch.doneCh)
-		if ch.wakeDoneCh != nil {
-			<-ch.wakeDoneCh
-		}
+		// WAIT for the pump, do not merely ask it to stop. Outside any
+		// mutex the callback path takes (AP60).
+		ch.stop()
 		if ch.scanDoneCh != nil {
 			<-ch.scanDoneCh
 		}

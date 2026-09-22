@@ -59,6 +59,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"entity-workbench-go/workbench"
 
@@ -228,7 +229,8 @@ func (ws *ShellWorkspace) observeFolder(f workbench.FolderData) FolderStatus {
 		LocalRoot: f.ReceivingRoot(),
 		Path:      f.Path,
 		Origin:    f.Origin,
-		Mode:      f.Mode,
+		// EffectiveMode, never the raw field. See FolderStatus.Mode.
+		Mode: f.EffectiveMode(),
 	}
 	for _, p := range f.SharedWith {
 		fs.PeerStates = append(fs.PeerStates, FolderPeerStatus{
@@ -253,11 +255,39 @@ func (ws *ShellWorkspace) observeFolder(f workbench.FolderData) FolderStatus {
 			fs.AcceptedAtMillis = ps.AtMillis
 		}
 	}
-	// Every peer we actually pull from, in both directions. A folder we
-	// OWN and set to `both` subscribes back to each peer that accepted
-	// it, and Syncing — keyed on a single origin — has nowhere to say so.
-	for _, peerID := range receiveFromPeers(f, local.PeerID()) {
-		if _, ok := workbench.LoadSyncBinding(st, peerID, f.Root); ok {
+	// DECLARED, then OBSERVED, as two separate lists.
+	fs.ReceiveFrom = receiveFromPeers(f, local.PeerID())
+	sort.Strings(fs.ReceiveFrom)
+
+	// Every peer we ACTUALLY pull from.
+	//
+	// **Matched on the binding's TARGET, never by looking one up under
+	// our own root name.** The reverse-leg binding is keyed on the
+	// SENDER's root — theirs — because that is the prefix being watched,
+	// and the receiver's mount is named after whatever directory the
+	// operator chose. `LoadSyncBinding(st, peerID, f.Root)` therefore
+	// missed every working two-way folder between two machines that had
+	// named the directory differently, and the row said "syncing with
+	// nobody" while bytes were arriving.
+	//
+	// The target prefix is ours and is exactly what identifies the
+	// binding as belonging to THIS folder, so this is a local read with
+	// no guess in it. Gated by
+	// TestStatus_ReverseLegIsSeenWhenTheirRootDiffers.
+	//
+	// The transferable rule: **a fix that changes what a record is keyed
+	// on has to move every reader of that key, and the readers that
+	// merely DISPLAY are the ones nobody thinks of.**
+	want := "local/files/" + fs.LocalRoot + "/"
+	bindings, _ := workbench.LoadSyncBindings(st)
+	pulling := map[string]bool{}
+	for _, b := range bindings {
+		if b.TargetPrefix == want {
+			pulling[b.RemotePeerID] = true
+		}
+	}
+	for _, peerID := range fs.ReceiveFrom {
+		if pulling[peerID] {
 			fs.SyncingWith = append(fs.SyncingWith, peerID)
 		}
 	}
@@ -279,10 +309,21 @@ func (fs FolderStatus) problems() []string {
 		return []string{fmt.Sprintf(
 			"folder %q has no mount (expected root %q at %s) — remount it, or remove the folder",
 			fs.Label, fs.Root, fs.Path)}
-	case fs.Local, !fs.Accepted:
-		// A local folder with a mount is fine, and a received folder we
-		// have not accepted is not supposed to have anything established
-		// for it — neither is a problem.
+	case fs.Local:
+		// A local folder that only PUBLISHES is fine once it is mounted.
+		// One that also RECEIVES has a second half, and until 2026-09-10
+		// this branch returned nil unconditionally — so an owner's folder
+		// could not report a problem of any kind, however broken.
+		//
+		// That is what an operator hit: they asked for two-way, nothing
+		// was established, and the row said `↔` and nothing else. The
+		// missing leg is observable from local state — we declared which
+		// peers we pull from, and we can see which subscriptions exist —
+		// so a READ can say it without dialing anybody.
+		return fs.missingReverseLegs()
+	case !fs.Accepted:
+		// A received folder we have not accepted is not supposed to have
+		// anything established for it.
 		return nil
 	case !fs.Mounted:
 		return []string{fmt.Sprintf(
@@ -296,6 +337,65 @@ func (fs FolderStatus) problems() []string {
 			fs.Label, fs.Origin)}
 	}
 	return nil
+}
+
+// Problems is problems(), exported for a renderer.
+//
+// Exported rather than reimplemented on the other side of the bridge, and
+// that is the whole reason it exists: the Avalonia folder row decided for
+// itself when a folder was in trouble, and its rule — unmounted, or a
+// received folder that is accepted and not syncing — meant a folder we
+// OWN could not report anything at all. One writer for the sentence, read
+// by the shell, by a reconcile pass and by every panel.
+func (fs FolderStatus) Problems() []string { return fs.problems() }
+
+// missingReverseLegs names every peer this folder is declared to pull
+// from and is not pulling from.
+//
+// # Why a READ is allowed to say this
+//
+// Both halves are local facts. `ReceiveFrom` comes from our own
+// declaration; `SyncingWith` comes from our own sync bindings. Nothing
+// here dials, dispatches, or asks another machine anything — which is the
+// constraint a status surface lives under, since a panel refreshes and a
+// pass that dialled on every refresh would be a dialer with a table in it.
+//
+// # Why it does not say WHY
+//
+// The usual cause is that the other machine has not asked for two-way,
+// and that is a fact in THEIR tree — a reconcile pass reads it and puts
+// the specific sentence in `Note`. A read cannot, so it states the
+// observation and names the action, rather than guessing at a cause it
+// has not measured. *"Declared X, substrate lacks Y, press this"* is
+// weaker than the pass's sentence and it is true, which is the trade a
+// surface should always take.
+func (fs FolderStatus) missingReverseLegs() []string {
+	if len(fs.ReceiveFrom) == 0 {
+		return nil
+	}
+	pulling := map[string]bool{}
+	for _, p := range fs.SyncingWith {
+		pulling[p] = true
+	}
+	var out []string
+	for _, peerID := range fs.ReceiveFrom {
+		if pulling[peerID] {
+			continue
+		}
+		// The Note, when a pass has produced one, is the specific reason
+		// and is strictly better than the generic sentence. Prefer it,
+		// but never render NOTHING — silence here is the whole defect.
+		if strings.TrimSpace(fs.Note) != "" {
+			out = append(out, fmt.Sprintf("folder %q: %s", fs.Label, fs.Note))
+			continue
+		}
+		out = append(out, fmt.Sprintf(
+			"folder %q is set to %q but nothing is arriving from %s — no subscription "+
+				"to their copy exists. Re-check to establish it; if it stays this way "+
+				"they have not set this folder to two-way on their machine.",
+			fs.Label, fs.Mode, peerID))
+	}
+	return out
 }
 
 // mountFileCounts reports both sides of the mount's lossy stage: how many

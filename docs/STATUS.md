@@ -1,8 +1,12 @@
 # entity-workbench-go — status
 
-_Updated: 2026-09-09 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
+_Updated: 2026-09-10 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
-> **Start here:** **§26 — the site bytes and the trie root already agree, and
+> **Start here:** **§28 — it worked on two real machines, and the first surface
+> to read the failures was lying**, then
+> **§27 — sharing was dead all morning, and the directory names
+> never had to match**, then
+> **§26 — the site bytes and the trie root already agree, and
 > the claim that said so had never been run**, then
 > **§25 — the reply pass, and the listener we had already
 > built**, then
@@ -53,7 +57,230 @@ _Updated: 2026-09-09 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
 
-## §26 NEW (2026-09-09) — the site bytes and the trie root already agree, and the claim that said so had never been run
+## §28 NEW (2026-09-10) — it worked on two real machines, and the first surface to read the failures was lying
+
+An operator shared a folder between two of their own machines, in the GUI, by pressing buttons,
+and the files arrived. Both directions. Then a directory. **That is the first time this product
+has done the thing it is named after outside a test harness**, and everything below is from the
+log of that session, because a working run is the cheapest audit available and we had never had
+one to read.
+
+**A surface built that morning to end the silence spent its first day lying.** The
+delivery-failure reader filters reconnect-lifecycle markers — a known kernel defect that writes
+one marker per peer-status transition and is about a session, not a file. It matched
+`"/system/network"`, with a leading slash. The kernel writes the **bare** handler path
+(`failed_uri=system/network`, verbatim in the log). So the filter matched nothing, and the
+operator was told **"20 file transfer(s) failed"** — about twenty markers with no file in them —
+followed by an invented explanation, *"the content was not there when we asked"*, about content
+that was never involved.
+
+The fixture is why nothing caught it, and the shape is worth more than the fix: **it did not
+omit what production has, it added what production does not.** It seeded the peer-qualified
+`entity://{peer}/system/network` because that form looked more careful. That is AP58 inverted
+and it is harder to see for exactly that reason. Now matched segment-exact against both forms,
+gated with the byte-exact string off the operator's log and a near-miss control arm
+(`system/networking-…` must still be counted), and verified by reverting the predicate: 3
+counted before, 0 after. **AP88.**
+
+**Two findings routed to the kernel, both about its own diagnostics.**
+`ChainErrorLostData.TargetPeerID` is reserved by §3.10.6 for the peer a failed dispatch was
+aimed at, and **no writer in the kernel populates it** — measured: every assignment to a field
+of that name is an unrelated registry type. So a failure surface can say *a transfer failed* and
+never *a transfer to that machine failed*, which is the field that decides which of two
+computers the operator walks over to. And a discovery candidate's content hash embeds
+`ObservedAt`, so an unchanged peer is a brand-new entity every scan: measured from the run log,
+the Nearby panel re-rendered **~2.6 times a second, continuously**, against tree-view's 0.51.
+*Nothing changed* and *everything changed* are byte-identical to any consumer, so no downstream
+dedup can fix it. Both in
+`docs/status/ROUTING-2026-09-10-b-entity-core-go-marker-peer-and-candidate-churn.md`.
+
+**The Nearby row is a dead end in the one state that needs a verb.** A discovered peer already
+in the address book renders as `known` with no control — correct labelling, and hard-won, since
+`known` is an address-book fact and `Connected` would assert reachability nothing checked. But
+the operator kept clicking it, because *we know this peer and cannot reach them* is exactly when
+you want an action, and the action lives in a different panel. **AP89**: a row that renders state
+and offers no verb is AP57 at row granularity, and it bites hardest in the failure state. Not
+fixed — it is a UI decision and the notification surface is being designed as a whole.
+
+**The leverage question, answered with numbers.**
+`docs/architecture/reviews/DESIGN-REVIEW-SYNC-LEVERAGE-AND-PORTABILITY-2026-09-10.md` measures
+how much of file sync is ours: **656 of 4,633 non-comment lines (14.2%) are the data path**, and
+neither of those two files moves a byte — they dispatch `system/content:get` (the kernel's
+§6.5.3 closure walk) and `local/files:write`. **The kernel moves the files; we decide which
+files, to whom, into which directory, and we say so when it fails.** The other 85.8% is
+declaration, reconciliation and diagnosis. The review also names what a Rust or Godot or
+browser-tier peer must implement to interoperate — five things, of which `workbench/blob-resolve`
+is a cross-impl requirement currently wearing a private name — and flags the one place we
+deliberately diverge from a landed spec (`EXTENSION-REVISION` §2.3's keep-both default), which
+is the most likely cross-impl divergence in the feature and is a one-sentence ruling for arch.
+
+**Why it took as long as it did**, from the track: 74 commits since 2026-09-01, 43 on the
+sharing path, and almost none of them building the mechanism. They went to things that were
+built and reachable from nothing, fixtures that could not express the failure, surfaces that
+were confidently wrong, and numbers read off the wrong thing. **This was an integration problem
+wearing a construction problem's clothes** — every session that opened by asking *what do we
+need to build* lost time, and every session that opened by grepping the kernel found it already
+there.
+
+**The atomic-set limitation is now stated where an operator reads it.** A shared folder
+converges file by file with no notion of a set that must arrive together, which is the whole
+reason this class of tool has always misbehaved over a live `.git` directory, a SQLite database
+with its `-wal` sidecar, or a VM image. `USAGE-SHARE-A-FOLDER.md` now says so plainly, says what
+to do instead, and is explicit that this is a property of the design rather than a defect we
+have yet to find — we have measured that nothing prevents it, not the failure itself. Designing
+a set boundary remains open and unstarted.
+
+**And that same edit removed a sentence that had stopped being true** (AP80, again): the guide
+still told operators that `direction … both` was unsupported and to run the share twice, the day
+after two-way on one folder record landed. Nothing in the tree can fail on prose — the only
+defence is to grep the published claim when the behaviour changes.
+
+## §27 (2026-09-10) — sharing was dead all morning, and the directory names never had to match
+
+An operator came back from a real two-machine session with a folder that would
+not sync two ways, and the session that answered them spent its first hour on
+the wrong defect. What follows is in the order it was measured, because the
+order is the finding.
+
+**The reported problem was not the blocking one.** The known limitation was
+that a two-way folder's reverse leg subscribes to *our* root name on a peer
+whose files sit under *their* root name — accepted, healthy, permanently
+empty. Real, reproduced, fixed below. But the first live gate run said
+`make twopeer-sync` — 2 peers, real TCP, real grants — was **35 checks, 18
+failed, with no file crossing in either direction**. Nothing was syncing at
+all, for anyone, in any configuration.
+
+**The cause was a capability dimension that defaults to something.** The
+kernel had, that morning, made the executing handler's own grant the gate on
+outbound sub-dispatch. §5.2's fourth dimension — *peers* — defaults an absent
+scope to *the local peer* and still checks it. So `blob-resolve`'s manifest,
+which had never declared one because nothing used to consult a handler's
+internal scope on an outbound dispatch, became a handler that could fetch only
+from itself. `Peers: nil` reads as *not narrowed* and means *narrowed to the
+smallest thing*. It failed under the development wildcard too, which is how it
+was found before anything about our own manifests was suspected: a fixture
+named "open access" had silently stopped covering a dimension.
+
+**Fixing it once was not enough, twice.** A backfill runs the handler under
+the peer's own installed grant; a subscription delivery runs it under the
+subscription's dispatch capability. Repairing the first made `resync` work
+while live delivery still refused — a symptom that reads as a subscription
+fault and sends you to the wrong half of the system. Three probes went inside
+the handler before anyone asked what was different about the *caller*, and the
+discriminating measurement had been available from the first run.
+
+**And handler grants are install-once, so the fix reached no existing
+machine.** The kernel skips minting for a pattern already bound — correct, and
+its own comment says a change reaches new peers only. What no comment can say
+is that every cross-peer test here runs on a memory store, which always mints
+fresh: the manifest fix was green across the whole tree and inert on every
+machine an operator runs. That needed a migration, idempotent by content
+because the mint embeds a timestamp, gated across a process boundary, with a
+control arm that installs the old shape and asserts the failure — without
+which the migration test passes against a build where the changed field does
+nothing.
+
+**Then the reported bug, which turned out to be smaller than its write-up.**
+The reverse leg's root-name problem had been sitting in the source as a
+comment that wrote out its own fix — *a dispatched remote read of their folder
+record would work; they already grant us the read* — and did not do it. It
+does work, and the authority is present exactly when the question is worth
+asking, because the reverse leg only exists when the receiver publishes and a
+publishing peer has already granted that read. So the owner **looks** instead
+of waiting to be told. No new channel, no new field in a shared namespace, and
+the same read answers what the other side's state is — the fact a
+four-day-old entry in our own agent guidance had called structurally
+unavailable. A failed read now **refuses** rather than falling back to our own
+root name: the binding a guess creates is durable and silent, and not creating
+one is recoverable thirty seconds later.
+
+**The gate that was passing on this was asserting the wrong thing.** It
+declared two-way on one side only and checked that a sync binding appeared. It
+did appear, and it could not have carried a byte — a receive-only peer
+publishes nothing and grants no sender authority, so the subscribe answers
+403. A gate on *the existence of a mechanism*, on a case where the mechanism
+cannot work. Rewritten to require both sides to declare it, keyed on the
+receiver's root, with a new control arm asserting a receive-only counterpart
+gets no binding **and a reason the operator can act on**.
+
+**One more, found by running the flow.** `direction` — the verb the whole
+two-way feature depends on — rewrote the authorization and then neither
+reconnected nor reconciled, while its own doc comment said the reconciler had
+already forced the reconnect. Grants are assembled at handshake, so the new
+authority was inert, and no pass ran, so no leg was built: two correct
+declarations on two machines and nothing happened. `share` and `accept` had
+both steps from the start. A false sentence in a doc comment is worse than no
+sentence, because it is the one the next reader checks the behaviour against.
+
+**After:** `twopeer-sync` 35 checks, 1 failed — the documented
+first-change-after-restart delay, which is a latency and not a loss.
+`threepeer-sync` 27 checks, 0 failed. Two peers with differently named
+directories now sync in both directions, measured on bytes on disk, with the
+same-name case kept as the control that isolates the name as the variable.
+
+**`shellcmd` was NOT green, and this paragraph said it was.** The claim came
+from `go test … | tail`, which reports **`tail`'s** exit code — zero however
+the run ended. Re-run to a file, `-race`, full package: **17 failures.**
+Sixteen are the kernel change below and are not ours. The seventeenth was, and
+is fixed at `42fdafc`: the discovery fixture seeded one mDNS candidate and
+asserted the substrate reported exactly one, while the peer it builds runs a
+live mDNS browser that also collects this package's own E2E peers and, on a
+developer's LAN, their other machine. It passed alone and failed in the full
+package — which reads as a substrate regression and is not one. Its own doc
+comment claimed the tests needed "no multicast, no timing and no network";
+that was false, and it is the second false doc comment in this section.
+**Now 16, all accounted for.** Never read a pass/fail from a command that ends
+in a pipe; `make test-each` exists so the correct thing is also the easy one.
+
+**Still broken and deliberately not worked around here:** the same kernel
+change strands the revision pull and the tree-follow fetch-diff — **20 tests
+across two suites** (4 in `entitysdk`, 16 in `shellcmd`), every one
+`failed_uri=system/revision status=502`, confirmed pre-existing by stashing our
+own fix and re-running. The first count of this was four, taken before the
+suite that holds the other sixteen had been read correctly. That handler
+declares no internal scope, so it takes the kernel's default self-grant, which
+omits the peers dimension on purpose while the operation's whole job is to
+reach another peer. Both cannot be right. `system/revision` is the propagation
+path for `archives/*`, so cross-peer deletes, bidirectional convergence and the
+mirror chain are all down for that reason. Routed rather than shimmed, because
+a local workaround would hide a question that is probably cohort-wide.
+
+**The gate for the binary an operator opens is green: `make twopeer-gui`, 74
+checks · 0 failed · 0 known-open**, all 13 phases, nothing skipped. Two real
+Avalonia apps in two containers, one real TCP network, the address typed into
+the panel, the share and the accept as real clicks, every file assertion on
+bytes on disk at the receiving end: connect both ways, share, accept into a
+directory the receiver chooses, backfill of the files already in the folder,
+add/modify/delete, restart both peers, restart the receiver alone.
+
+Two things in that run are worth carrying rather than celebrating. **Phase 12's
+known defect did not reproduce** — the first change after a receiver-only
+restart arrived — and the harness said so out loud (`the known defect did NOT
+reproduce; re-check the waiver`), which is what a waiver scoped to an instance
+is for. **One non-reproduction does not retire it**; the intermittency is the
+documented state. Phase 13 measured the waived change converging on its own
+~90 s after it was written, no resync, no operator action, which is the same
+delay-not-loss finding and is now measured twice.
+
+**The Avalonia headless suite had been aborting mid-run, and now completes:
+213/213, exit 0.** It previously printed `Passed: 160 … Total tests: Unknown …
+Aborted` — so an uncounted number of tests at the tail had never been running,
+and the pass count on its own hid it. `PeerView` registered a wake, discarded
+the registration id, and freed the delegate on close without unregistering; Go
+kept calling into collected memory, which the runtime aborts uncatchably. The
+audit outward from there found twelve more of the same class — ten wake pumps
+written by hand ten times, five of which never waited for their goroutine at
+all — now one pump whose `stop` blocks until the goroutine is gone. **Read the
+suite's `Total tests` line, not its pass count:** `Aborted` with an unknown
+total is a truncated run wearing a green number.
+
+**What this cost, stated plainly:** the operator lost a morning, and then an
+hour of the session that was supposed to help. Three of the five defects above
+were written down somewhere in this repo before they bit — as a known
+limitation, as a doc comment, and as a passing test. None of them was written
+down anywhere that could fail.
+
+## §26 (2026-09-09) — the site bytes and the trie root already agree, and the claim that said so had never been run
 
 Fourth pass of the day, scoping the cross-implementation site gate the content-site convention
 makes a precondition of ratification. **The gate turned out to be two-thirds already passing, and

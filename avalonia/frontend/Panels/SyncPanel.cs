@@ -1092,6 +1092,13 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
         [JsonPropertyName("filesPresent")] public int FilesPresent { get; set; }
         [JsonPropertyName("filesIngested")] public int FilesIngested { get; set; }
         [JsonPropertyName("filesObservable")] public bool FilesObservable { get; set; }
+        // The declaration and the observation of the same question.
+        // Declare BOTH or the row can only ever draw what we asked for.
+        [JsonPropertyName("receiveFrom")] public List<string> ReceiveFrom { get; set; } = new();
+        [JsonPropertyName("syncingWith")] public List<string> SyncingWith { get; set; } = new();
+        // The model's own sentences. The renderer used to decide when a
+        // folder was in trouble and got it wrong for every folder we own.
+        [JsonPropertyName("folderProblems")] public List<string> Problems { get; set; } = new();
         [JsonPropertyName("peers")] public List<FolderPeerDto> Peers { get; set; } = new();
     }
 
@@ -1259,12 +1266,32 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
             // origin. Before S6 the reconciler branched on IsLocal()
             // everywhere it meant direction, so "both" was inexpressible
             // and a bidirectional share was two unrelated one-way pipes.
+            // THE ARROW IS THE DECLARATION. It is what we asked for, and
+            // `Mode` now arrives already resolved through EffectiveMode
+            // on the Go side — the renderer must NOT default a blank,
+            // because the default it used to apply was `both` while the
+            // reconciler reads an absent mode as send-only. A pre-S6
+            // record therefore drew `↔ two-way` on screen for a folder
+            // that published and received nothing.
             var arrow = f.Mode switch
             {
                 "send" => "→",
                 "receive" => "←",
-                _ => "↔",
+                "both" => "↔",
+                _ => "?",
             };
+
+            // ...AND THE ARROW IS DIMMED UNTIL IT IS TRUE.
+            //
+            // A folder that RECEIVES from somebody is only actually
+            // two-way when a subscription to them exists. `ReceiveFrom`
+            // is who we declared we pull from; `SyncingWith` is who we
+            // can. Drawing the declaration alone is what let an operator
+            // read `↔`, see no problem, and have nothing arriving.
+            var declaredPulls = f.ReceiveFrom?.Count ?? 0;
+            var actualPulls = f.SyncingWith?.Count ?? 0;
+            var established = declaredPulls == 0 || actualPulls >= declaredPulls;
+            if (!established) arrow += "?";
 
             var who = new List<string>();
             foreach (var p in f.Peers)
@@ -1288,9 +1315,24 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
 
             var where = string.IsNullOrWhiteSpace(f.Path) ? "(path unknown)" : f.Path;
 
-            var problem = "";
-            if (!f.Mounted) problem = f.Note.Length > 0 ? f.Note : "this folder has no mount";
-            else if (!f.Local && f.Accepted && !f.Syncing) problem = f.Note;
+            // THE MODEL SAYS WHEN SOMETHING IS WRONG, not this method.
+            //
+            // The renderer used to decide: unmounted, or a received
+            // folder that is accepted and not syncing. Neither arm can
+            // fire for a folder we OWN, so an owner's folder could not
+            // report a problem of any kind — which is precisely the case
+            // an operator sat in front of, watching `↔` and nothing
+            // arriving. `folderProblems` is FolderStatus.problems()
+            // verbatim: the same sentences the shell prints and a
+            // reconcile pass produces, so the three surfaces cannot
+            // describe one fault three ways.
+            var problem = (f.Problems is { Count: > 0 })
+                ? string.Join("  ", f.Problems)
+                : "";
+            // The Note is a fallback only where the model has nothing to
+            // say, so a message a pass produced is never swallowed.
+            if (problem.Length == 0 && !f.Mounted)
+                problem = f.Note.Length > 0 ? f.Note : "this folder has no mount";
 
             return new FolderVm
             {
@@ -1298,7 +1340,11 @@ public sealed class SyncPanel : UserControl, IPanelPreferredHeight
                 Label = string.IsNullOrWhiteSpace(f.Label) ? f.Root : f.Label,
                 Origin = f.Origin,
                 Root = f.Root,
-                Mode = string.IsNullOrWhiteSpace(f.Mode) ? "both" : f.Mode,
+                // NO DEFAULT. Mode arrives resolved; inventing one here is
+                // a second answer to a question the model already answers,
+                // and the answer this renderer invented was the dangerous
+                // one.
+                Mode = f.Mode,
                 Arrow = arrow,
                 Detail = $"{peers}  ·  {files}  ·  {where}",
                 Problem = problem,

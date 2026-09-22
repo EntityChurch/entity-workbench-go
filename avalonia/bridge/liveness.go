@@ -59,10 +59,8 @@ type livenessHandle struct {
 	hp           *shellboot.HostedPeer
 	model        *wb.PeerLivenessModel
 
-	wakeCh     chan struct{}
-	doneCh     chan struct{}
-	wakeDoneCh chan struct{}
-	cancelEv   func()
+	wakeChans
+	cancelEv func()
 }
 
 var (
@@ -84,8 +82,7 @@ func LivenessOpen(peerHandle C.int64_t) (result *C.char) {
 	ch := &livenessHandle{
 		peerHandleID: hp.Handle,
 		hp:           hp,
-		wakeCh:       make(chan struct{}, 1),
-		doneCh:       make(chan struct{}),
+		wakeChans:    newWakeChans(),
 	}
 	// Model first, wake subscription second. The model seeds then
 	// subscribes internally, so a transition landing between the two
@@ -121,18 +118,10 @@ func LivenessRegisterWake(h C.int64_t, cb unsafe.Pointer) *C.char {
 	if !ok {
 		return C.CString(`{"ok":false,"error":"unknown liveness handle"}`)
 	}
-	ch.wakeDoneCh = make(chan struct{})
-	go func() {
-		defer close(ch.wakeDoneCh)
-		for {
-			select {
-			case <-ch.doneCh:
-				return
-			case <-ch.wakeCh:
-				C.invoke_tree_wake_liveness(cb, C.int64_t(handle))
-			}
-		}
-	}()
+	// Through wakeChans (wake_pump.go): stop() waits for this goroutine,
+	// so the caller freeing its .NET delegate the instant the export
+	// returns is safe by construction.
+	ch.run(func() { C.invoke_tree_wake_liveness(cb, C.int64_t(handle)) })
 	return C.CString(`{"ok":true}`)
 }
 
@@ -236,8 +225,7 @@ func closeLivenessHandle(ch *livenessHandle) {
 	if ch.model != nil {
 		ch.model.Close()
 	}
-	close(ch.doneCh)
-	if ch.wakeDoneCh != nil {
-		<-ch.wakeDoneCh
-	}
+	// WAIT for the pump, do not merely ask it to stop. Outside any mutex
+	// the callback path takes (AP60).
+	ch.stop()
 }

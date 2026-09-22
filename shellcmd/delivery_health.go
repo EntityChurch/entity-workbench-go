@@ -123,4 +123,24 @@ func (ws *ShellWorkspace) noteSaturation(out *ReconcileOutcome) {
 	if line := out.Delivery.Summary(); line != "" && out.Delivery.Saturated() {
 		out.Problems = append(out.Problems, line)
 	}
+
+	// A DROP AND A REFUSAL ARE DIFFERENT FAILURES AND ONLY ONE OF THEM
+	// HAD A SURFACE.
+	//
+	// Saturation above is the SENDER's queue overflowing — measured, real,
+	// and not what an operator usually hits. A delivery that reaches us
+	// and is then refused at the last hop (`403 capability_denied` on the
+	// blob fetch) moves no counter here at all: it binds a chain-error
+	// marker into our own tree and, until 2026-09-10, was read by nothing
+	// in the product. That is the state an operator spent a morning in,
+	// with every panel reporting healthy.
+	//
+	// Both, always, and never one: a peer with an empty queue and four
+	// hundred refusals is exactly as broken as a saturated one, and the
+	// old code could only see the second kind.
+	if ws.Local != nil && ws.Local.Peer != nil {
+		if lines := DeliveryFailures(ws.Local.Peer.Store()).Problems(); len(lines) > 0 {
+			out.Problems = append(out.Problems, lines...)
+		}
+	}
 }

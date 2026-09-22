@@ -39,8 +39,20 @@ import (
 // arithmetic worked in the test and nowhere else.
 
 // discoveryFixture is reconcileFixture with the discovery substrate wired
-// on but nothing announcing — candidates are seeded into the store
-// directly, so these tests need no multicast, no timing and no network.
+// on. Candidates are seeded into the store directly, so no assertion here
+// waits on multicast or on timing.
+//
+// What it is NOT is hermetic, and the comment here claimed it was until
+// 2026-09-10. `DiscoveryConfig{}` brings up a real mDNS browser, which is
+// required — `DiscoveryEnabled` below is the anti-vacuity check, and a
+// peer with the substrate switched off would make every seeded candidate
+// invisible — but a live browser collects whatever else is announcing.
+// Under `go test ./...` that is this package's own E2E peers, and on a
+// developer's LAN it is their other machine. So a test here may assert on
+// the candidate it seeded and must never assert on the SIZE of the set:
+// the count is not ours to predict, and the version that predicted it
+// failed in the full-package run while passing alone, which reads as a
+// substrate regression and is not one.
 func discoveryFixture(t *testing.T) (*ShellWorkspace, *workbench.Store) {
 	t.Helper()
 	ap, err := entitysdk.CreatePeer(entitysdk.PeerConfig{
@@ -60,7 +72,15 @@ func discoveryFixture(t *testing.T) (*ShellWorkspace, *workbench.Store) {
 // announce seeds one mDNS candidate exactly as core-go's
 // candidateFromServiceEntry builds it: no PeerID, claimed id in the
 // `peer_id_hint` TXT key only.
-func announce(t *testing.T, st *workbench.Store, peerID, ip string, port int) {
+//
+// It returns the seeded candidate's storage identity so a caller can find
+// that candidate again among announcements it did not make. Deriving the
+// identity this way — the same hash the storage path is built from — is
+// deliberately NOT a lookup by peer-id hint: the hint channel is what
+// CandidatePeerID reads, and a test that located its own fixture through
+// the function under test would pass on a CandidatePeerID that returns a
+// constant.
+func announce(t *testing.T, st *workbench.Store, peerID, ip string, port int) string {
 	t.Helper()
 	hint, err := cbor.Marshal(entitysdk.MDNSEndpointHint{
 		HostName: "peer-host.lan.local.",
@@ -86,6 +106,26 @@ func announce(t *testing.T, st *workbench.Store, peerID, ip string, port int) {
 	if _, err := st.Put(path, types.TypeDiscoveryCandidate, cd); err != nil {
 		t.Fatalf("seed candidate: %v", err)
 	}
+	return types.PeerIdentityHashHex(ent.ContentHash)
+}
+
+// seededCandidate returns the candidate `announce` put in the store,
+// picked out of a set that may also hold live announcements from peers
+// this test knows nothing about.
+func seededCandidate(t *testing.T, cands []types.CandidateData, identity string) types.CandidateData {
+	t.Helper()
+	for _, cd := range cands {
+		ent, err := cd.ToEntity()
+		if err != nil {
+			continue
+		}
+		if types.PeerIdentityHashHex(ent.ContentHash) == identity {
+			return cd
+		}
+	}
+	t.Fatalf("the seeded candidate (%s) is not among the %d the substrate reports — the "+
+		"rest of this file asserts nothing if the candidate is not visible", identity, len(cands))
+	return types.CandidateData{}
 }
 
 // The anti-vacuity arm. If this ever fails, the substrate has started
@@ -94,15 +134,12 @@ func announce(t *testing.T, st *workbench.Store, peerID, ip string, port int) {
 // explanation is that somebody "fixed" the fixture.
 func TestDiscovery_TheSeededCandidateReallyHasNoPeerID(t *testing.T) {
 	ws, st := discoveryFixture(t)
-	announce(t, st, themPeer, "192.168.68.160", 9110)
-	cands := ws.Local.Peer.ReadDiscoveredCandidates()
-	if len(cands) != 1 {
-		t.Fatalf("seeded 1 candidate, ReadDiscoveredCandidates returned %d — the rest of "+
-			"this file asserts nothing if the candidate is not visible", len(cands))
-	}
-	if cands[0].PeerID != "" {
+	identity := announce(t, st, themPeer, "192.168.68.160", 9110)
+
+	cd := seededCandidate(t, ws.Local.Peer.ReadDiscoveredCandidates(), identity)
+	if cd.PeerID != "" {
 		t.Fatalf("candidate carries PeerID %q; the field the broken code read is populated, "+
-			"so these tests no longer reproduce the defect", cands[0].PeerID)
+			"so these tests no longer reproduce the defect", cd.PeerID)
 	}
 }
 

@@ -257,6 +257,18 @@ type FolderStatus struct {
 	// and silently redefining it to mean "any peer" would make a
 	// send-only folder shared with four peers report as syncing.
 	SyncingWith []string
+	// ReceiveFrom is every peer whose changes this folder is SUPPOSED to
+	// pull — the declaration's side of the question SyncingWith answers
+	// with observation.
+	//
+	// The two exist as a pair on purpose, and the pair is the whole point
+	// of this type. A surface holding only the declaration renders what
+	// the operator ASKED for and calls it the outcome; that is the defect
+	// an operator reported on 2026-09-10 as *"showing two-way, showing no
+	// problem, meanwhile the whole files aren't getting delivered."*
+	// Carrying both makes the gap between them computable, which is what
+	// problems() reports and what no renderer should have to derive.
+	ReceiveFrom []string
 	// PeerStates is one entry per peer this folder is shared with.
 	PeerStates []FolderPeerStatus
 	Note       string
@@ -275,7 +287,16 @@ type FolderStatus struct {
 	// Origin is "local" for a folder we own, else the peer we received it
 	// from.
 	Origin string
-	// Mode is send / receive / both.
+	// Mode is send / receive / both, ALWAYS the EFFECTIVE mode and never
+	// the raw field.
+	//
+	// An absent Mode means the pre-S6 behaviour — a local folder
+	// publishes — and never `both`. Carrying the raw field here forced
+	// every renderer to default it, and the Avalonia row defaulted a
+	// blank to `"both"`: a pre-S6 record drew `↔ two-way` on screen while
+	// the reconciler treated it as send-only. **A default that lives in a
+	// renderer is a second answer to a question the model already
+	// answers**, and the second answer is the one nobody tests.
 	Mode string
 
 	// Accepted is set for a RECEIVED folder we have accepted. A folder
@@ -441,13 +462,28 @@ func desiredGrantsByPeer(selfPeerID string, folders []workbench.FolderData) map[
 			// We receive from them: they need the receiver grant so their
 			// deliveries reach our blob-resolve handler.
 			//
-			// ACCEPTED only, in both directions. An offer we have not
-			// accepted must not grant a stranger a handler, and that is a
-			// property of our decision rather than of who originated the
-			// folder — so it is asserted here rather than inherited from
-			// the Origin branch this replaced.
-			if f.Receives() && p.State == workbench.FolderStateAccepted {
-				needReceiver[p.PeerID] = true
+			// An offer we have not accepted must not grant a stranger a
+			// handler — so on a folder somebody else originated, ACCEPTED
+			// only. That is a property of OUR decision, which is why it is
+			// asserted here rather than inherited from an Origin branch.
+			//
+			// On a folder WE own, `offered` is our own act of sharing and
+			// carries the same weight as `accepted` would: we declared
+			// `both`, we chose the peer, and their acceptance is recorded
+			// in their tree with nothing to carry it back (see
+			// receiveFromPeers for the full argument). Withholding the
+			// receiver grant here would let the owner subscribe to the
+			// receiver's copy and then 403 every delivery it pulled — the
+			// half-built reverse leg, which is worse than none because it
+			// fails at the last hop with a permission error that reads as
+			// a security problem.
+			if f.Receives() {
+				switch {
+				case p.State == workbench.FolderStateAccepted:
+					needReceiver[p.PeerID] = true
+				case f.IsLocal() && p.State == workbench.FolderStateOffered:
+					needReceiver[p.PeerID] = true
+				}
 			}
 		}
 	}
@@ -928,11 +964,46 @@ func (ws *ShellWorkspace) reconcileFolder(f workbench.FolderData, out *Reconcile
 	// folder yields exactly its origin, so the previous behaviour is the
 	// one-element case of this one.
 	for _, peerID := range receiveFromPeers(f, ws.Local.Peer.PeerID()) {
-		if _, ok := workbench.LoadSyncBinding(ws.Local.Peer.Store(), peerID, f.Root); ok {
+		// WHICH ROOT ON THEIR MACHINE. For a folder we RECEIVED, the
+		// source is the origin's own root and `f.Root` already holds it.
+		// For the reverse leg of a folder we OWN, their copy is mounted
+		// under whatever directory THEY named at `accept`, which is a fact
+		// in THEIR tree — so we go and read it (remote_declaration.go).
+		//
+		// This used to be a KNOWN LIMIT comment saying the two names had
+		// to agree. They do not have to agree: `accept` takes a directory
+		// precisely so a receiver is never told a name out of band, and a
+		// reverse leg that only worked when the names happened to collide
+		// had not met that requirement. Measured in
+		// shellboot/mode_both_asymmetric_roots_test.go, which fails with
+		// the owner's root and passes with theirs, forward leg green in
+		// both arms.
+		sourceRoot := f.Root
+		if f.IsLocal() {
+			remoteRoot, ok, reason := ws.remoteRootForReverseLeg(f, peerID)
+			if !ok {
+				// NAMED, NOT GUESSED. Falling back to our own root here is
+				// what produced a durable subscription to a prefix that
+				// does not exist on the far side — accepted, healthy,
+				// permanently empty. Saying so and retrying next pass is
+				// strictly better than a wrong answer that persists.
+				fs.Note = reason
+				out.Problems = append(out.Problems,
+					fmt.Sprintf("folder %q, receiving from %s: %s", fs.Label, peerID, reason))
+				continue
+			}
+			sourceRoot = remoteRoot
+		}
+
+		// Idempotence is keyed on the SOURCE root, which is what the
+		// binding itself is keyed on (workbench.SyncBindingKey). Checking
+		// `f.Root` here would miss an established asymmetric leg every
+		// pass and re-subscribe forever.
+		if _, ok := workbench.LoadSyncBinding(ws.Local.Peer.Store(), peerID, sourceRoot); ok {
 			continue
 		}
 		if _, err := ws.Sync(SyncRequest{
-			Remote: peerID, Root: f.Root, TargetRoot: fs.LocalRoot,
+			Remote: peerID, Root: sourceRoot, TargetRoot: fs.LocalRoot,
 		}); err != nil {
 			fs.Note = "could not subscribe: " + err.Error()
 			out.Problems = append(out.Problems,
@@ -976,7 +1047,38 @@ func receiveFromPeers(f workbench.FolderData, selfPeerID string) []string {
 		if p.PeerID == "" || p.PeerID == selfPeerID {
 			continue
 		}
-		if p.State == workbench.FolderStateAccepted {
+		// `offered` counts HERE and only here, and the reason is that the
+		// word means two different things on the two branches above.
+		//
+		// On a RECEIVED folder (the branch above) `offered` is *they
+		// offered and we have not accepted* — a stranger's proposal, and
+		// gating on it is right.
+		//
+		// On a LOCAL folder it is *WE offered it to them*: our own act,
+		// recorded by `declareLocalShare`. Whether they went on to accept
+		// is written by `declareAcceptedFolder` in THEIR tree and there is
+		// no channel that carries it back — so requiring `accepted` here
+		// was requiring a fact that structurally cannot arrive, and
+		// `Mode: both` could never run its reverse leg on any pair of
+		// peers, ever. Measured on a live pair 2026-09-10: the owner's
+		// record said `offered` for a receiver that had accepted hours
+		// earlier and was receiving files fine in the forward direction.
+		//
+		// This is NOT branching on Origin for DIRECTION — direction is
+		// still `f.Receives()`, checked at the top. It is reading a state
+		// field whose meaning genuinely depends on which side wrote it,
+		// which is why this function already had the two branches.
+		//
+		// The asymmetry mirrors `desiredGrantsByPeer`, which has admitted
+		// `offered` on the publish side since S6 for the same reason: a
+		// declaration about our own intent must not wait on a round trip
+		// that does not exist.
+		//
+		// Cost when they never accepted: we subscribe to a peer that has
+		// no mount for this root and nothing arrives. That is the same
+		// no-op as an accepted peer with an empty folder.
+		switch p.State {
+		case workbench.FolderStateAccepted, workbench.FolderStateOffered:
 			out = append(out, p.PeerID)
 		}
 	}

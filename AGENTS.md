@@ -37,7 +37,7 @@ D12–D27 here are ours, earned on the eight crash-hunt commits, two feedback ep
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP83, and the promotion
+  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP89, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -582,7 +582,7 @@ one — name the recurring cycle first, then let each step own one lever of it.
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
 - The project measures everything against the **27 disciplines (D1–D27)**, ten review
-  questions, and anti-pattern catalog (AP1–AP83) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+  questions, and anti-pattern catalog (AP1–AP89) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A COPY OF A LIVE SQLITE STORE IS NOT THE STORE, AND THE MISSING WRITES READ AS ZERO ROWS**
   (AP76). File-backed `SqliteStore` opens **WAL** (`core/store/sqlite.go`, `buildSqliteDSN`
   defaults `JournalMode` to `"WAL"`), so everything since the last checkpoint is in the `-wal`
@@ -598,6 +598,32 @@ one — name the recurring cycle first, then let each step own one lever of it.
   failed identically) — and **when you have just finished proving that every surface lies, the
   replacement you reach for needs its own control arm**, because the reasoning that retired
   the surfaces is exactly what makes the new instrument feel beyond question.
+- **A DIAGNOSIS WHOSE VISIBILITY DEPENDS ON THE OPERATOR'S LAYOUT IS NOT A SURFACE** (AP84,
+  2026-09-10, found by an operator losing a morning to it). The reconciler named the fault at
+  startup, correctly and completely — *"could not open our own connection to this peer — nothing we
+  write to a shared folder will reach them"* — and printed it to **stderr**, i.e. to
+  `avalonia/run-logs/`. The saved layout held `tree-view` and `peer-connections`, neither of which
+  says anything about sharing, and every warning we had built the day before lives in the *Sharing
+  Status* panel, which was not open. So the app's own correct diagnosis was on screen nowhere.
+  **Worse, three surfaces actively reassured**, all reading `Workspace.Conns` — which is the
+  **address book**, not a connection: the peer status line said *"1 remote"*, the Nearby row said
+  *"Connected"*, and `PeerSummary.connections` is `len(Shell.Conns)-1`. None of them drops when the
+  far peer is switched off, so all three were confidently wrong in exactly the case the operator was
+  looking at them for. **`PeerView`'s problem banner is the fix** — docked, always present, fed by
+  `StatusRender` (a READ; it observes and never dials, so hanging it off the declaration wake cannot
+  turn an open window into a dialer), captioned *verified just now* vs *as of the last pass* from
+  `Reconciled` in the outcome. Gate: `PeerProblemBannerTests`, whose third arm crosses the bridge
+  because the other two drive the renderer directly and would both pass if `problems` were renamed
+  in Go (AP49 — a dropped field renders as *"everything is fine"*, the worst available failure for a
+  surface whose only job is to say otherwise).
+  Two rules. **`make reachability` cannot see this** — it asks whether a model has *a* surface, and
+  the reconciler has a verb and a panel; the question it will not ask for you is *what does the
+  operator see when the panel that renders this is closed*. And **when you name a fact the operator
+  must act on, say where it renders with no panel open** — stderr is not a surface. (An
+  earlier draft of this entry added *"and `run-logs/` is deleted by `extract`"* — that is
+  **false and backwards**: run-logs live outside `dist-native/` precisely so they survive, which
+  is AP54's whole fix. The log was on disk the entire time. Nobody looked, which is the point,
+  and the invented embellishment made the finding sound worse while making it wrong.)
 - **A model with no shipped surface is not shipped** (D23). Landing a renderer-neutral model
   is half a feature; the other half is a verb, panel, or menu entry a user can reach, in the
   same session. Three times now — the name arc, the handler browser, `PeerLiveness` — every
@@ -634,6 +660,41 @@ one — name the recurring cycle first, then let each step own one lever of it.
   funcs under the lock, release, then call them. And when you gate a race, **loop it and run a
   control arm** — the first version of that gate passed against the deadlocking code, because one
   close under churn does not reliably catch the deliverer mid-contention.
+- **AN ABSENT CAPABILITY DIMENSION IS A DEFAULT, NOT AN ABSENCE — AND HERE THE DEFAULT IS "THIS
+  PEER ONLY"** (AP85–AP87, 2026-09-10). The kernel made the executing handler's own grant the
+  gate on outbound sub-dispatch (0.8.2.19 Delta E1 / F67). §5.2 Dimension 4 defaults an absent
+  `peers` scope to `{include:[local_peer_id]}` and **still checks it**, so `blob-resolve` — which
+  had never declared one, correctly, because nothing used to consult a handler's internal scope
+  outbound — became able to fetch only from itself. **Every file transfer in the product
+  stopped**: `make twopeer-sync` 35 checks / 18 failed, not a byte in either direction, *with
+  `OpenAccess: true` as well as without* — `peer.OpenAccessGrants()` has the same hole, so the
+  cohort's development wildcard is not open access under E1.
+  Four things to carry, each of which cost real time:
+  **The scope lives in ONE place** — `workbench.BlobResolveInternalScope`, read by the manifest,
+  by the chain capability `Sync` mints, and by the migration. Widen it there or not at all.
+  **A DELIVERY AND A BACKFILL RUN THE SAME HANDLER UNDER TWO DIFFERENT AMBIENT GRANTS.** A
+  catch-up originates locally, under the peer's installed handler grant; a subscription delivery
+  runs under the subscription's `dispatch_capability`. Fix one and the symptom is *"`resync`
+  works, live delivery does not"*, which reads as a subscription fault and sends you to the wrong
+  half of the system. When a handler has more than one entry point, enumerate the ambient
+  authority of each.
+  **HANDLER GRANTS ARE INSTALL-ONCE, so a manifest change reaches no peer that already exists** —
+  and **every test in this repo runs on a memory store, which always mints fresh**, so the
+  manifest fix alone is green everywhere and inert on every real machine.
+  `entitysdk.AppPeer.RemintHandlerGrant` runs from `Bootstrap`, idempotent **by content** (the
+  mint embeds a `CreatedAt`; an unconditional re-mint moves the grant's content hash every
+  launch). Gate it across a **process** boundary, with a control arm that installs the OLD shape
+  and asserts the failure — without which it passes against a build where the field does nothing.
+  Generalise past capabilities: **anything the kernel writes once at construction is invisible to
+  a suite whose fixtures are all freshly constructed.**
+  **When a whole suite goes red at once with an authorization code, suspect the authority model
+  changed before you suspect your diff.** *Everything* is not the shape of a code change.
+  Still open and not ours: E1 also strands `system/revision:pull` and the tree-follow fetch-diff
+  (4 `entitysdk` tests, confirmed pre-existing by stashing our fix). That handler declares no
+  `InternalScope`, so it takes the kernel's `defaultHandlerSelfGrant`, which omits `Peers` on
+  purpose — while `pull`'s whole job is to reach another peer. Routed:
+  `docs/status/ROUTING-2026-09-10-a-entity-core-go-e1-breaks-cross-peer-ops.md`, core-go tracker
+  rows 15–16. **Do not shim it locally** — that hides a cohort-wide question.
 - **A WILDCARD TEST FIXTURE DELETES A STAGE OF THE PRODUCT FROM THE SUITE** (AP63). Every
   cross-peer test in this repo — twenty-four of them — runs under `peer.OpenAccessGrants()`, so
   the whole suite establishes that the transport works and **nothing at all** about permission.
@@ -682,27 +743,47 @@ one — name the recurring cycle first, then let each step own one lever of it.
   folders an operator only ever *accepted*, over a grant that already exists, and that
   mistake is not symmetric. Set it through `ShellWorkspace.SetFolderMode` (verb: `direction`;
   panel: the Sync row's one button), never by writing the field.
-  **`Mode: both` DOES NOT RUN RECEIVER → OWNER, measured 2026-09-06 by `make threepeer-sync`.**
-  Three arms — one side declaring it, both sides declaring it, and both sides with *symmetric*
-  root names — and the receiver's write comes back in none of them. The third arm is the
-  discriminator and it **refutes** the obvious hypothesis: the two-root-names trap is not the
-  cause, because asymmetric and symmetric behave identically. The declaration *takes* (the owner
-  reports `mode=both`) and **the owner holds no sync binding naming the receiver**, so the
-  owner-side receive leg is never established.
-  **THE CAUSE IS MEASURED (2026-09-08): THE OWNER NEVER LEARNS THE RECEIVER ACCEPTED.**
-  `receiveFromPeers` (`shellcmd/reconcile.go`) admits only peers whose state is `Accepted`;
-  `declareLocalShare` writes `Offered` and **nothing can ever advance it**, because acceptance is
-  recorded by `declareAcceptedFolder` in the *receiver's* tree and never travels. Both peers hold
-  a record with the same folder id and different peer states. `shellboot/mode_both_cause_test.go`
-  measures it with authorization out of the picture, so it is not the grant stage — and with a
-  **control arm** asserting the accept happened, without which "the owner does not see accepted"
-  passes on a fixture where nobody accepted anything. **So this and conflict propagation are ONE
-  piece of work**: whatever carries *"I accepted your folder"* back is the same channel that
-  carries *"your change landed on my edit"*, and building either alone builds it twice
-  (`reviews/CONFLICT-PROPAGATION-OPTIONS-2026-09-08.md` §8). If that test starts failing, the
-  channel exists — delete it and gate the reverse leg, do not relax the assertion.
+  **`Mode: both` RUNS BOTH LEGS as of 2026-09-10, and the two peers DO NOT have to name the
+  directory the same thing.** This entry said the opposite for four days and the correction is
+  the interesting part, so both halves are kept. What was true: the owner never built the
+  reverse leg, because `receiveFromPeers` admitted only peers whose state is `Accepted` while
+  `declareLocalShare` writes `Offered` and acceptance is recorded in the *receiver's* tree. What
+  was **wrong** was the conclusion drawn from it — that this needed a receiver→owner channel and
+  was therefore one piece of work with conflict propagation. It needed neither.
+  Two fixes, and both are the same move. `offered` on a folder **we own** is *our own act of
+  sharing*, not a stranger's proposal, so requiring `accepted` there required a fact that
+  structurally cannot arrive; and **the owner READS the receiver's record over the wire**
+  (`ShellWorkspace.ObserveRemoteFolder`, `shellcmd/remote_declaration.go`) rather than waiting to
+  be told — an AP11 dispatched read, authorized exactly when it is worth asking, because the
+  reverse leg only exists when the receiver **publishes** and a publishing peer has already
+  granted us `system/tree:get` (`SyncSenderGrants`). That read answers the root name too, which
+  is the fact nothing could ever have inferred.
+  **A failed read REFUSES rather than falling back to our own root name.** The binding a guess
+  creates is durable and silent — a subscription to a prefix that does not exist on the far side
+  is accepted, reports healthy, and delivers nothing forever. Not creating one is recoverable at
+  the next pass.
+  **BOTH SIDES MUST DECLARE `both`, and this is a requirement rather than a bug.** Direction is
+  per-peer; a receive-only counterpart publishes nothing and grants no sender authority, so the
+  owner's subscribe answers 403. `direction` now says so, on the machine the operator is looking
+  at, naming the command to run on the other one. Gates:
+  `shellboot/mode_both_asymmetric_roots_test.go` (bytes on disk, asymmetric roots, with the
+  symmetric arm as the control that isolates the name as the variable) and
+  `mode_both_reverse_leg_test.go`, whose `ReceiveOnlyCounterpart` arm is what stops the fix being
+  re-broken by a helpful fallback.
+  **What is STILL owed: conflict propagation.** The two were never one piece of work — that was
+  the wrong inference above — but the receiver→owner channel is still genuinely needed for
+  *"your change landed on my edit"* (`reviews/CONFLICT-PROPAGATION-OPTIONS-2026-09-08.md` §8).
   Note the verb takes a folder-id of `{owner-peer-id}.{sender-root}`, so an operator who accepted
   into a directory of their own choosing sees an id built from a root they never typed.
+- **`direction` RECONNECTS AND RECONCILES, and until 2026-09-10 it did neither while its own doc
+  comment said the reconciler had already forced the reconnect.** It rewrote the policy row and
+  stopped. Grants are assembled at handshake (AP63), so the new authority was inert; and nothing
+  ran a pass, so no leg was established. Two correct declarations on two machines, and the
+  feature did nothing until some later pass happened to run — indistinguishable from it being
+  broken. `share` and `accept` had both steps from the start; this verb was the odd one out
+  because nobody ran the flow (AP71). **A false sentence in a doc comment is worse than none** —
+  it is the sentence the next reader checks the behaviour against, and this one had been read at
+  least twice.
 - **`make threepeer-sync` runs the topologies two peers CANNOT EXPRESS.** Two peers are one edge,
   so the whole class of *"and then the third machine…"* questions had never been asked. Three
   containers, one real TCP network, every file assertion on bytes on disk at the far end.

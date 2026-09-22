@@ -29,20 +29,32 @@
 #            not about a folder B mounts and shares itself.
 #
 #   LOOP     A <-> B, mode=both, over a real network.
-#            MEASURED, NOT ASSERTED — see PHASE 5. `Mode: both` is
-#            shipped and has never been exercised two-way across a
-#            network, so this harness has no business claiming to know
-#            what it should do. It records what happens.
+#            ASSERTED as of 2026-09-10 — see PHASE 5. It was measured and
+#            not asserted while the behaviour was undesigned, and that
+#            was right: `Mode: both` did not run the reverse leg at all,
+#            and a measurement dressed as a check is how an undesigned
+#            behaviour gets recorded as a passing requirement. It is
+#            designed now, gated in Go, and asserted here in three arms —
+#            ASYMMETRIC roots (the case that could not work), SYMMETRIC
+#            roots, and the control arm that a one-SIDED `both` must NOT
+#            pull the other peer's writes.
 #
 # WHAT A GREEN RUN CLAIMS: three peers in three network namespaces with
 # distinct routable addresses and persistent sqlite stores, a fan-out to
 # two receivers with both receiving, and a two-hop chain delivering a
 # file the middle peer never authored — every assertion on BYTES ON DISK
 # at the far end.
+#   ...and a two-way folder converging in BOTH directions with the two
+#   peers using DIFFERENT directory names, plus its control arm.
 #   IT DOES NOT CLAIM: the GUI (this drives entity-shell), physical
-#   machines, NAT, mDNS (container DNS stands in), more than three
-#   peers, or any statement about `Mode: both`, which is measured and
-#   reported rather than asserted.
+#   machines, NAT, mDNS (container DNS stands in), or more than three
+#   peers. Four peers and a triangle are still untested.
+#
+#   ORDERING NOTE, and it is an operator fact rather than a harness one:
+#   direction is per-peer, so whoever declares `both` FIRST is refused
+#   against a counterpart that has not asked yet — correctly — and needs
+#   one more pass once they have. The phases below run `status` for that
+#   reason, and the verb's own refusal message names the same two steps.
 #
 #   bash scripts/threepeer-sync.sh
 #   KEEP_UP=1 bash scripts/threepeer-sync.sh
@@ -233,6 +245,25 @@ measure_file() {
     sleep 0.5
   done
   note "$label — did NOT arrive within 30s"
+  return 1
+}
+
+# absent_file — asserts a file does NOT arrive. The control arm's shape,
+# and it is weaker than its positive counterpart by construction: it can
+# only ever say "not within the window". Used where the ABSENCE is the
+# requirement — a folder set to `both` on one side only must not start
+# pulling the other peer's writes, because that is somebody else's files
+# landing on this disk without a declaration asking for them.
+absent_file() {
+  local path="$1" label="$2" i
+  for i in $(seq 1 60); do
+    if [ -f "$path" ]; then
+      bad "$label — it ARRIVED ('$(cat "$path" 2>/dev/null)'), and a one-sided \`both\` must not run the reverse leg"
+      return 1
+    fi
+    sleep 0.5
+  done
+  ok "$label"
   return 0
 }
 
@@ -447,7 +478,12 @@ measure_file "$RUNDIR/c-chain/both-b.txt" "Mode:both (b only) — b's own write 
 
 echo "both-from-c" > "$RUNDIR/c-chain/both-c.txt"
 chmod 666 "$RUNDIR/c-chain/both-c.txt"
-measure_file "$RUNDIR/b-chain/both-c.txt" "Mode:both (b only) — c's write travelling back to b"
+# ASSERTED, not measured, as of 2026-09-10: direction is per-peer, so
+# `both` on ONE side is half a decision and the reverse leg must NOT run.
+# Over-applying the two-way fix turns every one-way share into a two-way
+# one silently, on somebody else's disk — a worse failure than the one it
+# repaired, and in the opposite direction.
+absent_file "$RUNDIR/b-chain/both-c.txt" "Mode:both (b only) — c's write correctly does NOT travel back to b"
 
 # THE OTHER HALF, and it is the part that makes the measurement mean
 # something. Mode is a PER-PEER declaration about one peer's own copy:
@@ -479,9 +515,19 @@ else
   say peer-c "direction $CCHAIN_ID both"
   sleep 2
   redial_pair peer-b peer-c
+  # See the symmetric arm below: the peer that declared FIRST (peer-b)
+  # was refused against a counterpart that had not yet asked, and needs
+  # one more pass now that peer-c has.
+  say peer-b "status"
+  sleep 2
   echo "both-from-c2" > "$RUNDIR/c-chain/both-c2.txt"
   chmod 666 "$RUNDIR/c-chain/both-c2.txt"
-  measure_file "$RUNDIR/b-chain/both-c2.txt" "Mode:both (BOTH sides) — c's write travelling back to b"
+  # ASSERTED as of 2026-09-10, and note the roots here are ASYMMETRIC
+# (`b-chain` on one side, `c-chain` on the other) — which is the case
+# that could not work at all until the owner learned to read the
+# receiver's own record for its root name.
+wait_for_file "$RUNDIR/b-chain/both-c2.txt" "both-from-c2" \
+  "Mode:both (BOTH sides, ASYMMETRIC roots) — c's write travelled back to b"
 fi
 
 # Echo check: if a change loops, the origin's copy keeps being rewritten.
@@ -546,25 +592,46 @@ else
   say peer-c "direction $SYM_C_ID both"
   sleep 2
   redial_pair peer-a peer-c
+  # ONE MORE PASS ON THE PEER THAT DECLARED FIRST, and the reason is the
+  # operator's too. Direction is per-peer, so peer-a's `direction` ran
+  # while peer-c was still receive-only — and the reverse leg is
+  # correctly REFUSED against a counterpart that publishes nothing. The
+  # pass that would have established it is the one that just ran. So
+  # whoever asks for two-way first always needs a second pass after the
+  # other side asks; `status` is the verb that re-runs the loop, and the
+  # refusal message names it. Without this line the arm below measures
+  # the ordering, not the feature.
+  say peer-a "status"
+  sleep 2
   echo "sym-from-c" > "$RUNDIR/sym-peer-c/from-c.txt"
   chmod 666 "$RUNDIR/sym-peer-c/from-c.txt"
-  measure_file "$RUNDIR/sym-peer-a/from-c.txt" \
-    "Mode:both SYMMETRIC roots — c's write travelling back to a"
+  # ASSERTED as of 2026-09-10. Kept alongside the asymmetric arm above
+  # rather than folded into it: together they are what says the root NAME
+  # is not the variable any more.
+  wait_for_file "$RUNDIR/sym-peer-a/from-c.txt" "sym-from-c" \
+    "Mode:both SYMMETRIC roots — c's write travelled back to a"
 
-  # Which leg is missing? `receiveFromPeers` (shellcmd/reconcile.go)
-  # says a LOCAL folder that Receives() should pull from every peer
-  # whose state is Accepted — i.e. peer-a should hold a sync binding to
-  # peer-c once it is `both`. Record whether it does, because "the
-  # declaration did not take" and "the declaration took and the pull
-  # leg is unimplemented" are different bugs with different owners, and
-  # a measurement that cannot tell them apart sends the next session to
-  # the wrong file.
+  # The owner must hold a sync binding for this folder — that IS the
+  # reverse leg, and asserting it beside the bytes distinguishes "the
+  # leg was never established" from "the leg exists and did not deliver",
+  # which are different bugs with different owners.
+  #
+  # IT USED TO GREP FOR THE WRONG STRING, and the way that surfaced is
+  # the reason this comment is long. The folder id is
+  # `{OWNER-peer-id}.{root}`, so `cut -d. -f1` of it is **peer-a's own
+  # id** — while `syncs` lists the REMOTE peer. The probe could therefore
+  # never match, and printed "the owner-side receive leg was never
+  # established" on a run where the file had just arrived. A measurement
+  # that contradicts the bytes on disk is worse than no measurement: the
+  # bytes are the ground truth and the note is what a reader quotes.
+  # Match on the folder's ROOT, which `syncs` does print and which does
+  # not require reconstructing anybody's peer-id here.
   SYNCS_BEFORE=$(podman exec peer-a sh -c "wc -l < /data/out.log")
   say peer-a "syncs"
-  if out peer-a | tail -n "+$((SYNCS_BEFORE + 1))" | grep -q "$(echo "$SYM_C_ID" | cut -d. -f1)"; then
-    note "peer-a DOES hold a sync binding naming peer-c — the pull leg exists and did not deliver"
+  if out peer-a | tail -n "+$((SYNCS_BEFORE + 1))" | grep -q "sym"; then
+    ok "peer-a holds a sync binding for sym — the owner-side receive leg is established"
   else
-    note "peer-a holds NO sync binding naming peer-c — the owner-side receive leg was never established"
+    bad "peer-a holds NO sync binding for sym, yet the file arrived — the harness and the disk disagree, and one of them is lying"
   fi
   DIR_BEFORE=$(podman exec peer-a sh -c "wc -l < /data/out.log")
   say peer-a "direction"

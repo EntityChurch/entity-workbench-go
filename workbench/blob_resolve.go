@@ -131,11 +131,65 @@ func (h *BlobResolveHandler) LookupMount(sourcePrefix string) string {
 
 func (h *BlobResolveHandler) Name() string { return "workbench-blob-resolve" }
 
-// Manifest declares the handler + its internal scope. The internal
-// scope grants the handler authority to write through local/files
-// (for materialization) and to fetch through system/content (for the
-// cross-peer chunk pull, when targeting the local peer's content
-// handler — cross-peer dispatches use the caller's connection cap).
+// Manifest declares the handler + its internal scope.
+//
+// # THE HANDLER GRANT IS THE OUTBOUND GATE (0.8.2.19 Delta E1, F67)
+//
+// The sentence this comment used to end with — *"cross-peer dispatches
+// use the caller's connection cap"* — stopped being true on 2026-09-10.
+// It was the confused deputy the kernel's E1 change closes: a caller-
+// supplied credential authorized the sub-dispatch on its own four
+// dimensions and **the executing handler's own grant was never
+// consulted**, so anyone holding any target→us capability could steer any
+// handler here past its declared scope.
+//
+// After E1 the shape is: the handler's grant answers WHAT, on all four
+// dimensions; a target-minted credential relaxes Dimension 4 (peers) and
+// nothing else. `core/protocol/outbound_authz.go` is the gate.
+//
+// So this manifest is now load-bearing in a way it has never been. It is
+// minted into `system/capability/grants/{pattern}` at peer construction
+// and it is the ceiling on every outbound dispatch this handler makes —
+// including the cross-peer `system/content:get` that pulls the blob
+// closure, which is the ONE dispatch that makes a share transfer bytes.
+//
+// # Why Peers is "*" here, deliberately, and what that does and does not
+// widen
+//
+// §5.2 Dimension 4 defaults an ABSENT peers scope to
+// `{include:[local_peer_id]}` and still checks it. So "no peers field"
+// does not mean "unrestricted", it means **this peer only** — and a
+// blob-resolve handler that can only reach its own peer cannot fetch a
+// byte from the peer that published the folder. Measured, on the whole
+// sharing flow, in both directions, with and without wildcard grants:
+// every file failed with `403 capability_denied ... a handler with no
+// peers scope covering the target cannot reach a foreign peer`.
+//
+// The handler cannot name the peers at manifest time. Which peer it
+// fetches from is a property of a mount registered later, and a grant
+// minted once at construction cannot know a folder an operator will
+// accept next week. So the honest scope is "*", and it is narrow in
+// every dimension that is not the one we cannot know:
+//
+//	handler   system/content   — one handler, not "*"
+//	operation get              — a READ. It cannot write anywhere.
+//	resource  the content store, and nothing else
+//	peers     *                — whichever peer published what we accepted
+//
+// What "*" here does NOT grant: writing at a foreign peer, reaching any
+// other handler at a foreign peer, or anything at all outside a content
+// read. The local `local/files:write` entry below keeps its default —
+// materialization lands on OUR disk, so its peers scope is correctly the
+// local peer, and widening it would be a real escalation. Do not
+// "complete" the fix by touching it.
+//
+// # The half a code change cannot reach
+//
+// Handler grants are Class I / install-once: `createHandlerGrants` skips
+// a pattern whose grant already exists, so **this change reaches new
+// peers only.** Every already-running peer keeps the grant it was
+// constructed with and stays broken. `MigrateHandlerGrants` is that half;
+// see handler_grant_migrate.go.
 func (h *BlobResolveHandler) Manifest() types.HandlerManifestData {
 	return types.HandlerManifestData{
 		Pattern: BlobResolvePattern,
@@ -143,17 +197,38 @@ func (h *BlobResolveHandler) Manifest() types.HandlerManifestData {
 		Operations: map[string]types.HandlerOperationSpec{
 			"receive": {InputType: "primitive/any"},
 		},
-		InternalScope: []types.GrantEntry{
-			{
-				Handlers:   types.CapabilityScope{Include: []string{"local/files"}},
-				Operations: types.CapabilityScope{Include: []string{"write", "delete"}},
-				Resources:  types.CapabilityScope{Include: []string{"*"}},
-			},
-			{
-				Handlers:   types.CapabilityScope{Include: []string{"system/content"}},
-				Operations: types.CapabilityScope{Include: []string{"get"}},
-				Resources:  types.CapabilityScope{Include: []string{"system/content"}},
-			},
+		InternalScope: BlobResolveInternalScope(),
+	}
+}
+
+// BlobResolveInternalScope is the handler's declared authority, exported
+// because the migration in handler_grant_migrate.go has to compare an
+// installed grant against it. One definition, two readers — a migration
+// that carried its own copy would drift from the manifest silently, and
+// the symptom of that drift is a peer that re-mints forever or never.
+func BlobResolveInternalScope() []types.GrantEntry {
+	return []types.GrantEntry{
+		{
+			Handlers:   types.CapabilityScope{Include: []string{"local/files"}},
+			Operations: types.CapabilityScope{Include: []string{"write", "delete"}},
+			Resources:  types.CapabilityScope{Include: []string{"*"}},
+		},
+		{
+			Handlers:   types.CapabilityScope{Include: []string{"system/content"}},
+			Operations: types.CapabilityScope{Include: []string{"get"}},
+			// Both spellings on purpose. A bare "system/content"
+			// canonicalizes against the GRANTER (PR-8) — us — so it names
+			// our own content store and not the one we are fetching from.
+			// The peer-wildcard form is what covers a foreign peer's, and
+			// it is the same distinction `defaultHandlerSelfGrant` spells
+			// out in core/peer/peer.go: bare "*" is own-namespace-only and
+			// "/*/*" is the cross-peer form.
+			Resources: types.CapabilityScope{Include: []string{
+				"system/content", "/*/system/content", "/*/system/content/*",
+			}},
+			// The dimension the whole fix is about. See the Manifest
+			// comment above for why this is "*" and why that is narrow.
+			Peers: &types.CapabilityScope{Include: []string{"*"}},
 		},
 	}
 }

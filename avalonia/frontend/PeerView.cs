@@ -1,11 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 using EntityAvalonia.Panels;
 
 namespace EntityAvalonia;
@@ -64,6 +68,44 @@ public sealed class PeerView : UserControl, IDisposable, IPanelHost
     // Per-peer status bar — shows alias, peer-id, identity, connections.
     private readonly SelectableTextBlock _peerStatus;
 
+    // THE PROBLEM BANNER — always present, independent of which panels the
+    // operator has open.
+    //
+    // Why it exists (2026-09-10, from a real two-machine session). The
+    // reconciler diagnosed the fault correctly and completely at startup:
+    // "could not open our own connection to this peer — nothing we write to
+    // a shared folder will reach them". That sentence went to STDERR, i.e.
+    // to `avalonia/run-logs/`, where nobody looks. The operator's layout
+    // held `tree-view` and `peer-connections` — the two panels that cannot
+    // say anything about sharing — so the app's own correct diagnosis was
+    // on screen nowhere, while the peer status line said "1 remote" and the
+    // Nearby list said "Connected". The operator concluded, reasonably,
+    // that the app was fine and the files were being eaten.
+    //
+    // This is D23/AP73's shape aimed at the APPLICATION rather than at a
+    // model: we fixed "the reconciler's output reaches no pixel" for the
+    // Sharing Status PANEL and left it true for anyone who does not have
+    // that panel open. A diagnosis whose visibility depends on the
+    // operator's layout is not a surface.
+    //
+    // It is deliberately NOT dismissible and NOT collapsed-by-default: the
+    // conditions it reports are exactly the ones that are silent otherwise.
+    private readonly Border _problemBanner;
+    private readonly StackPanel _problemLines;
+    private readonly TextBlock _problemHeading;
+    private Bridge.TreeWakeCallback? _problemWakeCallback;
+    private GCHandle _problemWakeHandle;
+    // The registration id, so Dispose can actually UNREGISTER.
+    //
+    // It was discarded until 2026-09-10, which meant Dispose could not
+    // unregister even in principle — it freed the pinned delegate and
+    // left Go holding the pointer. The next sharing-tree change then
+    // called into a collected delegate and the runtime ABORTED THE
+    // PROCESS: "a callback was made on a garbage collected delegate".
+    // That is what had been killing `make -C avalonia test` part way
+    // through, taking an unknown number of tests with it.
+    private long _problemWakeRegistration = -1;
+
     private bool _disposed;
 
     public PeerView(long peerHandle, long systemPeerHandle)
@@ -78,6 +120,27 @@ public sealed class PeerView : UserControl, IDisposable, IPanelHost
             Margin = new Thickness(12, 8),
             FontSize = 13,
         };
+
+        _problemHeading = new TextBlock
+        {
+            FontWeight = FontWeight.Bold,
+            FontSize = 13,
+            Foreground = Brushes.White,
+            Margin = new Thickness(0, 0, 0, 4),
+        };
+        _problemLines = new StackPanel { Orientation = Orientation.Vertical };
+        _problemBanner = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x8B, 0x27, 0x27)),
+            Padding = new Thickness(12, 8),
+            IsVisible = false,
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Vertical,
+                Children = { _problemHeading, _problemLines },
+            },
+        };
+        AutomationProperties.SetAutomationId(_problemBanner, "PeerProblemBanner");
 
         // Resolve the alias BEFORE the panel stack is built, because the
         // saved layout is keyed by it. RefreshPeerStatus used to run only
@@ -162,9 +225,19 @@ public sealed class PeerView : UserControl, IDisposable, IPanelHost
 
         var root = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(_peerStatus, Dock.Top);
+        DockPanel.SetDock(_problemBanner, Dock.Top);
         root.Children.Add(_peerStatus);
+        root.Children.Add(_problemBanner);
         root.Children.Add(split);
         Content = root;
+
+        // The banner is wired to the declaration watch, not to a timer and
+        // not to a reconcile: StatusRender is a READ (shellcmd/status.go —
+        // it observes and never dials), so refreshing it on a wake cannot
+        // turn an open window into a dialer. See the export's own comment
+        // for why the pass and the read are two exports.
+        RegisterProblemWake();
+        RefreshProblems();
 
         // Second status refresh, and it is not redundant. The first ran
         // before the layout was read, because the alias it resolves is
@@ -395,6 +468,27 @@ public sealed class PeerView : UserControl, IDisposable, IPanelHost
         _disposed = true;
         _tree.Dispose();
         _panelStack.Dispose();
+
+        // UNREGISTER FIRST, THEN FREE. This used to free the pinned
+        // delegate and stop, on the argument that `_disposed` protects the
+        // callback — but that flag is checked INSIDE the managed callback,
+        // which can only run if the delegate still exists. The crash
+        // happens at the call itself, before any C# of ours runs, and it
+        // is not catchable: the runtime aborts the process.
+        //
+        // A correct-sounding argument for an unsafe thing is worse than no
+        // comment, because it stops the next reader looking.
+        //
+        // SharingUnregisterWake now joins the wake goroutine before it
+        // returns (avalonia/bridge/wake_pump.go), so once it has, nothing
+        // can be in flight and freeing is safe.
+        if (_problemWakeRegistration >= 0)
+        {
+            Bridge.TakeString(Bridge.SharingUnregisterWake(PeerHandle, _problemWakeRegistration));
+            _problemWakeRegistration = -1;
+        }
+        if (_problemWakeHandle.IsAllocated) _problemWakeHandle.Free();
+        _problemWakeCallback = null;
         // The underlying peer handle is NOT destroyed here — MainWindow
         // owns peer lifecycle and calls Bridge.PeerDestroy on tab close.
     }
@@ -411,7 +505,126 @@ public sealed class PeerView : UserControl, IDisposable, IPanelHost
     // IPanelHost — ShellPanel calls this after every dispatch because
     // connect/disconnect/cd/identity commands mutate peer state shared
     // across all shells.
-    public void RequestPeerStatusRefresh() => RefreshPeerStatus();
+    public void RequestPeerStatusRefresh()
+    {
+        RefreshPeerStatus();
+        RefreshProblems();
+    }
+
+    // Exposed for the headless suite: the banner is the only surface that
+    // reports a peer we cannot dial when no sharing panel is open, so a
+    // test that asserts on it is asserting on the thing that actually
+    // failed the operator.
+    internal void ApplyProblemsForTests(IReadOnlyList<string> problems, bool reconciled)
+        => ShowProblems(problems, reconciled);
+
+    internal bool ProblemBannerVisibleForTests => _problemBanner.IsVisible;
+    internal string ProblemBannerTextForTests =>
+        _problemHeading.Text + "\n" + string.Join("\n",
+            _problemLines.Children.OfType<TextBlock>().Select(t => t.Text ?? ""));
+
+    // RegisterProblemWake hangs the banner off the declaration watch that
+    // already fans out to the sharing panels. It is a READ-side wake: the
+    // callback calls StatusRender, which observes and never dials.
+    private void RegisterProblemWake()
+    {
+        try
+        {
+            // The delegate is held in a field AND pinned: a collected
+            // callback is a use-after-free the moment Go wakes us, and it
+            // presents as a crash in unrelated code.
+            _problemWakeCallback = OnProblemWakeFromGo;
+            _problemWakeHandle = GCHandle.Alloc(_problemWakeCallback);
+            var fn = Marshal.GetFunctionPointerForDelegate(_problemWakeCallback);
+            var reply = Bridge.TakeString(Bridge.SharingRegisterWake(PeerHandle, fn));
+            // KEEP THE ID. Without it there is nothing to unregister with,
+            // and the delegate below outlives its own registration.
+            _problemWakeRegistration = ParseRegistration(reply);
+        }
+        catch (Exception ex)
+        {
+            // A banner that cannot subscribe still refreshes on every
+            // RequestPeerStatusRefresh, so degrade rather than fail — but
+            // say so, because a silently un-waking warning surface is the
+            // same defect one level down.
+            PanelLog.Write("peer-view", $"problem banner wake not registered: {ex.Message}");
+        }
+    }
+
+    // Go calls this on ITS goroutine; every touch of a control has to hop
+    // to the UI thread.
+    private void OnProblemWakeFromGo(long _)
+    {
+        if (_disposed) return;
+        Dispatcher.UIThread.Post(RefreshProblems);
+    }
+
+    // RefreshProblems reads the reconciler's OBSERVATION — never a pass.
+    //
+    // The caption distinguishes the two, because "verified by a pass just
+    // now" and "this is what the last pass established" are different
+    // claims and the second is the one a read can make. Carrying it in the
+    // outcome rather than remembering which export we called is the same
+    // rule the Sharing Status panel follows.
+    private void RefreshProblems()
+    {
+        if (_disposed) return;
+        string reply;
+        try
+        {
+            reply = Bridge.TakeString(Bridge.StatusRender(PeerHandle));
+        }
+        catch (Exception ex)
+        {
+            ShowProblems(new[] { $"could not read sharing status: {ex.Message}" }, reconciled: false);
+            return;
+        }
+
+        StatusProblemsDto? dto = null;
+        try
+        {
+            dto = JsonSerializer.Deserialize<StatusProblemsDto>(reply, LayoutJsonOpts);
+        }
+        catch { }
+
+        if (dto == null || !dto.Ok)
+        {
+            ShowProblems(new[] { $"sharing status unavailable: {reply}" }, reconciled: false);
+            return;
+        }
+        ShowProblems(dto.Problems ?? Array.Empty<string>(), dto.Reconciled);
+    }
+
+    private void ShowProblems(IReadOnlyList<string> problems, bool reconciled)
+    {
+        _problemLines.Children.Clear();
+        if (problems.Count == 0)
+        {
+            _problemBanner.IsVisible = false;
+            return;
+        }
+
+        var n = problems.Count;
+        var verb = n == 1 ? "problem" : "problems";
+        // Measured-vs-observed, stated rather than implied.
+        var basis = reconciled
+            ? "verified by a pass just now"
+            : "as established by the last pass — press Check in Sharing Status to re-verify";
+        _problemHeading.Text = $"⚠  {n} sharing {verb} — {basis}";
+
+        foreach (var p in problems)
+        {
+            _problemLines.Children.Add(new SelectableTextBlock
+            {
+                Text = "• " + p,
+                Foreground = Brushes.White,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 1, 0, 1),
+            });
+        }
+        _problemBanner.IsVisible = true;
+    }
 
     private void RefreshPeerStatus()
     {
@@ -432,7 +645,14 @@ public sealed class PeerView : UserControl, IDisposable, IPanelHost
         var identity = string.IsNullOrEmpty(dto.Identity) ? "ephemeral" : $"identity={dto.Identity}";
         var peerShort = dto.PeerId.Length > 12 ? dto.PeerId.Substring(0, 12) + "…" : dto.PeerId;
         var sys = (PeerHandle == Resolver.SystemPeerHandle) ? " · SYSTEM" : "";
-        var line = $"@{dto.Alias} · {peerShort} · {identity} · {dto.Connections} remote{sys}";
+        // "known", not "remote" / "connected". PeerSummary.connections is
+        // `len(Shell.Conns)-1` (avalonia/bridge/main.go) — the alias map,
+        // i.e. the address book. It counts peers we have a name for, not
+        // peers we can reach, and it does not drop when one goes away. It
+        // read as "1 remote" for a peer that had been refusing connections
+        // all morning (2026-09-10).
+        var known = dto.Connections == 1 ? "1 peer known" : $"{dto.Connections} peers known";
+        var line = $"@{dto.Alias} · {peerShort} · {identity} · {known}{sys}";
         if (!string.IsNullOrEmpty(_layoutNote))
         {
             line += "  ·  " + _layoutNote;
@@ -450,6 +670,30 @@ public sealed class PeerView : UserControl, IDisposable, IPanelHost
     }
 
     // --- DTOs --------------------------------------------------------
+
+    // AP49 again: an undeclared member is dropped in silence, and this DTO
+    // carries the two fields the banner exists for. If `problems` is ever
+    // renamed on the Go side, the banner goes quiet and reports "no
+    // problems" for a peer that has them — which is the exact failure this
+    // whole surface was built to end. `PeerViewProblemBannerTests` asserts
+    // both fields arrive.
+    private static long ParseRegistration(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("registration", out var r)) return r.GetInt64();
+        }
+        catch (JsonException) { }
+        return -1;
+    }
+
+    private sealed class StatusProblemsDto
+    {
+        [JsonPropertyName("ok")] public bool Ok { get; set; }
+        [JsonPropertyName("reconciled")] public bool Reconciled { get; set; }
+        [JsonPropertyName("problems")] public string[]? Problems { get; set; }
+    }
 
     private static readonly JsonSerializerOptions LayoutJsonOpts = new()
     {

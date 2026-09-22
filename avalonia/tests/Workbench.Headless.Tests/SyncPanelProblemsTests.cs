@@ -74,6 +74,132 @@ public class SyncPanelProblemsTests
         Assert.Contains("192.168.68.160:9000", view.Problems[0]);
     }
 
+    // THE FOLDER ROW MUST NOT CLAIM TWO-WAY IT DOES NOT HAVE.
+    //
+    // An operator's report, 2026-09-10, verbatim: *"showing two-way,
+    // showing no problem, meanwhile the whole files aren't getting
+    // delivered."* Every clause was reproducible, and the row was the
+    // surface saying it. Three separate causes, all of them here:
+    //
+    //   - the arrow came from `mode` alone, which is OUR DECLARATION and
+    //     says nothing about whether any subscription exists;
+    //   - the renderer decided for itself when a folder was in trouble,
+    //     and its rule could not fire for a folder we OWN at all;
+    //   - `syncingWith` and the model's own problem sentences were not
+    //     declared on this DTO, so they were dropped in silence (AP49).
+    //
+    // Deserializing the DTO rather than reading a rendered row, for this
+    // file's stated reason: an undeclared field renders as *nothing is
+    // wrong*, which is the worst available failure for a surface whose
+    // only job is to say otherwise.
+    [AvaloniaFact]
+    public void A_Two_Way_Folder_With_No_Reverse_Leg_Renders_As_Unestablished_And_Says_Why()
+    {
+        const string json = """
+        {
+          "id": "2KLUxPXmcQx1.shared",
+          "label": "shared",
+          "local": true,
+          "root": "shared",
+          "localRoot": "shared",
+          "path": "/home/me/shared",
+          "origin": "local",
+          "mode": "both",
+          "mounted": true,
+          "syncing": false,
+          "accepted": false,
+          "note": "",
+          "filesPresent": 14,
+          "filesIngested": 14,
+          "filesObservable": true,
+          "receiveFrom": ["2KOtherPeer"],
+          "syncingWith": [],
+          "folderProblems": [
+            "folder \"shared\" is set to \"both\" but nothing is arriving from 2KOtherPeer — no subscription to their copy exists."
+          ],
+          "peers": []
+        }
+        """;
+
+        var dto = JsonSerializer.Deserialize<SyncPanel.FolderDto>(json);
+        Assert.NotNull(dto);
+
+        // The two lists must both survive the boundary, or the row has
+        // only the declaration to draw from — which is the defect.
+        Assert.Single(dto!.ReceiveFrom);
+        Assert.Empty(dto.SyncingWith);
+        Assert.Single(dto.Problems);
+
+        var vm = SyncPanel.FolderVm.From(dto);
+
+        // NOT a bare "↔". The folder is declared two-way and is pulling
+        // from nobody, and a row that draws those identically is the
+        // thing the operator was looking at.
+        Assert.NotEqual("↔", vm.Arrow);
+
+        // And it must SAY so. A dimmed arrow alone is a puzzle.
+        Assert.NotEqual("", vm.Problem);
+        Assert.Contains("2KOtherPeer", vm.Problem);
+
+        // The file count is REAL and is not the answer. 14 of 14 readable
+        // is true of the owner's own mount and says nothing about
+        // delivery — this is the "14 files under management" that read as
+        // reassurance while nothing was crossing.
+        Assert.Contains("14", vm.Detail);
+    }
+
+    // The positive control. With the leg established the same row must go
+    // quiet — otherwise the assertion above is satisfied by a panel that
+    // flags every folder, and a permanent warning is one an operator
+    // learns to skip within a day.
+    [AvaloniaFact]
+    public void An_Established_Two_Way_Folder_Renders_Clean()
+    {
+        const string json = """
+        {
+          "id": "2KLUxPXmcQx1.shared", "label": "shared", "local": true,
+          "root": "shared", "localRoot": "shared", "path": "/home/me/shared",
+          "origin": "local", "mode": "both", "mounted": true, "syncing": false,
+          "accepted": false, "note": "", "filesPresent": 14, "filesIngested": 14,
+          "filesObservable": true,
+          "receiveFrom": ["2KOtherPeer"],
+          "syncingWith": ["2KOtherPeer"],
+          "folderProblems": [],
+          "peers": []
+        }
+        """;
+
+        var vm = SyncPanel.FolderVm.From(JsonSerializer.Deserialize<SyncPanel.FolderDto>(json)!);
+        Assert.Equal("↔", vm.Arrow);
+        Assert.Equal("", vm.Problem);
+    }
+
+    // A BLANK MODE IS NOT TWO-WAY, and the renderer used to say it was.
+    //
+    // `EffectiveMode` reads an absent mode as the pre-S6 behaviour — a
+    // local folder publishes — and AGENTS.md states that defaulting it to
+    // `both` is the mistake that is not symmetric. The row defaulted a
+    // blank to `"both"` anyway. Go now sends the resolved mode, so a
+    // blank arriving here means something upstream is broken and the row
+    // must not paper over it.
+    [AvaloniaFact]
+    public void A_Blank_Mode_Is_Never_Drawn_As_Two_Way()
+    {
+        const string json = """
+        {
+          "id": "x.shared", "label": "shared", "local": true, "root": "shared",
+          "localRoot": "shared", "path": "/p", "origin": "local", "mode": "",
+          "mounted": true, "syncing": false, "accepted": false, "note": "",
+          "filesPresent": 0, "filesIngested": 0, "filesObservable": true,
+          "receiveFrom": [], "syncingWith": [], "folderProblems": [], "peers": []
+        }
+        """;
+
+        var vm = SyncPanel.FolderVm.From(JsonSerializer.Deserialize<SyncPanel.FolderDto>(json)!);
+        Assert.NotEqual("↔", vm.Arrow);
+        Assert.NotEqual("both", vm.Mode);
+    }
+
     // The control arm: the section stays hidden when nothing is wrong. A
     // permanently-visible "Needs attention" heading is chrome, and chrome
     // is precisely what an operator learns to skip — which would

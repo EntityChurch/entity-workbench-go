@@ -141,23 +141,46 @@ and `~/photos` is root `photos`, and each is shared, accepted and synced
 by that name independently. Two consequences worth knowing before you
 lay out directories:
 
-- **The two machines should use the same folder name**, because `sync` /
-  `accept` name one root and default to the same name on both sides. If
-  the names differ, say so once: `sync a notes -as my-notes`.
+- **The two machines do NOT have to use the same folder name.** `accept`
+  takes a directory and you choose it; the receiving side records what it
+  called the folder, and the sending side reads that when it needs it.
+  This section said the opposite until 2026-09-10, and it was describing a
+  real defect rather than a design: two-way delivery genuinely did depend
+  on the names matching. It no longer does.
 - **Two different directories with the same basename collide** on one
   machine — `~/work/notes` and `~/personal/notes` are both root `notes`.
   The mount is refused rather than silently merged.
 
-### Do NOT use `direction <folder-id> both` to get two-way
+### Two-way with `direction <folder-id> both`
 
-Two-way is the flow above run **once in each direction**, and that is the
-only shape that works. There is also a `direction` verb that sets a single
-folder record to `both`, and **it does not carry the receiver's writes back
-to the owner** — measured three ways over a real network (`make
-threepeer-sync` PHASE 5). The declaration takes, the owner reports
-`mode=both`, and no reverse leg is ever established. Setting it is not
-harmful; it simply does nothing in that direction, which is worse than an
-error because everything reports healthy. Use two shares.
+**This works as of 2026-09-10, and both machines have to ask for it.**
+This section previously told you not to use it, because the receiver's
+writes were never carried back to the owner — that was true, measured, and
+is fixed.
+
+Direction is a property of *one folder on one machine*, so setting it on
+your side means *"I will accept their changes"* and says nothing about
+whether they send any. Run it on both:
+
+```
+# on the machine that owns the folder
+direction <folder-id> both
+
+# on the machine that accepted it — same folder id, both sides
+direction <folder-id> both
+```
+
+Two things to expect:
+
+- **The folder id is built from the OWNER's root name**, so if you
+  accepted into a directory you named yourself, the id contains a name you
+  never typed. Run `direction` with no arguments to list the ids.
+- **If only one side has asked for two-way, the other side says so**, and
+  names the command to run on the far machine. A quiet folder that reports
+  healthy is the failure this message exists to prevent.
+
+Two one-way shares still work and are still gated; use them if you want
+the two directions to be independently revocable.
 
 ### Concurrent edits to the same file on both machines
 
@@ -442,11 +465,48 @@ peers on different networks never appear and must be reached with
   semantics belong and nothing at this tier attempts them.
 - **Telling the other machine a conflict happened.** Each side sees only
   what landed on its own edit.
-- **Two-way on one folder record** (`direction … both`). Run the share
-  twice instead — see above.
 - **More than three machines**, and any topology with a cycle. Three is the
   most that has been run (`make threepeer-sync`: one folder to two
   receivers, and a two-hop chain).
+- **A folder whose files depend on each other** — see the warning below.
+  This is the important one.
+
+> **`direction … both` used to be on this list and is not any more** (fixed
+> 2026-09-10). One folder record carries two-way now, and the two machines do
+> not have to name the directory the same thing. **Both sides must declare
+> `both`**: direction is per-peer, and a receive-only counterpart publishes
+> nothing and grants no sender authority, so the owner's subscribe answers
+> 403. The verb says so on the machine you ran it on, and names the command
+> to run on the other one.
+
+## Do not share a folder that contains a live repository
+
+**A shared folder converges one file at a time. There is no notion of a set of
+files that must arrive together**, and that is the whole answer to why this
+class of tool has always misbehaved over a `.git` directory, a database, or
+anything else with strict inter-file invariants.
+
+The failure is not about volume and it is not a bug we have yet to find. A
+repository's index, its refs and its object files are only meaningful *with
+respect to each other*. Propagate them independently — which is exactly what a
+per-file replication stream does — and there is a window on the receiving side
+where the set is internally inconsistent. A half-arrived repository is worse
+than either version alone, because both machines now believe they have one.
+
+The same reasoning covers a live SQLite database (the `-wal` sidecar and the
+main file are one object), an application's profile directory, and a virtual
+machine image being written to.
+
+**What to do instead:** share the working files and let the repository's own
+tooling move the repository — that is what a remote is for. If you want the
+history on both machines, push and pull; if you want the files on both
+machines, share the files.
+
+**This is a stated limitation, not a diagnosis of your specific problem.** We
+have not measured the failure in this product — what we have measured is that
+nothing in the design prevents it. If you do point a share at a repository and
+it survives, that is luck about timing, not a guarantee, and it will not
+survive a burst.
 
 The GUI covers all of this now — the **Sync** panel is the two-gesture front
 door, and *Shared Folders* / *Sharing Status* are the diagnostics. That row

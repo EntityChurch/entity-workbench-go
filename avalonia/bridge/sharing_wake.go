@@ -65,10 +65,9 @@ import (
 
 // sharingWakeSub is one registered callback.
 type sharingWakeSub struct {
-	id     int64
-	cb     unsafe.Pointer
-	wakeCh chan struct{}
-	doneCh chan struct{}
+	wakeChans
+	id int64
+	cb unsafe.Pointer
 }
 
 // sharingWakeHub is the single declaration subscription for one peer,
@@ -113,10 +112,9 @@ func SharingRegisterWake(peerHandle C.int64_t, cb unsafe.Pointer) (result *C.cha
 
 	handleID := int64(peerHandle)
 	sub := &sharingWakeSub{
-		id:     atomic.AddInt64(&sharingWakeCounter, 1),
-		cb:     cb,
-		wakeCh: make(chan struct{}, 1),
-		doneCh: make(chan struct{}),
+		wakeChans: newWakeChans(),
+		id:        atomic.AddInt64(&sharingWakeCounter, 1),
+		cb:        cb,
 	}
 
 	sharingWakeMu.Lock()
@@ -156,16 +154,13 @@ func SharingRegisterWake(peerHandle C.int64_t, cb unsafe.Pointer) (result *C.cha
 	// One goroutine per registration, coalescing on a depth-1 channel:
 	// a burst of tree events becomes one redraw rather than a queue of
 	// them that outlives the burst.
-	go func() {
-		for {
-			select {
-			case <-sub.doneCh:
-				return
-			case <-sub.wakeCh:
-				C.invoke_tree_wake_sharing(sub.cb, C.int64_t(handleID))
-			}
-		}
-	}()
+	//
+	// Through wakeChans (wake_pump.go) and not a hand-written select, so
+	// that Unregister below can WAIT for this goroutine to be gone before
+	// it returns. The caller frees the .NET delegate the instant the
+	// export returns, and a callback landing after that aborts the
+	// process rather than raising anything catchable.
+	sub.run(func() { C.invoke_tree_wake_sharing(sub.cb, C.int64_t(handleID)) })
 
 	return C.CString(fmt.Sprintf(`{"ok":true,"registration":%d}`, sub.id))
 }
@@ -194,8 +189,10 @@ func SharingUnregisterWake(peerHandle C.int64_t, registration C.int64_t) (result
 	}
 	sharingWakeMu.Unlock()
 
+	// WAIT, do not merely ask. Outside the mutex, because the pump may be
+	// inside .NET and that call can re-enter this bridge (AP60).
 	if sub != nil {
-		close(sub.doneCh)
+		sub.stop()
 	}
 	// Outside the lock: Close waits for the delivery goroutine, which
 	// may be in fanOutSharingWake taking this mutex (AP60).
@@ -225,9 +222,6 @@ func fanOutSharingWake(handleID int64) {
 	sharingWakeMu.Unlock()
 
 	for _, s := range subs {
-		select {
-		case s.wakeCh <- struct{}{}:
-		default: // already pending; coalesce
-		}
+		s.signal()
 	}
 }

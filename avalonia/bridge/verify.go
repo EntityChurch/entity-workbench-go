@@ -54,6 +54,23 @@ type verifyHandle struct {
 	running bool
 	wakeCb  unsafe.Pointer
 	cancel  context.CancelFunc
+
+	// wakeWG tracks goroutines that may still invoke wakeCb. Same defect
+	// and same fix as browse.go: nilling the pointer under the mutex does
+	// not help, because the goroutine already read it into a local before
+	// calling into .NET, and the caller frees the delegate the instant
+	// Close returns. A cancel that does not WAIT is a request.
+	wakeWG sync.WaitGroup
+}
+
+// fireWake invokes the registered callback if there still is one.
+func (vh *verifyHandle) fireWake(handle C.int64_t) {
+	vh.mu.Lock()
+	cb := vh.wakeCb
+	vh.mu.Unlock()
+	if cb != nil {
+		C.invoke_tree_wake_verify(cb, handle)
+	}
 }
 
 var (
@@ -188,7 +205,11 @@ func VerifyStart(handle C.int64_t) (result *C.char) {
 	vh.running, vh.cancel = true, cancel
 	vh.mu.Unlock()
 
+	// Add BEFORE `go`, never inside: Add racing Wait is the bug this
+	// exists to prevent.
+	vh.wakeWG.Add(1)
 	go func() {
+		defer vh.wakeWG.Done()
 		defer func() {
 			// A panic on the network path must not take the UI down
 			// with it; the model keeps whatever steps completed.
@@ -198,11 +219,8 @@ func VerifyStart(handle C.int64_t) (result *C.char) {
 
 		vh.mu.Lock()
 		vh.running, vh.cancel = false, nil
-		cb := vh.wakeCb
 		vh.mu.Unlock()
-		if cb != nil {
-			C.invoke_tree_wake_verify(cb, C.int64_t(handle))
-		}
+		vh.fireWake(C.int64_t(handle))
 	}()
 	return C.CString(`{"ok":true}`)
 }
@@ -256,5 +274,7 @@ func VerifyClose(handle C.int64_t) (result *C.char) {
 	if cancel != nil {
 		cancel()
 	}
+	// WAIT, outside the mutex fireWake takes.
+	vh.wakeWG.Wait()
 	return C.CString(`{"ok":true}`)
 }

@@ -54,10 +54,8 @@ type handlersHandle struct {
 	hp           *shellboot.HostedPeer
 	model        *wb.HandlerBrowserModel
 
-	wakeCh     chan struct{}
-	doneCh     chan struct{}
-	wakeDoneCh chan struct{}
-	cancelEv   func()
+	wakeChans
+	cancelEv func()
 }
 
 var (
@@ -117,8 +115,7 @@ func HandlersOpen(peerHandle C.int64_t) (result *C.char) {
 	hh := &handlersHandle{
 		peerHandleID: hp.Handle,
 		hp:           hp,
-		wakeCh:       make(chan struct{}, 1),
-		doneCh:       make(chan struct{}),
+		wakeChans:    newWakeChans(),
 	}
 	// Same dispatch seam console uses (console/application.go
 	// dispatchExecute) — shellcmd.Exec against the hosted peer's local
@@ -166,18 +163,11 @@ func HandlersRegisterWake(h C.int64_t, cb unsafe.Pointer) *C.char {
 	if !ok {
 		return C.CString(`{"ok":false,"error":"unknown handlers handle"}`)
 	}
-	hh.wakeDoneCh = make(chan struct{})
-	go func() {
-		defer close(hh.wakeDoneCh)
-		for {
-			select {
-			case <-hh.doneCh:
-				return
-			case <-hh.wakeCh:
-				C.invoke_tree_wake_handlers(cb, C.int64_t(handle))
-			}
-		}
-	}()
+	// Through wakeChans (wake_pump.go). This file already had the WAIT
+	// half right, via its own wakeDoneCh — it was one of three that did,
+	// out of ten. The shared pump is what stops the next wake surface
+	// being written without it.
+	hh.run(func() { C.invoke_tree_wake_handlers(cb, C.int64_t(handle)) })
 	return C.CString(`{"ok":true}`)
 }
 
@@ -336,10 +326,9 @@ func closeHandlersHandle(hh *handlersHandle) {
 	if hh.model != nil {
 		hh.model.Close()
 	}
-	close(hh.doneCh)
-	if hh.wakeDoneCh != nil {
-		<-hh.wakeDoneCh
-	}
+	// WAIT for the pump, do not merely ask it to stop. Outside any mutex
+	// the callback path takes (AP60).
+	hh.stop()
 }
 
 // cascadeHandlers tears down every handler-browser handle tagged with

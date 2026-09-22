@@ -251,13 +251,33 @@ public sealed class PeerConnectionsPanel : UserControl, IDisposable, IPanelPrefe
                 Control trailing;
                 if (vm.Connected)
                 {
+                    // "Known", NOT "Connected" — and the distinction cost an
+                    // operator a morning on 2026-09-10. The flag behind this
+                    // is `alias is present in Workspace.Conns`
+                    // (workbench/peer_connections_model.go: "entries that are
+                    // already in the workspace's Conns map"), which is an
+                    // ADDRESS BOOK entry: it survives the far peer being off,
+                    // moved, or refusing connections, because nothing ever
+                    // removes it. Labelling that "Connected" asserts
+                    // reachability we have not checked, and it is wrong in
+                    // exactly the case that matters — the peer we cannot
+                    // reach, which is the whole reason the operator is
+                    // looking at this panel.
+                    //
+                    // Reachability lives in DeviceStatus.OutboundRoute and is
+                    // rendered by Sharing Status and by the peer problem
+                    // banner. This row does not have it and must not imply it.
                     trailing = new TextBlock
                     {
-                        Text = "Connected",
+                        Text = "known",
                         FontSize = 10,
                         Opacity = 0.55,
                         VerticalAlignment = VerticalAlignment.Center,
                     };
+                    ToolTip.SetTip(trailing,
+                        "This peer is in your address book. That is not a statement "
+                        + "that it can be reached — see Sharing Status, or the warning "
+                        + "banner at the top of the window.");
                 }
                 else
                 {

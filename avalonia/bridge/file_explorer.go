@@ -50,9 +50,7 @@ import (
 type explorerHandle struct {
 	peerHandleID int64
 	model        *wb.FileExplorerModel
-	wakeCh       chan struct{}
-	doneCh       chan struct{}
-	wakeDoneCh   chan struct{}
+	wakeChans
 }
 
 var (
@@ -128,8 +126,7 @@ func FileExplorerOpen(peerHandle C.int64_t) (result *C.char) {
 	eh := &explorerHandle{
 		peerHandleID: hp.Handle,
 		model:        wb.NewFileExplorerModel(hp.AppPeer.Store()),
-		wakeCh:       make(chan struct{}, 1),
-		doneCh:       make(chan struct{}),
+		wakeChans:    newWakeChans(),
 	}
 	// Coalesce: a full one-deep channel already means "something
 	// changed, re-render", and a second notification adds nothing.
@@ -155,18 +152,9 @@ func FileExplorerRegisterWake(h C.int64_t, cb unsafe.Pointer) (result *C.char) {
 		return C.CString(`{"ok":false,"error":"unknown explorer handle"}`)
 	}
 	handle := int64(h)
-	eh.wakeDoneCh = make(chan struct{})
-	go func() {
-		defer close(eh.wakeDoneCh)
-		for {
-			select {
-			case <-eh.doneCh:
-				return
-			case <-eh.wakeCh:
-				C.invoke_tree_wake_explorer(cb, C.int64_t(handle))
-			}
-		}
-	}()
+	// Through wakeChans (wake_pump.go); this file already waited, via its
+	// own wakeDoneCh. See handlers.go for why that is now shared.
+	eh.run(func() { C.invoke_tree_wake_explorer(cb, C.int64_t(handle)) })
 	return C.CString(`{"ok":true}`)
 }
 
@@ -344,10 +332,9 @@ func FileExplorerClose(h C.int64_t) {
 // TreeClose documents.
 func closeExplorerHandle(eh *explorerHandle) {
 	eh.model.OnChange(nil)
-	close(eh.doneCh)
-	if eh.wakeDoneCh != nil {
-		<-eh.wakeDoneCh
-	}
+	// WAIT for the pump, do not merely ask it to stop. Outside any mutex
+	// the callback path takes (AP60).
+	eh.stop()
 	eh.model.Close()
 }
 

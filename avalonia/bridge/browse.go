@@ -73,6 +73,38 @@ type browseHandle struct {
 	autopinning bool
 	wakeCb      unsafe.Pointer
 	cancelNav   context.CancelFunc
+
+	// wakeWG tracks goroutines that may still invoke wakeCb.
+	//
+	// NILLING wakeCb UNDER THE MUTEX IS NOT ENOUGH, and that is what this
+	// handle did until 2026-09-10. Every async site below reads the
+	// pointer into a LOCAL, releases the lock, and then calls into .NET —
+	// so a Close that nils the field and returns leaves an in-flight
+	// goroutine holding a pointer to a delegate the caller is about to
+	// free. `_wakeCallbackHandle.Free()` runs on the next line of
+	// BrowserPanel.Dispose, and a callback landing after it does not
+	// throw: the runtime prints "a callback was made on a garbage
+	// collected delegate" and ABORTS THE PROCESS.
+	//
+	// Check-then-act with no wait narrows the window; it does not close
+	// it. Same rule as wake_pump.go's stop(): a cancel that does not wait
+	// is a request, not a cancel.
+	wakeWG sync.WaitGroup
+}
+
+// beginWake registers an in-flight goroutine that may invoke wakeCb.
+// Call it BEFORE `go`, never inside — Add racing Wait is the bug this
+// exists to prevent.
+func (bh *browseHandle) beginWake() { bh.wakeWG.Add(1) }
+
+// fireWake invokes the registered callback if there still is one.
+func (bh *browseHandle) fireWake(handle C.int64_t) {
+	bh.mu.Lock()
+	cb := bh.wakeCb
+	bh.mu.Unlock()
+	if cb != nil {
+		C.invoke_tree_wake_browse(cb, handle)
+	}
 }
 
 var (
@@ -219,17 +251,16 @@ func BrowseNames(handle C.int64_t) (result *C.char) {
 	bh.listing = true
 	bh.mu.Unlock()
 
+	bh.beginWake()
 	go func() {
+		defer bh.wakeWG.Done()
 		defer func() { _ = recover() }()
 		_ = bh.model.RefreshNames(context.Background())
 		atomic.AddInt64(&bh.ops, 1)
 		bh.mu.Lock()
 		bh.listing = false
-		cb := bh.wakeCb
 		bh.mu.Unlock()
-		if cb != nil {
-			C.invoke_tree_wake_browse(cb, C.int64_t(handle))
-		}
+		bh.fireWake(C.int64_t(handle))
 	}()
 	return C.CString(`{"ok":true}`)
 }
@@ -281,7 +312,9 @@ func BrowseAutoPin(handle C.int64_t) (result *C.char) {
 	bh.mu.Unlock()
 
 	origin, peer := cfg.RegistryOrigin, cfg.RegistryPeer
+	bh.beginWake()
 	go func() {
+		defer bh.wakeWG.Done()
 		defer func() { _ = recover() }()
 		ctx := context.Background()
 		// nil endpoint = discover the layout from the origin, and (when
@@ -293,11 +326,8 @@ func BrowseAutoPin(handle C.int64_t) (result *C.char) {
 		bh.mu.Lock()
 		bh.listing = false
 		bh.autopinning = false
-		cb := bh.wakeCb
 		bh.mu.Unlock()
-		if cb != nil {
-			C.invoke_tree_wake_browse(cb, C.int64_t(handle))
-		}
+		bh.fireWake(C.int64_t(handle))
 	}()
 	return C.CString(`{"ok":true}`)
 }
@@ -388,18 +418,17 @@ func browseNavigate(handle C.int64_t, run func(*wb.BrowseModel, context.Context)
 	bh.navving, bh.cancelNav = true, cancel
 	bh.mu.Unlock()
 
+	bh.beginWake()
 	go func() {
+		defer bh.wakeWG.Done()
 		defer func() { _ = recover() }()
 		run(bh.model, ctx)
 		atomic.AddInt64(&bh.ops, 1)
 
 		bh.mu.Lock()
 		bh.navving, bh.cancelNav = false, nil
-		cb := bh.wakeCb
 		bh.mu.Unlock()
-		if cb != nil {
-			C.invoke_tree_wake_browse(cb, C.int64_t(handle))
-		}
+		bh.fireWake(C.int64_t(handle))
 	}()
 	return C.CString(`{"ok":true}`)
 }
@@ -523,5 +552,8 @@ func BrowseClose(handle C.int64_t) (result *C.char) {
 	if cancel != nil {
 		cancel()
 	}
+	// WAIT for anything that might still be about to call into .NET.
+	// Outside the mutex: fireWake takes it.
+	bh.wakeWG.Wait()
 	return C.CString(`{"ok":true}`)
 }

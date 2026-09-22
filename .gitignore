@@ -45,3 +45,8 @@ publish-out/
 # test-each per-suite logs (make test-each)
 .test-logs/
 __pycache__/
+
+# Local agent context — machine-specific paths, scratch, working memory.
+# Injectable, never committed, never shared ([ADR-0020]).
+AGENTS.local.md
+.agents/

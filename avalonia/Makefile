@@ -108,7 +108,7 @@ test:
 	@# --no-cache to force the dotnet test step to actually re-run.
 	@# Build artifacts inside earlier stages are still cached via
 	@# layer hashes; only the final test invocation is forced.
-	podman build $(PODMAN_BUILD_CAPS) --build-arg BUILD_STAMP=$(BUILD_STAMP) --target tester --no-cache -f $(APP_DIR)/Containerfile $(CTX_DIR)
+	podman build $(PODMAN_BUILD_CAPS) --build-arg BUILD_STAMP=$(BUILD_STAMP) --build-arg TEST_FILTER='$(TEST_FILTER)' --target tester --no-cache -f $(APP_DIR)/Containerfile $(CTX_DIR)
 
 # ARGS forwards the app's own flags (--identity / --storage / --listen;
 # `./entity-avalonia --help` lists them). Without it the only reachable

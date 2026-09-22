@@ -43,9 +43,7 @@ type siteHandle struct {
 	model        *wb.SiteModel
 	cancelChange func()
 
-	wakeCh     chan struct{}
-	doneCh     chan struct{}
-	wakeDoneCh chan struct{}
+	wakeChans
 }
 
 var (
@@ -102,8 +100,7 @@ func SiteOpen(peerHandle C.int64_t, cPeerID *C.char, cSiteID *C.char) (result *C
 	sh := &siteHandle{
 		peerHandleID: hp.Handle,
 		model:        model,
-		wakeCh:       make(chan struct{}, 1),
-		doneCh:       make(chan struct{}),
+		wakeChans:    newWakeChans(),
 	}
 	// Model OnChange → push to wakeCh non-blocking. The registered
 	// wake-fan goroutine (SiteRegisterWake) reads wakeCh and invokes
@@ -137,18 +134,10 @@ func SiteRegisterWake(h C.int64_t, cb unsafe.Pointer) (result *C.char) {
 	if !ok {
 		return C.CString(`{"ok":false,"error":"unknown site handle"}`)
 	}
-	sh.wakeDoneCh = make(chan struct{})
-	go func() {
-		defer close(sh.wakeDoneCh)
-		for {
-			select {
-			case <-sh.doneCh:
-				return
-			case <-sh.wakeCh:
-				C.invoke_tree_wake_site(cb, C.int64_t(handle))
-			}
-		}
-	}()
+	// Through wakeChans (wake_pump.go): stop() waits for this goroutine,
+	// so the caller freeing its .NET delegate the instant the export
+	// returns is safe by construction.
+	sh.run(func() { C.invoke_tree_wake_site(cb, C.int64_t(handle)) })
 	return C.CString(`{"ok":true}`)
 }
 
@@ -241,10 +230,9 @@ func SiteClose(h C.int64_t) {
 		sh.cancelChange()
 		sh.cancelChange = nil
 	}
-	close(sh.doneCh)
-	if sh.wakeDoneCh != nil {
-		<-sh.wakeDoneCh
-	}
+	// WAIT for the pump, do not merely ask it to stop. Outside any mutex
+	// the callback path takes (AP60).
+	sh.stop()
 }
 
 // cascadeSites tears down every site handle tagged with peer h.
@@ -264,9 +252,8 @@ func cascadeSites(h int64) {
 			sh.cancelChange()
 			sh.cancelChange = nil
 		}
-		close(sh.doneCh)
-		if sh.wakeDoneCh != nil {
-			<-sh.wakeDoneCh
-		}
+		// WAIT for the pump, do not merely ask it to stop. Outside any
+		// mutex the callback path takes (AP60).
+		sh.stop()
 	}
 }

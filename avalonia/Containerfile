@@ -129,8 +129,20 @@ ENV LD_LIBRARY_PATH=/build
 # a second one that only the suite ever sees. Its control arm is in
 # run-xvfb-smoke.sh, where WB_ALTSTACK_BYTES=0 can be set per run.
 ENV LD_PRELOAD=/build/libaltstack.so
+# TEST_FILTER forwards --filter to dotnet test, and it exists because the
+# full run ABORTS PART WAY: a host crash takes the process down and every
+# test after it silently does not run (`Total tests: Unknown`, AP15 at the
+# level of a suite). Without a way to select, the tail of the suite is
+# unreachable and a new test added there cannot be verified at all.
+#
+#   make -C avalonia test TEST_FILTER='FullyQualifiedName~SyncPanel'
+ARG TEST_FILTER=
 RUN --mount=type=cache,target=/root/.nuget/packages \
-    dotnet test -c Release --logger "console;verbosity=normal"
+    if [ -n "$TEST_FILTER" ]; then \
+      dotnet test -c Release --filter "$TEST_FILTER" --logger "console;verbosity=normal"; \
+    else \
+      dotnet test -c Release --logger "console;verbosity=normal"; \
+    fi
 
 # -----------------------------------------------------------
 # Stage 2: runtime image (minimal X11/GL stack for Avalonia)

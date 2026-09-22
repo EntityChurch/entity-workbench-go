@@ -41,8 +41,30 @@ func cmdDirection(sh *Shell, args []string) (Result, error) {
 			fmt.Sprintf("%s: %s -> %s", res.Label, res.Previous, res.Mode),
 			"", directionMeaning(res.Mode))
 	}
+	if res.Reconnected {
+		lines = append(lines, "", "re-established the connection, so the new authorization is in force")
+	}
 	if res.Caveat != "" {
 		lines = append(lines, "", res.Caveat)
+	}
+	// WHAT ACTUALLY HAPPENED. A verb that rewrites a declaration and
+	// prints only the declaration back has told the operator what they
+	// already typed. The pass's actions are the answer to "and did
+	// anything come of it".
+	if len(res.Established) > 0 {
+		lines = append(lines, "")
+		for _, a := range res.Established {
+			lines = append(lines, "  + "+a)
+		}
+	}
+	// The most useful line this verb prints, and the one the two-way flow
+	// was missing entirely: direction is per-peer, so `both` on ONE
+	// machine is half a decision, and the pass says which half is absent.
+	if len(res.Problems) > 0 {
+		lines = append(lines, "")
+		for _, p := range res.Problems {
+			lines = append(lines, "  ! "+p)
+		}
 	}
 	return LinesResult(lines), nil
 }

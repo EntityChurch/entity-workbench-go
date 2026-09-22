@@ -95,9 +95,9 @@ type programHandle struct {
 	host         *pg.Host
 	cancelChange func()
 
-	wakeCh     chan struct{}
-	doneCh     chan struct{}
-	wakeDoneCh chan struct{}
+	wakeChans
+	// wakeStarted guards double registration. Guarded by programMu.
+	wakeStarted bool
 }
 
 var (
@@ -158,8 +158,7 @@ func ProgramMount(peerHandle C.int64_t, descriptorPath *C.char) (result *C.char)
 	ph := &programHandle{
 		peerHandleID: hp.Handle,
 		host:         host,
-		wakeCh:       make(chan struct{}, 1),
-		doneCh:       make(chan struct{}),
+		wakeChans:    newWakeChans(),
 	}
 	// Host OnChange → wakeCh non-blocking; drop-on-full is the P3 single-flight
 	// guard. Safe precisely because every output port is a SNAPSHOT: the panel
@@ -195,27 +194,23 @@ func ProgramRegisterWake(h C.int64_t, cb unsafe.Pointer) (result *C.char) {
 	if ph == nil {
 		return C.CString(`{"ok":false,"error":"unknown program handle"}`)
 	}
+	// The double-register guard used to be "wakeDoneCh is non-nil", which
+	// worked only because that channel was allocated here. wakeChans
+	// allocates at construction, so the guard needs its own flag rather
+	// than a side effect of one.
 	programMu.Lock()
-	if ph.wakeDoneCh != nil {
+	if ph.wakeStarted {
 		programMu.Unlock()
 		return C.CString(`{"ok":false,"error":"wake already registered"}`)
 	}
-	done := make(chan struct{})
-	ph.wakeDoneCh = done
+	ph.wakeStarted = true
 	programMu.Unlock()
 
 	handle := int64(h)
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-ph.doneCh:
-				return
-			case <-ph.wakeCh:
-				C.invoke_tree_wake_program(cb, C.int64_t(handle))
-			}
-		}
-	}()
+	// Through wakeChans (wake_pump.go): stop() waits for this goroutine,
+	// so the caller freeing its .NET delegate the instant the export
+	// returns is safe by construction.
+	ph.run(func() { C.invoke_tree_wake_program(cb, C.int64_t(handle)) })
 	return C.CString(`{"ok":true}`)
 }
 
@@ -414,10 +409,9 @@ func teardownProgram(ph *programHandle) {
 		ph.cancelChange()
 	}
 	ph.host.Close()
-	close(ph.doneCh)
-	if ph.wakeDoneCh != nil {
-		<-ph.wakeDoneCh
-	}
+	// WAIT for the pump, do not merely ask it to stop. Outside any mutex
+	// the callback path takes (AP60).
+	ph.stop()
 }
 
 // cascadePrograms tears down every program mounted on a destroyed peer. Mirrors

@@ -371,9 +371,18 @@ offers. Ours is now the only entry in §3's table whose "keeps both" is *recover
 putting a second file in the folder*, and the operator chooses which.
 
 **What M3 did not deliver: nothing propagates a conflict to the other peer.** Both sides notice
-only what landed on their own edit; there is no wire message and no shared record. It is not a
-small local edit: it needs a receiver→owner channel that does not exist, which is the same
-missing piece that stops `Mode: both` working.
+only what landed on their own edit; there is no wire message and no shared record. It needs a
+receiver→owner channel that does not exist.
+
+> **Corrected 2026-09-10.** This paragraph used to end *"which is the same missing piece that
+> stops `Mode: both` working"*, and that inference was wrong in a way worth keeping visible:
+> it bundled a small problem with a large one and made the small one look blocked. `Mode: both`
+> did not need a channel. It needed the owner to **read** the receiver's own declaration — an
+> authority the receiver has already granted, because the reverse leg exists only when they
+> publish — and it shipped that day, along with the asymmetric-root defect underneath it.
+> Conflict propagation is still owed and is now a smaller, separate item. The general lesson:
+> *"these two need the same missing thing"* is a claim about a design that does not exist yet,
+> and it is the cheapest possible way to make work look bigger than it is.
 
 **M4 — the product.** Daemon/service install, per-OS packaging, ignore patterns matching user
 expectation, and the filesystem edge cases enumerated rather than discovered.

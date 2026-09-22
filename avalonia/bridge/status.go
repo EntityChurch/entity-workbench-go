@@ -142,6 +142,28 @@ type statusFolderDTO struct {
 	FilesIngested   int  `json:"filesIngested"`
 	FilesObservable bool `json:"filesObservable"`
 
+	// ReceiveFrom / SyncingWith are the DECLARATION and the OBSERVATION
+	// of the same question: whose changes should reach this folder, and
+	// whose actually can.
+	//
+	// Both cross the boundary because the renderer must be able to show
+	// the gap, and until 2026-09-10 neither did — the model computed
+	// SyncingWith and the bridge dropped it (AP49), so the folder row had
+	// nothing but our own declared direction to draw from and rendered
+	// `↔ two-way` for a folder that was pulling from nobody.
+	ReceiveFrom []string `json:"receiveFrom"`
+	SyncingWith []string `json:"syncingWith"`
+
+	// Problems is `FolderStatus.problems()` verbatim — the SAME sentences
+	// the shell prints and a reconcile pass produces.
+	//
+	// Carried rather than re-derived, because the renderer deciding when
+	// a folder is in trouble is a second implementation of that judgement
+	// and it was wrong: it showed a problem only for an unmounted folder
+	// or an accepted-but-not-syncing received one, so a folder we OWN
+	// could not report anything at all, however broken.
+	Problems []string `json:"folderProblems"`
+
 	Peers []statusFolderPeerDTO `json:"peers"`
 }
 
@@ -354,6 +376,12 @@ func statusOutcomeToDTO(localPeerID, localAlias string, ws *shellcmd.ShellWorksp
 			FilesPresent:     f.FilesPresent,
 			FilesIngested:    f.FilesIngested,
 			FilesObservable:  f.FilesObservable,
+			ReceiveFrom:      nz(f.ReceiveFrom),
+			SyncingWith:      nz(f.SyncingWith),
+			// One writer for the sentence (shellcmd/status.go), shared by
+			// the shell, the pass and this panel, so the three cannot
+			// describe the same fault differently.
+			Problems: nz(f.Problems()),
 			// Empty, not nil: `[]` deserializes to a list you can iterate
 			// and `null` to one that throws on first use.
 			Peers: []statusFolderPeerDTO{},
@@ -732,11 +760,33 @@ func StatusSetFolderDirection(peerHandle C.int64_t, folderID *C.char, mode *C.ch
 		case "receive":
 			note = res.Label + ": their changes are applied here; nothing here is published to them."
 		default:
-			note = res.Label + ": changes now flow both ways."
+			// "changes now flow both ways" — WHICH IS A PROMISE, and the
+			// pass below is what decides whether it is true.
+			//
+			// This sentence shipped unconditionally. An operator pressed
+			// *Make two-way*, got told changes flow both ways, and
+			// nothing was established — because direction is per-peer and
+			// the other machine had not asked. The declaration is ours to
+			// state; the outcome is not, and stating one as the other is
+			// the exact failure this panel exists to prevent.
+			note = res.Label + ": set to two-way on this machine."
 		}
 	}
 	if res.Caveat != "" {
 		note += " " + res.Caveat
+	}
+	// WHAT THE PASS ACTUALLY DID. `SetFolderMode` reconnects and
+	// reconciles, and its outcome is the only thing that can distinguish
+	// "declared" from "working". Dropping it here would be AP49 on the
+	// one field that carries the bad news.
+	if len(res.Problems) > 0 {
+		note += " NOT established yet: " + strings.Join(res.Problems, " · ")
+	} else if len(res.Established) > 0 {
+		note += " Established: " + strings.Join(res.Established, " · ")
+	} else if res.Changed && res.Mode == "both" {
+		// Neither built nor refused — say so rather than letting silence
+		// read as success.
+		note += " Nothing needed establishing."
 	}
 	return marshalReply(statusActionReplyDTO{OK: true, Note: note}, "status set direction")
 }
