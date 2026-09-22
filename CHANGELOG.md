@@ -57,6 +57,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   actions kept apart by what they cost: listing who you follow contacts nobody, reading a
   timeline dials every publisher you follow, and catching up also moves your saved reading
   positions. Following requires nothing of the person followed and does not tell them.
+  **Publishing your feed so that readers can tell who wrote each entry is a button**, in the
+  same panel, beside a line that says whether anybody can currently read what you posted —
+  and whether a reader fetching it as static files could attribute a single entry of it.
+  That publish commits to your entries, the index, and the signature attributing each
+  entry, and to nothing else: not your folders, not the machines you have paired with, not
+  your documents.
 - **Conflicts are noticed, listed and undoable.** When a delivered file lands on a version
   you had edited, the replaced version is recorded and `conflicts` lists it; `resolve`
   puts yours back. Previously nothing was destroyed and nothing said so, which is the same

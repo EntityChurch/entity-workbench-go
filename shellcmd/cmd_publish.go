@@ -32,6 +32,10 @@ Flags:
   -public       write the ` + "`default`" + ` policy row: any peer that can dial
                 this one may read the published prefix and verify it
   -private      remove that row
+  -feed         publish this peer's FEED: the entries, the index, and the
+                signature that attributes each entry. Commits to those and
+                to nothing else, at the peer root — which is the only prefix
+                that contains both ` + "`app/feed/`" + ` and ` + "`system/signature/`" + `
   -whole-peer   acknowledge that the prefix spans the system boundary, so
                 the root commits to this peer's own declarations as well as
                 to the thing you meant to publish. REFUSED without it, and
@@ -91,6 +95,8 @@ func cmdPublish(sh *Shell, args []string) (Result, error) {
 			req.Unpublic = true
 		case "-whole-peer":
 			req.AllowWholePeer = true
+		case "-feed":
+			req.Feed = true
 		default:
 			return Result{}, fmt.Errorf("publish: unknown flag %q\n%s", args[i], publishUsage)
 		}
@@ -138,6 +144,18 @@ func renderPublish(out PublishOutcome) []string {
 	if out.RootHash != "" {
 		lines = append(lines, "  root  "+out.RootHash)
 		lines = append(lines, "  peer  "+out.PeerID)
+	}
+	// WHICH SET, always, when it is not the scan. After `A-38` the prefix
+	// no longer implies the content: a root over the peer root is 9 keys
+	// or 399 depending on a choice nothing else on screen records, and
+	// the difference is whether this peer's folder paths and its peers'
+	// addresses are inside the signed set. Printing the prefix and the
+	// count without the set is printing two numbers that do not add up.
+	if out.ContentSet == workbench.PublishContentFeed {
+		lines = append(lines,
+			"  set   the feed: entries, index, and the signature attributing each entry",
+			"        (the peer root is the BOUND — this root commits to those keys and to",
+			"        nothing else under it)")
 	}
 
 	lines = append(lines, "", "who may read it")

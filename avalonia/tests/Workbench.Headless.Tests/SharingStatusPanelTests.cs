@@ -434,6 +434,112 @@ public sealed class SharingStatusPanelTests
     // the stack then clips every panel on screen; PanelStackScrollTests
     // collects offenders, but declaring it is cheaper than discovering it
     // there.
+    // ⭐ AP94's rule reaches a pixel, and the arm that matters is the
+    // NEGATIVE one.
+    //
+    // A shared folder names ONE reconciliation rule and it is the owner's.
+    // Before this the rule was reachable from `entity-shell` and from no
+    // pixel at all — D23/AP57, a read-write model wearing a read-only
+    // surface, and the tell was a section with no verb in it.
+    //
+    // The offered arm is easy and proves little on its own: a panel that
+    // drew the control on every row would pass it. The refusing arm is the
+    // product requirement — `SetFolderConflictPolicy` refuses on a folder
+    // this peer does not own, so a control here would be a surface
+    // accepting an instruction it cannot carry out, which is the failure
+    // this repository keeps cataloguing.
+    [AvaloniaFact]
+    public void The_Conflict_Rule_Is_Settable_Only_On_A_Folder_This_Peer_Owns()
+    {
+        var (window, panel) = Open();
+        try
+        {
+            panel.SeedFolderForTests("cr-ours", "cr-ours", local: true, origin: "local",
+                root: "cr-ours", localRoot: "cr-ours",
+                mounted: true, syncing: true, accepted: false, path: "/tmp/cr-ours",
+                filesPresent: 2, filesIngested: 2, filesObservable: true,
+                ownerRuleKnown: true, ownerConflictPolicy: "record", ruleSettableHere: true);
+            Settle(window, panel);
+
+            var rows = RowTextsFor(panel, "cr-ours");
+            Assert.Contains(rows, t => t.Contains("conflicts: record"));
+
+            // The button names the rule it moves TO, not the one in force.
+            // A toggle labelled with the current value is the control an
+            // operator presses expecting to keep what it says.
+            var btn = FindButtonInRow(panel, "cr-ours", "Conflicts: keep-both");
+            Assert.True(btn != null,
+                "a folder this peer owns offers no way to change what happens when a "
+                + "delivery lands on a local edit — the rule is declared, consulted on every "
+                + "collision, and reachable from no pixel");
+            Assert.True(btn!.Bounds.Width > 0 && btn.Bounds.Height > 0,
+                $"the conflict-rule button has zero size ({btn.Bounds})");
+            Assert.True(IsWithinAllClippingAncestors(btn),
+                "the conflict-rule button is laid out outside a clipping ancestor — it is in "
+                + "the tree and cannot be clicked. This panel's folders list has no height "
+                + "bound, so a line added to every row is exactly how that happens");
+        }
+        finally { window.Close(); }
+
+        // ⛔ The arm that carries the rule. A RECEIVED folder: the rule is
+        // the owner's, the verb refuses, and the row must say whose it is
+        // rather than offering a control that cannot work.
+        var (window2, panel2) = Open();
+        try
+        {
+            panel2.SeedFolderForTests("cr-theirs", "cr-theirs", local: false,
+                origin: "2KsomeOtherPeerIdThatIsNotUs",
+                root: "cr-theirs", localRoot: "cr-theirs",
+                mounted: true, syncing: true, accepted: true, path: "/tmp/cr-theirs",
+                filesPresent: 1, filesIngested: 1, filesObservable: true,
+                ownerRuleKnown: true, ownerConflictPolicy: "keep-both",
+                ruleSettableHere: false);
+            Settle(window2, panel2);
+
+            Assert.Null(FindButtonInRow(panel2, "cr-theirs", "Conflicts: record"));
+            Assert.Null(FindButtonInRow(panel2, "cr-theirs", "Conflicts: keep-both"));
+
+            var rows = RowTextsFor(panel2, "cr-theirs");
+            Assert.Contains(rows, t => t.Contains("keep-both"));
+            Assert.Contains(rows, t => t.Contains("who owns this folder"));
+        }
+        finally { window2.Close(); }
+    }
+
+    // ⛔ Three states, not two: "we have never read their rule" is not a
+    // kind of "record".
+    //
+    // While it holds, a delivery landing on a local edit is HELD —
+    // nothing overwritten, deliveries unaffected, released by the next
+    // pass that reads the owner's declaration. That is the sentence an
+    // operator whose file has not arrived needs, and it is exactly the one
+    // a renderer defaulting the empty policy to "record" deletes. The
+    // control is withheld too: there is nothing to toggle away from.
+    [AvaloniaFact]
+    public void An_Unread_Owner_Rule_Says_Held_Rather_Than_Defaulting_To_Record()
+    {
+        var (window, panel) = Open();
+        try
+        {
+            panel.SeedFolderForTests("cr-unknown", "cr-unknown", local: false,
+                origin: "2KsomeOtherPeerIdThatIsNotUs",
+                root: "cr-unknown", localRoot: "cr-unknown",
+                mounted: true, syncing: true, accepted: true, path: "/tmp/cr-unknown",
+                filesPresent: 0, filesIngested: 0, filesObservable: true,
+                ownerRuleKnown: false, ownerConflictPolicy: "", ruleSettableHere: false);
+            Settle(window, panel);
+
+            var rows = RowTextsFor(panel, "cr-unknown");
+            Assert.Contains(rows, t => t.Contains("HELD"));
+            Assert.Contains(rows, t => t.Contains("not yet read"));
+            // The assertion this test is named for: the reassuring word
+            // must NOT appear on a row whose rule nobody has read.
+            Assert.DoesNotContain(rows, t => t.Contains("conflicts: record"));
+            Assert.DoesNotContain(rows, t => t.Contains("conflicts: keep-both"));
+        }
+        finally { window.Close(); }
+    }
+
     [AvaloniaFact]
     public void The_Panel_Declares_A_Height_Floor()
     {
@@ -517,16 +623,12 @@ public sealed class SharingStatusPanelTests
     // panel-relative comparison that a scrolling container makes vacuous,
     // and a hit-test that reports red for fixed and broken code alike).
     // A control outside ANY clipping ancestor owns no visible pixel.
-    private static bool IsWithinAllClippingAncestors(Control control)
-    {
-        foreach (var a in control.GetVisualAncestors().OfType<Control>())
-        {
-            if (!a.ClipToBounds) continue;
-            var inA = control.TranslatePoint(new Point(0, 0), a);
-            if (!inA.HasValue) return false;
-            if (inA.Value.Y < -0.5) return false;
-            if (inA.Value.Y + control.Bounds.Height > a.Bounds.Height + 0.5) return false;
-        }
-        return true;
-    }
+    // Delegates to `Reachable`, which is the ONE copy. This was three
+    // byte-identical private methods sharing one blind spot: a control below
+    // the fold of a working ScrollViewer is one scroll away, not unreachable,
+    // and reporting it as unreachable turned two correct panels red on
+    // 2026-09-16. See `Reachable.cs` for the distinction and why it is drawn
+    // narrowly.
+    private static bool IsWithinAllClippingAncestors(Control control) =>
+        Reachable.IsWithinAllClippingAncestors(control);
 }

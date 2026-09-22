@@ -56,11 +56,21 @@ type SignedRoot struct {
 	// projections rather than a gap in the reporting.
 	ClosureSize int
 
-	// Bindings is how many tree bindings under the prefix the root
-	// commits to. It is the number [prepareMint] refuses on when it is
-	// zero, carried out so a surface prints the fact rather than a
-	// proxy for it.
+	// Bindings is how many tree bindings the root commits to. It is the
+	// number [prepareMint] refuses on when it is zero, carried out so a
+	// surface prints the fact rather than a proxy for it.
+	//
+	// NOT "how many bindings the prefix holds": since `A-38`'s ruling a
+	// root declares a prefix as a BOUND and commits to a set chosen
+	// within it, so the two numbers come apart for every curated publish
+	// — and the one that describes what was disclosed is this one.
 	Bindings int
+
+	// ContentSet names how the binding set was chosen, or "" for the
+	// prefix scan. Carried because an operator reading a publish summary
+	// has no other way to tell a curated set from a scan, and after
+	// `A-38` that difference is the whole of what the root discloses.
+	ContentSet string
 
 	// PriorPrefix is what this peer's PREVIOUS published root committed
 	// to, or "" when this is the first publish.
@@ -77,11 +87,11 @@ type SignedRoot struct {
 // mintSignedRoot builds the trie over prefix, signs a published-root
 // over its root hash, and binds both at their canonical paths.
 //
-// The trie is built directly with tree.BuildTrieForPrefix rather than
-// through a RootTracker sync hook, because publishing is a batch
-// operation over an already-populated store: there is no event stream
-// to ride, and a full build is exactly what RootTracker.Load() does at
-// startup for a freshly-enabled prefix.
+// The trie is built directly with tree.BuildTrie rather than through a
+// RootTracker sync hook, because publishing is a batch operation over an
+// already-populated store: there is no event stream to ride, and a full
+// build is exactly what RootTracker.Load() does at startup for a
+// freshly-enabled prefix.
 //
 // BuildTrie writes every node it constructs into the content store, so
 // the closure the §6.5.3 obligation names is resolvable locally the
@@ -104,12 +114,22 @@ type SignedRoot struct {
 // the §5.2 invariant pointer path, the publisher self-tag, and the
 // binding order. Routed to core-go as an ask for a seeding option
 // (2026-08-18); when it lands this collapses back to two calls.
-func mintSignedRoot(ap *entitysdk.AppPeer, prefix string, at time.Time) (SignedRoot, error) {
+func mintSignedRoot(ap *entitysdk.AppPeer, prefix string, entries []store.LocationEntry, at time.Time) (SignedRoot, error) {
 	cs := ap.RawContentStore()
 	li := ap.RawLocationIndex()
 	peerID := ap.PeerID()
 
-	trieRoot, err := tree.BuildTrieForPrefix(cs, li, crypto.PeerID(peerID), prefix)
+	// THE BINDING SET IS PASSED IN, NOT SCANNED, and that is `A-38`'s
+	// ruling (D) in one line. `tree.BuildTrieForPrefix` derives the
+	// content from the prefix; `EXTENSION-TREE` §3.3a says a prefix is a
+	// BOUND and explicitly not a completeness claim, so deriving one from
+	// the other is what put 386 keys in a 4-key publish. See
+	// content_set.go's header.
+	//
+	// `entries` is what [prepareMint] returned, so the refusals and the
+	// caller's [ContentSet] have both already run: this function commits
+	// to what it is given and decides nothing about the set.
+	trieRoot, err := tree.BuildTrie(cs, trieBindings(peerID, prefix, entries))
 	if err != nil {
 		return SignedRoot{}, fmt.Errorf("publish: build trie for prefix %q: %w", prefix, err)
 	}
@@ -121,7 +141,7 @@ func mintSignedRoot(ap *entitysdk.AppPeer, prefix string, at time.Time) (SignedR
 	// The real refusal is in [Publish], on the binding count; see the
 	// comment there for what an empty publish does to a consumer.
 	if trieRoot.IsZero() {
-		return SignedRoot{}, fmt.Errorf("publish: BuildTrieForPrefix returned a zero root for prefix %q "+
+		return SignedRoot{}, fmt.Errorf("publish: BuildTrie returned a zero root for prefix %q "+
 			"with no error — there is nothing to sign and nothing to explain it", prefix)
 	}
 

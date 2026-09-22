@@ -42,24 +42,62 @@
 // ⭐ **a single-prefix fixture passes against both rules and measures
 // neither.**
 //
+// # ⭐ And a THIRD cut since 2026-09-16 — `peer-root-curated/`, which is `FEED-15`
+//
+// `A-38` is ruled (arch `ROUTING-2026-09-16-a` §1) and the answer is **(D):
+// move the PREFIX, do not move the CONTENT.** `EXTENSION-TREE` §3.3a makes a
+// prefix a BOUND and says three separate times that it is not a completeness
+// claim — a publisher *"MAY declare `/{peer_id}/` and publish a small
+// subset"* — so a root may declare the peer root and commit to nine keys.
+//
+// **The two directories above are unchanged and byte-identical**; this one is
+// additive, and it is the shape the product actually publishes
+// (`publish -feed`). It carries `FEED-15`'s two arms, which is the check the
+// proposal's fold is waiting on:
+//
+//   - the signatures ARE in the committed set — 34/34, same as `peer-root/`;
+//   - and the peer's PRIVATE bindings are NOT — 0 in the emitted directory.
+//
+// ⭐ **Its peer holds private declarations on purpose, and that is the whole
+// point of the arm.** Arch named the failure mode when they named the check:
+// *"a fixture whose peer holds nothing else passes `FEED-R38` by having
+// nothing to leak, and measures nothing."* So this cut's peer carries a
+// device declaration with another machine's LAN address, a folder
+// declaration with an operator's filesystem path, and an ingested document
+// from a folder nobody shared — and the run refuses to finish if any of them
+// reaches the directory.
+//
+// The numbers, measured at cut time: **438 bindings scanned vs 71 curated**
+// (34 entries + 34 signatures + 1 index head + 2 pages), on one peer holding
+// one feed and three private declarations.
+//
 // # ⚠ What this fixture does NOT endorse
 //
-// **`peer-root/` is not what this product publishes**, and emitting it
-// here is not a recommendation to. `A-36`'s ruled fix is to widen the
-// publish scope to the peer root, and measuring that fix
-// (`publish/a36_peer_root_probe_test.go`) is what produced `A-38`: the
-// widened root also commits to this peer's device declarations, folder
-// declarations with their local filesystem paths, ingested documents and
-// capability policy table, and the static emit writes every byte of it
-// into the upload directory. `publish` now REFUSES that prefix without
-// an explicit acknowledgement, and this fixture passes the
-// acknowledgement — it is a purpose-built peer holding a feed and
-// nothing private, which is exactly the case the guard is not for.
+// ⚠ **This section said `peer-root/` is "not what this product publishes"
+// and that the PREFIX was the disclosure. `A-38` ruled otherwise on
+// 2026-09-16 and the correction is kept visible rather than rewritten
+// away** (AP80 — the sentence that used to be true is the one a stranger
+// reads next). What was right: the SCANNED peer-root publish in
+// `peer-root/` really does commit to this peer's device declarations,
+// folder declarations with their local filesystem paths, ingested
+// documents and capability policy table, and `publish` still REFUSES that
+// prefix without an explicit acknowledgement. What was WRONG was the
+// inference — that widening the prefix is what discloses. It is not.
+// **Deriving the content set from the prefix is**, and `peer-root-curated/`
+// is the same prefix with that inference removed.
 //
-// So: `peer-root/` demonstrates what attribution requires. It does not
-// demonstrate a publish an operator should run. **A reader implementation
-// should treat the two directories as two rules to check, not as a
-// recommended and a deprecated shape.**
+// So the three directories are three rules to check, and only the third is
+// a publish an operator should run:
+//
+//   - `peer-root/` — scanned. Demonstrates what attribution requires and
+//     what a prefix scan costs. **Not a recommended shape.**
+//   - `feed-only/` — narrow. Demonstrates the absence (`FEED-R4`).
+//   - `peer-root-curated/` — **what `publish -feed` emits.**
+//
+// **A reader implementation should not treat any of the three as
+// recommended or deprecated shapes to detect** — all three are conformant
+// publishes and a reader that behaves differently on them has inferred
+// something from the prefix that §3.3a forbids inferring.
 //
 // # Determinism
 //
@@ -78,6 +116,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -90,6 +129,7 @@ import (
 
 	"entity-workbench-go/entitysdk"
 	"entity-workbench-go/publish"
+	"entity-workbench-go/workbench"
 )
 
 // FeedFixtureSeed is the pinned Ed25519 seed. Changing it changes the
@@ -147,10 +187,16 @@ func run(out, origin string) error {
 		dir            string
 		prefix         string
 		allowWholePeer bool
+		curated        bool
+		seedPrivate    bool
 		note           string
 	}{
-		{"peer-root", "", true, "signatures ARE in the committed set — FEED-R4 attributes every entry"},
-		{"feed-only", "app/feed/", false, "signatures are NOT — FEED-R4 must report every entry unattributed"},
+		{"peer-root", "", true, false, false,
+			"signatures ARE in the committed set — FEED-R4 attributes every entry"},
+		{"feed-only", "app/feed/", false, false, false,
+			"signatures are NOT — FEED-R4 must report every entry unattributed"},
+		{"peer-root-curated", "", false, true, true,
+			"signatures ARE in the set AND the private bindings are NOT — this is FEED-15"},
 	} {
 		kp := crypto.FromSeed(FeedFixtureSeed)
 		ap, err := entitysdk.CreatePeer(entitysdk.PeerConfig{Keypair: &kp})
@@ -162,6 +208,22 @@ func run(out, origin string) error {
 		if err != nil {
 			ap.Close()
 			return err
+		}
+		if cut.seedPrivate {
+			// FEED-15's anti-vacuity half, and arch named it as the way
+			// this check measures nothing: *"a fixture whose peer holds
+			// nothing else passes FEED-R38 by having nothing to leak."*
+			// So this cut's peer holds the things an operator would be
+			// startled to find on a CDN, and the assertion is that they
+			// are absent from the emitted directory anyway.
+			if err := seedPrivateState(ap); err != nil {
+				ap.Close()
+				return err
+			}
+		}
+		var content *publish.ContentSet
+		if cut.curated {
+			content = publish.FeedContent()
 		}
 
 		dir := filepath.Join(out, cut.dir)
@@ -175,6 +237,7 @@ func run(out, origin string) error {
 			// which is the case the whole-peer guard is not for. A product
 			// publish does not get to pass this.
 			AllowWholePeer: cut.allowWholePeer,
+			Content:        content,
 		})
 		if err != nil {
 			ap.Close()
@@ -197,6 +260,18 @@ func run(out, origin string) error {
 		sigsIn := signaturesInEmit(dir, posted)
 		fmt.Printf("  entry signatures present in the emitted content store: %d/%d\n",
 			sigsIn, len(posted))
+		if cut.seedPrivate {
+			// The other half of FEED-15, printed by the run that produced
+			// the bytes rather than claimed in a README — a README claim
+			// about emitted bytes is the thing that goes stale silently.
+			leaked := grepEmit(dir, privateNeedles()...)
+			fmt.Printf("  private declarations found in the emitted directory: %d (want 0)\n", leaked)
+			if leaked != 0 {
+				ap.Close()
+				return fmt.Errorf("%s: %d private declaration(s) reached the upload directory",
+					cut.dir, leaked)
+			}
+		}
 		fmt.Println()
 
 		ap.Close()
@@ -307,4 +382,78 @@ func pathHasSuffixSegment(emitted, relPath string) bool {
 		}
 	}
 	return false
+}
+
+// privateNeedles is the set of strings that must not appear anywhere in the
+// curated cut's emitted directory.
+//
+// VALUES, not paths. A path can be absent from the listings while the bytes
+// sit in a content shard under their hash, and a content-addressed shard is
+// exactly as fetchable as a named one — which is the shape of disclosure that
+// matters once the directory is on a CDN.
+func privateNeedles() []string {
+	return []string{
+		"/home/operator/private/notes",
+		"192.168.1.44:9110",
+		"the contents of a file in a folder nobody shared",
+	}
+}
+
+// seedPrivateState writes the declarations a real workbench peer holds — the
+// ones an operator would be startled to find on a CDN.
+//
+// Written through the same types the product writes rather than as hand-rolled
+// maps: the question is what a publish of THIS peer emits, and a fixture that
+// invents lighter-weight entities understates it. Deliberately the same shapes
+// as `publish/a36_peer_root_probe_test.go`'s helper, so the fixture and the
+// gate are measuring one thing.
+func seedPrivateState(ap *entitysdk.AppPeer) error {
+	put := func(path, typeName string, data any) error {
+		if _, err := ap.Store().Put(path, typeName, data); err != nil {
+			return fmt.Errorf("seed %s: %w", path, err)
+		}
+		return nil
+	}
+	if err := put(workbench.DevicePrefix+"peer-the-operator-shares-with", workbench.DeviceType,
+		workbench.DeviceData{
+			PeerID:    "peer-the-operator-shares-with",
+			Label:     "laptop",
+			Addresses: []string{"192.168.1.44:9110"},
+		}); err != nil {
+		return err
+	}
+	if err := put(workbench.FolderPrefix+"owner.notes", workbench.FolderType,
+		workbench.FolderData{
+			Root:      "notes",
+			LocalRoot: "/home/operator/private/notes",
+		}); err != nil {
+		return err
+	}
+	return put("doc/notes/salary-review.md", "doc/markdown-file",
+		map[string]any{
+			"title": "salary review 2026",
+			"body":  "the contents of a file in a folder nobody shared",
+		})
+}
+
+// grepEmit counts files under dir containing any of the needles.
+func grepEmit(dir string, needles ...string) int {
+	hits := 0
+	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		b, readErr := os.ReadFile(p)
+		if readErr != nil {
+			return nil
+		}
+		for _, n := range needles {
+			if bytes.Contains(b, []byte(n)) {
+				hits++
+				return nil
+			}
+		}
+		return nil
+	})
+	return hits
 }

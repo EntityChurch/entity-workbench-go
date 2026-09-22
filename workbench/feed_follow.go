@@ -223,8 +223,28 @@ func LoadFeedCursor(st *Store, subject string) (cur entitysdk.FeedCursor, readAt
 // well-formed, the publish is correct, and the only thing wrong is that
 // somebody can now read who this peer reads.
 //
-// Returns "" when the prefix does not cover them.
-func FeedPrivacyProblem(publishedPrefix string) string {
+// ⚠ **A PREFIX IS A BOUND AND NOT A CONTENT SET, AND THIS FUNCTION READ IT AS
+// ONE.** `A-38` ruling (D) is exactly that distinction, and it arrived here one
+// function later than it arrived in the publisher: a `publish -feed` declares
+// the PEER ROOT — which bounds `app/workbench/feed/` along with everything else
+// — and commits to nine keys, none of them a follow record. Reading the prefix
+// alone therefore accused the operator who took the ruling's advice of
+// publishing their follow list, in the same breath as telling them to fix it by
+// doing what they had just done. A warning that fires on the one action that
+// cannot cause the harm is worse than no warning: it is the line an operator
+// learns to skip, on the surface where the real disclosure would appear.
+//
+// So it takes the content set. Empty (the scan) means the prefix IS the set and
+// the old reading is correct; [PublishContentFeed] admits only
+// `app/feed/index*`, `app/feed/entries*` and the signature held for each entry
+// (`publish.FeedContent`), so a follow record is outside it by construction and
+// not by luck — the selector cannot widen to reach one.
+//
+// Returns "" when the published root does not commit to them.
+func FeedPrivacyProblem(publishedPrefix, contentSet string) string {
+	if contentSet == PublishContentFeed {
+		return ""
+	}
 	p := strings.Trim(strings.TrimSpace(publishedPrefix), "/")
 	covers := func(key string) bool {
 		if p == "" {
@@ -241,5 +261,6 @@ func FeedPrivacyProblem(publishedPrefix string) string {
 	}
 	return "this peer's published root commits to " + scope + ", which contains its own follow list " +
 		"and read positions — FEED §2.4 makes publishing a follow list a separate, voluntary act, and " +
-		"this publishes it. `publish -prefix app/feed/` commits to the feed and not to who reads it"
+		"this publishes it. `publish -feed` commits to the feed's entries, index and signatures and " +
+		"to nothing about who reads it"
 }

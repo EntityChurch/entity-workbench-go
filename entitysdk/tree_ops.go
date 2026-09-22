@@ -144,13 +144,73 @@ func (a *AppPeer) putDispatched(path, typeName string, data interface{}, expecte
 // Use this when copying or replicating an existing entity: the
 // content hash is preserved because no re-encoding occurs. For
 // typical writes from typed Go data, use Put.
+//
+// **This is `SYSTEM-DATA-EXCHANGE` §2.1's required operation** — the one
+// that binds *obtained bytes* rather than *data*. §2.1 names the
+// alternative as the trap in as many words: *"the ordinary
+// `put(path, type, data)` shape is the one a developer reaches for and it
+// is the broken one"*, because re-encoding moves the content hash, and a
+// detached signature binds at a pointer derived from that hash — so a
+// re-encoded entity is one **nobody wrote**. Republication MUST come
+// through here.
 func (a *AppPeer) PutEntity(path string, ent entity.Entity) (hash.Hash, error) {
+	return a.PutEntityAs(entity.Entity{}, path, ent)
+}
+
+// PutEntityAs is [AppPeer.PutEntity] under an explicit caller capability.
+// A zero capability means the executor's standing owner self-cap, which is
+// what a write into our own namespace wants.
+//
+// **Routing is unchanged, so a peer-qualified foreign path DISPATCHES TO
+// THAT PEER.** For binding bytes into our own tree under somebody else's
+// namespace — which is what republication does — use
+// [AppPeer.PutObtainedEntity].
+func (a *AppPeer) PutEntityAs(callerCap entity.Entity, path string, ent entity.Entity) (hash.Hash, error) {
 	handlerURI, resourcePath := a.resolveDispatchTarget(path)
+	return a.putEntityAt(callerCap, handlerURI, resourcePath, ent)
+}
+
+// PutObtainedEntity binds ent **into this peer's own tree** at a path under
+// another peer's namespace — our own copy of their subtree, never a write
+// to them.
+//
+// ⛔ **This exists because [AppPeer.PutEntity] cannot express it, and the
+// failure is one the error message actively misdirects you about.**
+// `resolveDispatchTarget` routes by peer segment, so
+// `PutEntity("/{author}/app/feed/entries/{hex}", …)` resolves to
+// `entity://{author}/system/tree` and asks **the author** to accept a write.
+// They refuse — correctly, and with `403 capability_denied` — and the
+// sentence an operator reads is indistinguishable from *"that publisher
+// revoked us"*, when nothing about the author is involved at all. Measured
+// building the gatherer; it is `AP11`'s shape in the write direction, where
+// it costs more, because a read that went the wrong way returns somebody
+// else's answer and a write that goes the wrong way asks a stranger's
+// permission for a local act.
+//
+// So the handler is pinned LOCAL and the peer-qualified path travels as the
+// resource. V7 §1.4 layer 1 gives a peer full write access to its entire
+// local tree, including its cached copy of another namespace; what it does
+// not do is let the owner self-cap *say so* — `["*"]` is peer-local under
+// §PR-8 — which is why the capability is a parameter and
+// [AppPeer.MintMirrorCapability] is how you get one.
+//
+// The bytes are bound verbatim, so this is `SYSTEM-DATA-EXCHANGE` §2.1's
+// required operation at the address §2.2 requires.
+func (a *AppPeer) PutObtainedEntity(callerCap entity.Entity, path string, ent entity.Entity) (hash.Hash, error) {
+	if !strings.HasPrefix(path, "/") {
+		return hash.Hash{}, NewError(400, "invalid_request",
+			"an obtained entity is bound at a peer-qualified path (/{peer}/…); "+
+				path+" names no namespace, so there is nothing to distinguish it from our own")
+	}
+	return a.putEntityAt(callerCap, "system/tree", path, ent)
+}
+
+func (a *AppPeer) putEntityAt(callerCap entity.Entity, handlerURI, resourcePath string, ent entity.Entity) (hash.Hash, error) {
 	putReq, resource, err := tree.CreatePutRequest(resourcePath, &ent)
 	if err != nil {
 		return hash.Hash{}, WrapError(400, "invalid_request", "build put request", err)
 	}
-	resp, err := a.executor.ExecuteOnResource(handlerURI, "put", putReq, resource)
+	resp, err := a.executor.executeAs(callerCap, handlerURI, "put", putReq, resource)
 	if err != nil {
 		return hash.Hash{}, err
 	}

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Avalonia.Controls;
@@ -258,6 +259,108 @@ public class SyncPanelTwoPeerTests : IDisposable
                 "the offers section is still on screen with nothing in it");
         }
         finally { bw.Close(); aw.Close(); }
+    }
+
+    // ⭐ AP94's rule across the BRIDGE, on a test-scoped peer.
+    //
+    // # Why it lives in this file and not beside the other panel tests
+    //
+    // The fields are per FOLDER, so the envelope cannot be checked
+    // without one — and `BridgeFixture.DefaultPeer` is shared by the whole
+    // assembly, so whether it has a folder depends on what every other
+    // test has done to it (AP70). This file already stands up peers of its
+    // own, so the folder is one this test declared and nobody else's.
+    //
+    // # What it catches that the renderer tests cannot
+    //
+    // Both panel tests drive `SeedFolderForTests`, so they would pass with
+    // all three fields renamed on the Go side — the panel would simply
+    // render "rule not yet read" for every folder forever, which is the
+    // reassuring-looking direction and the one AP49 is about. This is the
+    // only arm that reads what Go actually emits.
+    [AvaloniaFact]
+    public async Task The_Status_Envelope_Carries_The_Conflict_Rule_And_The_Export_Changes_It()
+    {
+        SyncPanel.AutoLoadOnOpen = false;
+        var (aw, ap) = Open(_alice);
+        try
+        {
+            Connect(_alice, _bob, "bob");
+            await ap.ShareForTests(_aliceDir, PeerIdOf(_bob));
+            Assert.False(ap.NoteText.Contains("could not", StringComparison.OrdinalIgnoreCase),
+                $"share failed, so there is no folder to read a rule off: {ap.NoteText}");
+
+            var folder = SoleFolder(_alice);
+            var id = folder.GetProperty("id").GetString()!;
+
+            // The three fields, by NAME, on real emitted JSON.
+            Assert.True(folder.TryGetProperty("ownerRuleKnown", out var known),
+                "`ownerRuleKnown` is not in the folder envelope — the panel then says "
+                + "\"rule not yet read\" for every folder forever, which reads as a held "
+                + "delivery on a folder that has none");
+            Assert.True(folder.TryGetProperty("ownerConflictPolicy", out var policy),
+                "`ownerConflictPolicy` is not in the folder envelope");
+            Assert.True(folder.TryGetProperty("ruleSettableHere", out var settable),
+                "`ruleSettableHere` is not in the folder envelope — the control then never "
+                + "appears, on any folder, including the ones this peer owns");
+
+            // Alice OWNS this folder: her declaration is the rule, there is
+            // nobody to ask, and she may change it.
+            Assert.True(known.GetBoolean(),
+                "the owner's rule is reported unknown on a folder this peer owns — there is "
+                + "nobody to have read it from");
+            Assert.True(settable.GetBoolean(),
+                "a folder this peer owns reports its rule as not settable here");
+            Assert.Equal("record", policy.GetString());
+
+            // --- the export, and the reading it returns -------------------
+            var reply = Bridge.TakeString(
+                Bridge.StatusSetConflictRule(_alice, id, "keep-both"));
+            using (var doc = JsonDocument.Parse(reply))
+            {
+                Assert.True(doc.RootElement.GetProperty("ok").GetBoolean(),
+                    $"StatusSetConflictRule failed: {reply}");
+            }
+            Assert.Equal("keep-both",
+                SoleFolder(_alice).GetProperty("ownerConflictPolicy").GetString());
+
+            // ⛔ The anti-vacuity arm. Without it everything above is
+            // satisfied by an export that writes "keep-both" unconditionally
+            // — which is the one value that stops a folder converging.
+            Bridge.TakeString(Bridge.StatusSetConflictRule(_alice, id, "record"));
+            Assert.Equal("record",
+                SoleFolder(_alice).GetProperty("ownerConflictPolicy").GetString());
+
+            // And a rule this peer does not own is REFUSED rather than
+            // written, with the sentence naming the machine to run it on.
+            // `SetFolderConflictPolicy` is the one writer of that sentence.
+            var refused = Bridge.TakeString(
+                Bridge.StatusSetConflictRule(_alice, "not-a-folder-here", "keep-both"));
+            using (var doc = JsonDocument.Parse(refused))
+            {
+                var root = doc.RootElement;
+                var ok = root.TryGetProperty("ok", out var okEl) && okEl.GetBoolean();
+                Assert.False(ok,
+                    $"setting a rule on a folder this peer has not declared succeeded: {refused}");
+            }
+        }
+        finally { aw.Close(); }
+    }
+
+    // SoleFolder reads StatusRender and returns the one folder this test
+    // declared. Fails loudly on any other count, because an assertion
+    // phrased over "the folder" on a peer with two of them is an assertion
+    // about whichever one sorted first.
+    private static JsonElement SoleFolder(long handle)
+    {
+        var json = Bridge.TakeString(Bridge.StatusRender(handle));
+        var doc = JsonDocument.Parse(json);
+        Assert.True(doc.RootElement.TryGetProperty("folders", out var folders),
+            $"no `folders` in the StatusRender envelope: {json}");
+        var list = folders.EnumerateArray().ToList();
+        Assert.True(list.Count == 1,
+            $"expected exactly the one folder this test shared, got {list.Count}: {json}");
+        return list[0].Clone();
     }
 
     private static (Window w, SyncPanel p) Open(long handle)

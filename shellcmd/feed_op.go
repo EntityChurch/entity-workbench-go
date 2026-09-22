@@ -9,6 +9,7 @@ import (
 
 	"entity-workbench-go/entitysdk"
 	"entity-workbench-go/publish"
+	"entity-workbench-go/workbench"
 )
 
 // feed_op.go — posting and reading this peer's own feed, extracted from the
@@ -119,9 +120,22 @@ type FeedReach struct {
 	Public PublicGrantState
 
 	// SignatureNote is the FEED-R2 attribution caveat — see
-	// entitysdk.FeedAuthor.SignatureCoverage. Non-empty means a STATIC
-	// reader of this feed cannot attribute a single entry.
+	// [ShellWorkspace.attributionNote]. Non-empty means a STATIC reader of
+	// this feed cannot attribute a single entry, or can only because the
+	// root commits to far more than the feed.
+	//
+	// EMPTY IS A REAL ANSWER HERE and not an unset field: it means the
+	// published root commits to the entries' signatures and to little
+	// else, which is `A-38` ruling (D) having been applied.
 	SignatureNote string
+
+	// ContentSet is how the live root chose its bindings —
+	// [workbench.PublishContentScan] or [workbench.PublishContentFeed].
+	//
+	// Carried rather than re-read by each surface because it is the fact
+	// that decides two others on this struct (Current, SignatureNote), and
+	// a surface re-deriving it would be free to derive it differently.
+	ContentSet string
 }
 
 // FeedPrefix is the tree prefix a feed publish commits to.
@@ -187,24 +201,76 @@ func (ws *ShellWorkspace) feedReach(ctx context.Context, author *entitysdk.FeedA
 	ap := ws.Local.Peer
 	var out FeedReach
 
+	// How the live root chose its bindings. Read once and used twice — for
+	// the staleness re-derivation and for the attribution note — because
+	// those two are the same question asked about the same root, and
+	// reading it twice is how they come to disagree.
+	contentSet := workbench.ReadPublishContentSet(ap.Store())
+
 	pr, err := ap.ReadPublishedRoot(ctx, ap.PeerID())
 	if err == nil {
 		out.Published = true
 		out.Prefix = pr.Data.Prefix
 		out.RootHash = pr.Data.RootHash.String()
 		out.CoversFeed = prefixCoversFeed(pr.Data.Prefix)
+		out.ContentSet = contentSet
 
 		// Rebuilt over the PUBLISHED prefix rather than over the feed's —
 		// the question is whether the root describes the tree, and the root
 		// is the one that chose the prefix.
-		if now, err := publish.RootNow(ap, trimPublishedPrefix(pr.Data.Prefix)); err == nil {
+		//
+		// Re-derived with the set the live root was MINTED with, which the
+		// root itself does not record (`workbench.ReadPublishContentSet`).
+		// Using the wrong one reports "your root is behind" on a root that
+		// is exactly current, permanently — a standing false line in a
+		// problems list is how an operator learns to skip the list.
+		if now, err := publish.RootNow(ap, trimPublishedPrefix(pr.Data.Prefix),
+			publishContentSetNamed(contentSet)); err == nil {
 			out.RootNow = now.String()
 			out.Current = now == pr.Data.RootHash
 		}
 	}
 	out.Public = ws.publicGrantState(out.Prefix)
-	_, out.SignatureNote = author.SignatureCoverage(FeedPrefix)
+	out.SignatureNote = ws.attributionNote(out, contentSet, author)
 	return out
+}
+
+// attributionNote is the `A-36` caveat, or the sentence that says it has been
+// fixed, or nothing.
+//
+// # Why this moved out of the SDK call
+//
+// It used to be `author.SignatureCoverage(FeedPrefix)` — a constant — so the
+// caveat was STANDING: *"a reader that fetches this feed from a STATIC
+// directory cannot attribute any entry"*, printed on every reading of every
+// feed forever. That was true and unfixable when it was written, and `A-38`'s
+// ruling is exactly the thing that makes it fixable. **A caveat that goes on
+// being printed after the defect it describes has been repaired is a false
+// line, and it is worse than the original omission** — it tells an operator
+// who did the right thing that it did not work.
+//
+// Two facts decide the sentence and only one of them is the prefix, which is
+// why the SDK cannot answer it alone: whether the published prefix CONTAINS
+// `system/signature/…`, and — when it does — whether the binding set actually
+// committed to them. A scan over the peer root satisfies both and discloses
+// everything; the curated set satisfies both and discloses nine keys; and a
+// root over `app/feed/` satisfies neither.
+func (ws *ShellWorkspace) attributionNote(reach FeedReach, contentSet string, author *entitysdk.FeedAuthor) string {
+	if !reach.Published {
+		// Nothing is published, so there is no root to be wrong about.
+		// `feedProblems` says the feed is unpublished, which is the fact
+		// that matters and is one an operator can act on.
+		return ""
+	}
+	prefix := trimPublishedPrefix(reach.Prefix)
+	covered, note := author.SignatureCoverage(prefix)
+	if !covered {
+		return note
+	}
+	if contentSet == workbench.PublishContentFeed {
+		return ""
+	}
+	return note
 }
 
 // prefixCoversFeed reports whether a published prefix contains the feed's keys.
@@ -259,15 +325,27 @@ func feedProblems(readout entitysdk.FeedReadout, reach FeedReach) []string {
 		return nil
 	}
 	switch {
+	// ⚠ Both of these named `publish -prefix app/feed/` until 2026-09-16,
+	// and `A-38` ruling (D) made that the WEAKER instruction: a root over
+	// `app/feed/` cannot commit to the `system/signature/…` keys that
+	// attribute an entry, so following it leaves every entry unattributable
+	// to a static reader — and the next line the operator reads is the
+	// caveat saying exactly that. `publish -feed` is strictly better on the
+	// same folder: same entries, plus the signatures, and a curated set
+	// rather than a scan (9 keys against the 399 the peer root bounds).
+	// **Guidance that survives the ruling that superseded it is the AP80
+	// shape** — the sentence a reader checks the product against, still
+	// true-sounding, quietly costing them the thing they came for.
 	case !reach.Published:
 		out = append(out, "this peer has published no signed root, so nothing can read this feed and verify "+
-			"it — `publish -prefix "+FeedPrefix+"` signs one")
+			"it — `publish -feed` signs one over your entries, the index and the signature attributing "+
+			"each entry")
 	case !reach.CoversFeed:
 		out = append(out, fmt.Sprintf(
 			"the published root commits to %q, which does not contain %q — a reader following this peer "+
 				"gets a verified answer that the feed is not there. A peer has exactly ONE published root, "+
-				"so `publish -prefix %s` REPLACES what is published now",
-			reach.Prefix, FeedPrefix, FeedPrefix))
+				"so `publish -feed` REPLACES what is published now",
+			reach.Prefix, FeedPrefix))
 	case !reach.Current:
 		out = append(out, "the published root does not commit to what is in the tree now — posts made since "+
 			"the last `publish` are invisible to every reader, on both roads, and look exactly like not "+

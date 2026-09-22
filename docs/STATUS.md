@@ -1,9 +1,13 @@
 # entity-workbench-go — status
 
-_Updated: 2026-09-15 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
+_Updated: 2026-09-16 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
 > **STARTING WORK? Read
-> `docs/status/HANDOFF-2026-09-15-c-the-release-check-two-gates-a-correction-routed-and-the-changelog-had-stopped-two-weeks-back.md`**
+> `docs/status/HANDOFF-2026-09-16-a-the-naming-rule-was-gated-somewhere-else-and-the-feeds-produce-side-reached-no-pixel.md`**
+> — the newest: what shipped, the four things not to re-litigate about the feed publish control,
+> the second instance of the bound-versus-content-set confusion, and §6's ordered next list (the
+> first item is somebody else's sequencing and their reason for it is the good one). Then
+> **`docs/status/HANDOFF-2026-09-15-c-the-release-check-two-gates-a-correction-routed-and-the-changelog-had-stopped-two-weeks-back.md`**
 > — the release-readiness pass: the measured tree state, the one thing the release still needs from
 > us (a version number, which is not ours to guess), and `C-7`, a correction routed to two seats
 > about what it takes for a post to be readable. Then
@@ -32,7 +36,22 @@ _Updated: 2026-09-15 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > into ours / waiting-on-architecture / waiting-on-core-go, in the order to do them, with the
 > one piece of work that is deliberately sequenced behind somebody else named as such.
 >
-> **Start here:** **§50 — every feed reader test was green while the road a user takes was
+> **Start here:** **§54 — a peer republishes another peer's feed now, and the evidence does not
+> survive the hop** (the gathering loop, and the measurement showing a republished entry arrives
+> unattributable to a third party — with the cause narrowed to where a signature's address is
+> looked up). Then **§53 — a rule described as "gated" is gated over somebody's corpus, and ours
+> was not it** (the check ran where the rule is written down, not where it is obeyed; plus the
+> feed's produce side, which reached a command line and no pixel — and the §52 distinction biting
+> a second time, one function over, in a warning that fired on the operator who had done the right
+> thing), then
+> **§52 — a publish prefix is a BOUND and we had been reading it as a content
+> set** (the fix an architecture ruling asked for cost 386 committed keys when we measured it, and
+> the ruling was that the cost was never the ruling's: it was ours, for deriving the set from the
+> bound), then
+> **§51 — the rule deciding what happens to your edit was reachable from the
+> command line and from no pixel** (three states and the third is the one that matters; a field
+> nobody declares arrives as a default, not as an error), then
+> **§50 — every feed reader test was green while the road a user takes was
 > broken** (a test that builds the reader's transport cannot fail on the transport the product
 > chooses; assert which path produced the answer, and gate the chooser separately), then
 > **§48 — posting is not publishing on the live road either** (measured against a
@@ -150,6 +169,249 @@ _Updated: 2026-09-15 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
 
+## §54 NEW (2026-09-16) — a peer republishes another peer's feed now, and the evidence does not survive the hop
+
+The gathering loop is built. A peer reads somebody else's published feed through the verifying
+reader it already has, and republishes what it obtained so the next reader does not have to gather
+it again. That is the piece this repo's own audit named as owed a few days ago, and it is the first
+place in the tree where the operation for binding **obtained bytes** meets bytes we did not author
+— until now every one of its twenty callers was a program writing its own state.
+
+### The rule everything else hangs off
+
+A republished entity is bound **byte-identically** to the form it arrived in. It is never decoded
+and re-encoded, not even through a type we fully declare, and the reason is sharper than a lost
+field: an entity's address is the hash of its bytes, and the signature that attributes it binds at
+a pointer derived from that hash. Move the hash and the signature stops naming the entity — the
+result is a complete, correctly-walked, entirely verifiable publication **in which nobody wrote
+anything.**
+
+The trap is that this is not a careless mistake. Decoding a body into a local structure and binding
+it back is what anybody writes first, and it is lossless over exactly the types you fully declare.
+A gatherer aggregates types it did not write, so the case that breaks it is the normal case and it
+raises no error anywhere.
+
+### What we found by running it end to end
+
+Three peers: **A** authors and publishes, **B** gathers and republishes, **C** has never spoken to A
+and never will — which is the whole proposition, one verification instead of five hundred. Measured:
+
+    the view is addressable at the coordinate C computes for itself   ✓
+    it names three entries, every one attributed to A and not to B    ✓
+    B serves all three of A's entries, by hash, from its own store     ✓
+    C can attribute                                                0 of 3
+    control: the same entries read straight from A                 3 of 3
+
+**So a mirror we produce carries integrity and not authorship** — the one state the rules say must
+never be presented as attributed. The bytes are right, the references are right, the view is
+complete, and the thing the whole layer exists for does not survive the hop.
+
+The cause is narrow and it is ours: a signature's address names **the peer who signed it**, and our
+reader looks for it under **the peer it is reading from**. Those are the same peer on a direct read
+and different peers on exactly this one. B is holding the signature at the correct address the whole
+time — nothing is missing, it is being looked for in the wrong place.
+
+It is not a one-line repair, which is why it is written up and routed rather than patched: asking
+correctly means a read aimed at one peer for something under another peer's name, and that request
+cannot currently be expressed. A second way to locate a signature is a second trust argument, and
+that belongs in its own change.
+
+### The same gap, found the same afternoon from the other end
+
+The write side had it too, and its error message pointed at the wrong machine. Binding a gathered
+entry under its author's name resolved to *the author*, over the network, asking them to accept a
+write — and their refusal is indistinguishable from *"that publisher revoked us"* when the author is
+not involved at all. A peer-qualified path means both *"ask them for this"* and *"my own copy of
+theirs"*, and republication is the first thing here that needs the second meaning in both
+directions.
+
+### And our own new gate was measuring nothing
+
+The pure tests use an entry carrying a field this build has never heard of, because a round trip
+through bytes your own encoder produced proves nothing. The end-to-end test did not — its publisher
+authored everything through our own encoder — so a version of the gatherer deliberately broken to
+re-encode every entry **passed the entire live suite.** Found by mutation, fixed by planting a
+hostile entry there too, and worth recording because the live harness is the one that *looks* more
+real: two peers, a network, a signed root, and the weaker measurement of the property that matters.
+
+Every gate here was then mutation-checked, and each failed on exactly the defect it is named for.
+
+---
+
+## §53 (2026-09-16) — a rule described as "gated" is gated over somebody's corpus, and ours was not it, plus the feed's produce side reaches a pixel
+
+Two pieces, and they turned out to share one shape: **a check that runs somewhere other than where
+the thing it checks is written.**
+
+### The naming rule nothing was checking
+
+The specification says an entity-type path segment is kebab-case, and it marks the rule *gated
+(high precision): snake = violation*. The gate reads the specification corpus. **Entity type names
+are string literals in program source** — which that gate cannot see and was never meant to. So a
+rule everyone cites as mechanically enforced was unenforced everywhere it is actually written.
+
+Measured here: **474 distinct entity-namespace path literals across 771 source files, one
+violation.** It was `app/state/peer_roster_entry`, and both halves of that string were wrong. The
+casing, against the gated rule. And the namespace: `app/state/` is the cross-impl portable one,
+where *"consumers MUST follow the canonical schema"*, and this type was minted there to match one
+other implementation — which runs the guide's own promotion ladder backwards, since it prescribes
+an app-owned name first and promotion only when a type proves convergeable. The file's comment said
+both things outright, four lines above a struct field documented as specific to this repo. It had
+been read for months.
+
+It is `app/entity-workbench/peer-roster-entry` now. No migration code, and that is checked rather
+than assumed: the read side lists a path prefix and decodes, so it never consults the type, and the
+restore path rewrites every entry on the first launch after the change.
+
+**The rule worth carrying is not the rename.** When you adopt a rule described as gated, find the
+gate and read what it walks; if your artifacts are outside it, the gate you are relying on is
+somebody else's. Nobody re-asks whether the thing being scanned is the thing they are writing.
+
+Ours exists now and runs in the ordinary sweep. Two things it had to get right, because a
+source-walking gate has two ways to pass while measuring nothing — it can walk the wrong tree and
+find no files, and its detector can be broken so that it flags nothing, and neither is
+distinguishable from a clean result. So it asserts a floor on how many literals it scanned, *and*
+runs its detector over a synthetic source containing a known violation. Its precision comes from
+one character: a literal is on the namespace axis if and only if it contains a slash, which is
+exactly what keeps a correctly snake-cased field key from matching — the difference between a gate
+that gets fixed and a gate that gets waived.
+
+### The feed's produce side reached a verb and no pixel
+
+Publishing a feed so that a reader can attribute its entries was reachable from the command line
+and from nothing in the window. Worse, the sentence that says whether entries *are* attributable
+had never crossed into the frontend in any form — so an operator's feed could be unattributable to
+every reader who fetches it as static files, with nothing on screen saying so and no control that
+would have fixed it.
+
+Closed: the publish call takes the curated-content-set choice, the attribution state crosses the
+boundary, and the feed panel has a **your feed** section with a **Publish feed** button.
+
+**Three states, not two, and the reason is a value that is a real answer on both sides of the
+interesting line.** An empty attribution note means *every entry is attributable* — when a root is
+published and covers the feed. It is also what a peer that has published nothing produces, because
+there is no root to be wrong about. A renderer that short-circuits on the empty string therefore
+tells the operator who has published nothing that everything is fine. Gated across all three arms
+and mutation-checked by collapsing it to two.
+
+### And the same distinction bit again, one function over
+
+The ruling behind §52 — a published prefix *bounds* a publication and does not state its contents —
+had a second instance in this tree, found while building the control above. A privacy warning about
+publishing your own follow list was reading the published prefix as a statement about content. After
+the curated publish, the prefix is the peer root, so the warning fired: it told the operator they
+had published their follow list **in the same sentence that told them to fix it by doing what they
+had just done**, while the root committed to nine keys and not one of them a follow record.
+
+*A warning that fires on the one action that cannot cause the harm is worse than no warning* — it is
+the line an operator learns to skip, on the surface where a real disclosure would appear. It reads
+the content set now, with the unchanged case kept as the control arm, because without it the gate
+passes against a check that has been deleted rather than narrowed. Same round: the feed's own
+problem list still recommended the older, weaker publish — same entries, no signatures, so every
+entry stays unattributable — directly above the caveat saying exactly that.
+
+**Still owed and named rather than left to be found:** there is no way to compose a post from the
+window; the panel publishes what the command line authored. And the panel's refresh signal does not
+cover feed entries, so a post made elsewhere while it is open does not appear — the honest fix there
+is a subscription, not a refresh button.
+
+## §52 NEW (2026-09-16) — a publish prefix is a BOUND, and we had been reading it as a content set
+
+A feed's per-entry signatures live at `system/signature/{hex}` and a feed publish commits to
+`app/feed/`, so a reader who fetches a feed as static files cannot attribute a single entry. The
+fix we were asked for was to publish over the peer root — the shortest prefix containing both. We
+built it, measured it, and did not ship it: the committed key set went from **4 keys to 386**, and
+the directory an operator uploads then contained their folder paths, another machine's address and
+the body of a document from a folder nobody had shared.
+
+So we filed the problem upstream with three possible answers. **All three were rejected, and the
+reason is the thing worth carrying: every one of them assumed that widening the prefix widens what
+gets published.** The specification says three separate times that it does not — a prefix *bounds*
+a publication and is explicitly not a claim to have published everything under it, and a publisher
+may declare the whole peer and publish a handful of keys. A rule that would have made our
+assumption true had been added a version earlier and withdrawn in full.
+
+⇒ **Move the bound, not the content.** Publishing at the peer root with a chosen binding set now
+commits to **9 keys where the peer root bounds 399** — the entries, the index, and the one
+signature that attributes each entry. On the 34-entry interoperability fixture it is **71 against
+438**. The 386 was never the cost of the fix. It was the cost of deriving the content from the
+bound.
+
+**Why it survived review is the transferable half, and it is not about care.** Nothing in our
+publisher ever chose a binding set, because the obvious library call does not let you: one function
+takes a prefix and scans, and the one that takes an explicit list is exported and goes unused by
+the reference implementation's own publish path. *The easy helper implements the reading the ruling
+rejects.* A green tree never asks why the bound is also the selector.
+
+Three things the build decided that the ruling does not state:
+
+- **The disclosure guard is about SCANNING, not about the prefix.** A peer-root publish is refused
+  without an explicit acknowledgement; the curated one needs none, because the acknowledgement
+  exists for keys a scan sweeps along and a chosen set sweeps none. Making the fix reachable only
+  through the flag that means *publish my private tree* would have inverted it.
+- ⚠ **A published root does not record how its set was chosen, so the publisher has to.** Two roots
+  over one prefix are two hashes and nothing distinguishes them — correctly, since a reader is
+  forbidden to infer the set from the prefix. But *"does what I published still describe what I
+  have"* is answered by re-deriving, and re-deriving the wrong way reports **"your root is
+  behind" on a root that is exactly current, permanently.** That is a standing false line in a
+  problems list, which is how an operator learns to skip the list; this tree has already paid for
+  it once.
+- **An empty chosen set is refused** for the same reason an empty prefix is: signing it produces a
+  valid, correctly-signed origin that answers *absent* to every key, which a reader cannot tell
+  from a feed they asked the wrong question of.
+
+**Two gates, because neither can see the other's failure.** The mechanism gate asserts the
+unchanged case against the library function the publisher no longer calls — so it cannot pass by
+agreeing with itself — and the wiring gate drives the actual command, because a test that builds
+the thing under test's input cannot fail on the input the product chooses. Both were
+mutation-checked, and each was caught by exactly the assertion it is named for.
+
+⚠ **Owed: none of this reaches the desktop app.** The publish button takes one option and the
+attribution caveat has never crossed into the interface at all, so an operator there sees a feed
+they cannot make attributable and is not told why.
+
+---
+
+## §51 NEW (2026-09-16) — the rule deciding what happens to your edit was reachable from the command line and from no pixel
+
+When two machines share a folder and a change arrives on a file you had just edited, something has
+to decide what happens. This project supports two answers: let the arriving version win and keep
+yours recoverable, or keep both and stop converging until a person chooses. The choice is a
+declaration, it is consulted on every collision, and **it could only be made by typing a command.**
+The desktop panel that lists your shared folders showed neither what the rule was nor any way to
+change it.
+
+Two things were wrong and only one of them was the missing button. The panel's model had been
+computing the rule on *every* reading — which folder, which rule, and whether we had read it at all
+— and the layer that carries data across to the interface never declared those fields, so they were
+discarded silently on the way. A field nobody declares does not arrive as an error; it arrives as a
+default. That has now happened often enough here to have its own entry, and the interesting part is
+that the fix is never the hard part: the fields existed, the panel wanted them, and nothing anywhere
+would have reported the loss.
+
+⭐ **Three states, not two, and the third is the one that matters.** A shared folder names one rule
+and it belongs to whoever owns the folder — so the other machine's rule is something you have to
+have *read*, and until you have, an arriving change that lands on your edit is **held**: nothing
+overwritten, nothing lost, released on the next pass that reads their declaration. Rendering that
+as the ordinary "their version wins" would have been the natural shortcut, and it would delete the
+one sentence explaining why someone's file is not where they expect it. The panel says *held*, and
+a test exists whose only job is to fail if that word is ever replaced by the reassuring one.
+
+The control appears **only on folders this machine owns**. On a folder you received, the row names
+who owns it instead. An enabled button that then refuses would be an interface accepting an
+instruction it cannot carry out; a greyed-out one would read as a permissions problem. Neither is
+true — the rule is simply somebody else's to set, and saying so is the whole of what that row needs.
+
+Both behaviours were then verified by deliberately breaking them: collapse the third state into the
+second, and offer the control on a folder we do not own. Each break was caught by exactly the test
+named after it and by nothing else.
+
+⚠ Stated rather than smoothed over: the folder list this line was added to has no height limit, and
+a panel whose content outgrows its space puts controls where they cannot be clicked. That was
+already a known weakness here and this change moves one row closer to it. The height budget was
+raised to cover the ordinary case — a machine with a folder or two — which buys time and is not a
+fix.
+
 ## §50 NEW (2026-09-15) — every feed reader test was green while the road a user actually takes was broken
 
 Reading somebody else's feed has two halves that are easy to mistake for one. There is the
@@ -165,9 +427,17 @@ transport cannot fail on the transport the product chooses.**
 Measured rather than argued. We changed one token so that the only call any feed surface makes
 asks for the wrong kind of connection, and re-ran everything: the reader tests, both halves of the
 cross-implementation fixture, and the publish-and-read pair **all stayed green**. Only a gate
-written this session went red. Counted the other way, which is the cleaner evidence: before this
-work, **no test in this project mentioned the timeline feature or its command at all** — the thing
-between the verified reader and the operator was reached by nothing.
+written this session went red.
+
+Counted the other way — and this is the sharper half, corrected the next day after the first
+version of this paragraph overstated it. It is **not** true that nothing mentioned the feature:
+one desktop test called it. What is true is that **the one test naming it could not reach the code
+it appeared to cover.** It asks for a view of every publisher the operator follows, on a fixture
+that follows nobody, so the loop runs zero times and the call under test is never made; it then
+checks that three field names are present in the reply. Under the deliberate breakage it stays
+green, which is the measurement, and it is a better example of the point than an absence would
+have been: **a test can name the thing it does not exercise**, and a file-name search for coverage
+will find it and stop looking.
 
 ⭐ **The reason it stayed invisible is worth more than the fix.** The slower complete method exists
 precisely so a publisher cannot lie by omission about their own posts — so it is built to survive a

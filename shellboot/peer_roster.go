@@ -5,8 +5,9 @@
 // write sides; this file holds the path scheme + entity-type
 // constant + the serialization helpers.
 //
-// Convention matches godot's `app/godot-workbench/system/peers/{pid}`
-// pattern — same shape, app-id is the only difference.
+// The PATH convention matches godot's `app/godot-workbench/system/peers/{pid}`
+// — same shape, app-id is the only difference. The TYPE no longer does, and
+// [RosterEntryType] carries why.
 //
 // Moved from avalonia/bridge/roster.go into shellboot as part of the
 // Phase I §12 refactor (peer manager logic out of the renderer
@@ -24,11 +25,53 @@ import (
 )
 
 const (
-	// RosterEntryType is the canonical entity type for roster
-	// entries. Matches godot's `app/state/peer_roster_entry`
-	// (no `_godot` suffix — that was preserved upstream for
-	// cross-impl schema-agreement-pending reasons we don't share).
-	RosterEntryType = "app/state/peer_roster_entry"
+	// RosterEntryType is the entity type written into a roster entry's
+	// `entity_type` field.
+	//
+	// # It was `app/state/peer_roster_entry` until 2026-09-16, and both
+	// halves of that string were wrong (`A-44`, ours, volunteered)
+	//
+	// **The namespace.** `GUIDE-ENTITY-WORKBENCH-APP` §4.1.1 makes
+	// `app/state/{type}` the CROSS-IMPL PORTABLE namespace — *"consumers
+	// MUST follow the canonical schema"* — and `app/{app-id}/{type}` the
+	// app-internal one, whose schema is the implementing app's own
+	// contract. This type was minted into the portable namespace to match
+	// ONE other implementation, which the old comment here said outright.
+	// It is not portable and this file already knew it: `StoragePath` is
+	// documented three declarations down as workbench-go-specific. §4.1.1
+	// carries a promotion ladder — app-owned first, promoted to
+	// `app/state/` *when it proves convergeable* — and minting straight
+	// into `app/state/` runs it backwards. `entity-browser-rust` put the
+	// same noun at `app/entity-browser/peer-roster-entry`, which is what
+	// the ladder prescribes; being in the app-owned namespace beside them
+	// is what makes a later promotion a real decision rather than a
+	// collision nobody agreed to.
+	//
+	// **The casing.** `STYLE-NAMING-CONVENTIONS` §3: an entity-type path
+	// segment is kebab, and the rule is **gated (high precision): snake =
+	// violation.** Snake is the data-structure-key axis and the `cbor:`
+	// tags below are correctly on it. This constant was the only instance
+	// in the tree — measured, and `TestEntityTypeLiteralsAreKebabCase` is
+	// now the gate, because arch's gate reads `specs/` and `guides/` and
+	// cannot see a string literal in anybody's source.
+	//
+	// # Why no migration code
+	//
+	// The read side does not consult the type: [ListRosterEntries] lists
+	// the path prefix and decodes, so an entry written under the old tag
+	// loads unchanged. `PeerManager.RestoreFromRoster` calls `Create`,
+	// which calls [WriteRosterEntry] — so every entry is rewritten with
+	// the new tag on the first launch after this change, with no boot-time
+	// migration to own. (Checked, not assumed: the old string appears
+	// nowhere else in this tree.)
+	//
+	// The app-id here is a literal and not `PeerManager.appID`. That
+	// parameter selects the INSTANCE PATH, which §4.1.1's disambiguation
+	// note keeps deliberately separate from the type name; the schema is
+	// shellboot's one contract, and deriving the type from the path would
+	// give two frontends two names for it. Both frontends pass
+	// `entity-workbench` today, so nothing is papered over by saying so.
+	RosterEntryType = "app/entity-workbench/peer-roster-entry"
 )
 
 // RosterEntry is the on-tree shape for one peer in the roster.

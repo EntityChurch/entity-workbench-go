@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"go.entitychurch.org/entity-core-go/core/crypto"
 	"go.entitychurch.org/entity-core-go/core/hash"
 	"go.entitychurch.org/entity-core-go/core/store"
 	"go.entitychurch.org/entity-core-go/core/tree"
@@ -64,9 +63,18 @@ type MintOpts struct {
 
 	// AllowWholePeer is the operator's explicit acknowledgement that
 	// this publish commits to `system/` keys as well as application
-	// ones. See [disclosureAcrossSystem] — absent it, a prefix that
-	// spans the boundary is REFUSED rather than published quietly.
+	// ones. See [disclosureAcrossSystem] — absent it, a SCANNED prefix
+	// that spans the boundary is REFUSED rather than published quietly.
+	//
+	// It has no meaning for a curated [Content] set and is not consulted
+	// for one; see [disclosureAcrossSystem] for why the guard is about
+	// scanning rather than about the prefix's spelling.
 	AllowWholePeer bool
+
+	// Content chooses WHICH bindings under Prefix the root commits to.
+	// nil is the prefix scan — see content_set.go, and `A-38`'s ruling
+	// (D) for why a prefix is a bound rather than a content set.
+	Content *ContentSet
 }
 
 // MintRoot performs the publishing act and stops there: build the trie
@@ -84,7 +92,7 @@ type MintOpts struct {
 // [Publish] calls the same two helpers in the same order and then emits
 // the static corridor on top.
 func MintRoot(ctx context.Context, opts MintOpts) (SignedRoot, error) {
-	entries, err := prepareMint(opts.Peer, opts.Prefix, opts.AllowWholePeer)
+	entries, err := prepareMint(opts.Peer, opts.Prefix, opts.AllowWholePeer, opts.Content)
 	if err != nil {
 		return SignedRoot{}, err
 	}
@@ -92,12 +100,21 @@ func MintRoot(ctx context.Context, opts MintOpts) (SignedRoot, error) {
 	if at.IsZero() {
 		at = time.Now()
 	}
-	signed, err := mintSignedRoot(opts.Peer, opts.Prefix, at)
+	signed, err := mintSignedRoot(opts.Peer, opts.Prefix, entries, at)
 	if err != nil {
 		return SignedRoot{}, err
 	}
 	signed.Bindings = len(entries)
+	signed.ContentSet = contentSetName(opts.Content)
 	return signed, nil
+}
+
+// contentSetName is "" for the prefix scan and the set's name otherwise.
+func contentSetName(set *ContentSet) string {
+	if set == nil {
+		return ""
+	}
+	return set.Name
 }
 
 // RootNow computes what a root over `prefix` WOULD commit to if it were
@@ -122,12 +139,25 @@ func MintRoot(ctx context.Context, opts MintOpts) (SignedRoot, error) {
 // It is a pure read — the same call [mintSignedRoot] makes — so a status
 // surface may run it on a refresh where minting would be a publisher
 // claiming a release every time somebody looks.
-func RootNow(ap *entitysdk.AppPeer, prefix string) (hash.Hash, error) {
+// ⚠ **`content` MUST be the set the live root was minted with**, or this
+// answers a question about a different publish. A curated root and a scanned
+// root over the same prefix have different hashes by design, so re-deriving
+// with the wrong one reports *"your root is behind"* on a root that is exactly
+// current — permanently, since nothing the operator does can make the two
+// agree. That is a standing false line in a problems list, which is how an
+// operator learns to stop reading the list. The published root does **not**
+// record how its set was chosen, so the caller has to; `shellcmd` keeps it in
+// [ShellWorkspace.currentPublishContentSet].
+func RootNow(ap *entitysdk.AppPeer, prefix string, content *ContentSet) (hash.Hash, error) {
 	if ap == nil {
 		return hash.Hash{}, fmt.Errorf("publish: Peer required")
 	}
-	root, err := tree.BuildTrieForPrefix(ap.RawContentStore(), ap.RawLocationIndex(),
-		crypto.PeerID(ap.PeerID()), prefix)
+	entries := entitysdk.ListEntriesSorted(ap.RawLocationIndex(), prefix)
+	chosen, err := applyContentSet(ap, content, entries)
+	if err != nil {
+		return hash.Hash{}, err
+	}
+	root, err := tree.BuildTrie(ap.RawContentStore(), trieBindings(ap.PeerID(), prefix, chosen))
 	if err != nil {
 		return hash.Hash{}, fmt.Errorf("publish: build trie for prefix %q: %w", prefix, err)
 	}
@@ -177,7 +207,7 @@ func RootNow(ap *entitysdk.AppPeer, prefix string) (hash.Hash, error) {
 // different machine or a different store. Same discipline as
 // `fetch.NameSet.Diagnosis` and `TransportOptions.Offered`: when you
 // refuse, say what was on offer.
-func prepareMint(peer *entitysdk.AppPeer, prefix string, allowWholePeer bool) ([]store.LocationEntry, error) {
+func prepareMint(peer *entitysdk.AppPeer, prefix string, allowWholePeer bool, content *ContentSet) ([]store.LocationEntry, error) {
 	if peer == nil {
 		return nil, fmt.Errorf("publish: Peer required")
 	}
@@ -190,12 +220,43 @@ func prepareMint(peer *entitysdk.AppPeer, prefix string, allowWholePeer bool) ([
 				"wrong question of. %s",
 			prefix, treeShape(peer))
 	}
-	if !allowWholePeer {
+
+	// THE DISCLOSURE GUARD IS ABOUT SCANNING, NOT ABOUT THE PREFIX, and
+	// `A-38`'s ruling is what makes the distinction expressible. It exists
+	// because deriving the content set from the prefix SWEEPS ALONG every
+	// key the operator did not name — which for a peer-root publish is
+	// their mount paths, their peers' addresses and their documents. A
+	// curated set sweeps nothing: every member is there because the
+	// selector named it, so there is no second category to disclose and
+	// `-whole-peer` would be asking an operator to acknowledge a cost the
+	// ruling removed.
+	//
+	// Ordered before the selector on purpose: the guard reads the SCAN,
+	// because the scan is the thing it is about.
+	if !allowWholePeer && content == nil {
 		if d := disclosureAcrossSystem(peer, entries); d != "" {
 			return nil, fmt.Errorf("publish: %s", d)
 		}
 	}
-	return entries, nil
+
+	chosen, err := applyContentSet(peer, content, entries)
+	if err != nil {
+		return nil, err
+	}
+	if len(chosen) == 0 {
+		// Same refusal as the empty prefix and for the identical reason —
+		// a root over nothing answers "absent" to every key under a valid
+		// signature. Reached by a different route: the prefix holds
+		// bindings and the set chose none of them, which on a feed means
+		// the operator has not posted yet.
+		return nil, fmt.Errorf(
+			"publish: prefix %q holds %d bindings and the %s content set selected none of them, "+
+				"so there is nothing to publish — signing a root over an empty set would emit a "+
+				"valid, correctly-signed origin that answers \"absent\" to every key, which a "+
+				"consumer cannot tell from one it asked the wrong question of",
+			prefix, len(entries), content.Name)
+	}
+	return chosen, nil
 }
 
 // disclosureAcrossSystem returns a refusal when a prefix spans the

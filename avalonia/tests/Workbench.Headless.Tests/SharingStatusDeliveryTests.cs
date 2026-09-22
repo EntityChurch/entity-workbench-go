@@ -310,16 +310,12 @@ public sealed class SharingStatusDeliveryTests
 
     // Copied deliberately rather than shared — see SharingStatusPanelTests
     // for why this is the geometry check that survived two wrong versions.
-    private static bool IsWithinAllClippingAncestors(Control control)
-    {
-        foreach (var a in control.GetVisualAncestors().OfType<Control>())
-        {
-            if (!a.ClipToBounds) continue;
-            var inA = control.TranslatePoint(new Point(0, 0), a);
-            if (!inA.HasValue) return false;
-            if (inA.Value.Y < -0.5) return false;
-            if (inA.Value.Y + control.Bounds.Height > a.Bounds.Height + 0.5) return false;
-        }
-        return true;
-    }
+    // Delegates to `Reachable`, which is the ONE copy. This was three
+    // byte-identical private methods sharing one blind spot: a control below
+    // the fold of a working ScrollViewer is one scroll away, not unreachable,
+    // and reporting it as unreachable turned two correct panels red on
+    // 2026-09-16. See `Reachable.cs` for the distinction and why it is drawn
+    // narrowly.
+    private static bool IsWithinAllClippingAncestors(Control control) =>
+        Reachable.IsWithinAllClippingAncestors(control);
 }

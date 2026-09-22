@@ -171,6 +171,38 @@ type statusFolderDTO struct {
 	// property three ways.
 	RollbackWitnessNote string `json:"rollbackWitnessNote"`
 
+	// OwnerRuleKnown / OwnerConflictPolicy are AP94's answer to *what
+	// happens when their change lands on my edit* — and until 2026-09-16
+	// both were computed on every reading and declared by nothing here,
+	// so `System.Text.Json` dropped them in silence (AP49). The rule was
+	// reachable from `entity-shell` and from no pixel, which is the same
+	// D23 gap the delivery section was opened for.
+	//
+	// **The two must not collapse.** `OwnerConflictPolicy` is empty
+	// exactly when `OwnerRuleKnown` is false, and a renderer that prints
+	// a default there has turned *we have never read their rule* into
+	// *record* — the state in which a collision is HELD rather than
+	// resolved, i.e. the one an operator whose file has not arrived needs
+	// named. Carried as two fields for that reason and not as one string.
+	OwnerRuleKnown      bool   `json:"ownerRuleKnown"`
+	OwnerConflictPolicy string `json:"ownerConflictPolicy"`
+
+	// RuleSettableHere is whether THIS peer may change the rule, and it
+	// is deliberately its own field rather than the renderer reading
+	// `Local`.
+	//
+	// The two are the same predicate today — `OwnerOf(self) != self` is
+	// exactly `!IsLocal()` (`workbench/desired_state.go:402,525`) — and
+	// they are the same predicate for different REASONS. `Local` answers
+	// *who originated this folder*; this answers *will
+	// `SetFolderConflictPolicy` accept a write*. AP94 is the entry about
+	// those two questions having been conflated once already, at a cost
+	// of two peers holding different rules for one folder with neither
+	// able to notice. A renderer deciding it from `Local` is a second
+	// implementation of the verb's refusal condition, which is the thing
+	// `shellcmd/conflict_op.go` is the one writer of.
+	RuleSettableHere bool `json:"ruleSettableHere"`
+
 	// Problems is `FolderStatus.problems()` verbatim — the SAME sentences
 	// the shell prints and a reconcile pass produces.
 	//
@@ -398,6 +430,12 @@ func statusOutcomeToDTO(localPeerID, localAlias string, ws *shellcmd.ShellWorksp
 
 			RollbackWitness:     f.RollbackWitness,
 			RollbackWitnessNote: f.RollbackWitnessNote(),
+
+			OwnerRuleKnown:      f.OwnerRuleKnown,
+			OwnerConflictPolicy: f.OwnerConflictPolicy,
+			// `f.Local` is the same predicate; see the field's comment for
+			// why it is answered here rather than inferred over there.
+			RuleSettableHere: f.Local,
 			// One writer for the sentence (shellcmd/status.go), shared by
 			// the shell, the pass and this panel, so the three cannot
 			// describe the same fault differently.
@@ -681,6 +719,70 @@ func StatusResolveConflict(peerHandle C.int64_t, key *C.char, keep *C.char) (res
 	dto := statusOutcomeToDTO(hp.AppPeer.PeerID(), ws.Local.Alias, ws, snap)
 	dto.Actions = append(dto.Actions, out.Path+": "+out.Note)
 	return marshalReply(dto, "status resolve conflict")
+}
+
+// StatusSetConflictRule declares a folder's reconciliation rule and
+// returns the resulting reading.
+//
+// policy is "record" or "keep-both" and there is **no default at this
+// boundary**, for `StatusResolveConflict`'s reason: a panel that picked
+// silently would be choosing, on the operator's behalf, between *your
+// copy is replaced and recorded* and *this folder stops converging*.
+//
+// # It can REFUSE, and the refusal is the feature
+//
+// A shared folder is one subject and names ONE rule — the owner's
+// (AP94). `ShellWorkspace.SetFolderConflictPolicy` refuses on a folder
+// this peer does not own and names the machine to run it on; that
+// sentence is not re-worded here and must not be re-worded in the
+// renderer either. The panel hides the control on those rows
+// (`ruleSettableHere`), so reaching this refusal means the two
+// disagreed — which is worth surfacing rather than smoothing over.
+//
+// # A DECLARATION and nothing else
+//
+// The delivery handler reads the record when a collision happens, so
+// there is no substrate to reconcile and nothing to re-establish — no
+// re-handshake, unlike a policy change (AP63), and no pass. Writing the
+// rule anywhere but the declaration is how `unshare` once reversed
+// itself at the next launch.
+//
+//export StatusSetConflictRule
+func StatusSetConflictRule(peerHandle C.int64_t, folder *C.char, policy *C.char) (result *C.char) {
+	defer recoverToErrorEnvelope("StatusSetConflictRule", &result)
+	ws, hp, errEnv := shareWorkspace(peerHandle)
+	if errEnv != "" {
+		return C.CString(errEnv)
+	}
+	id := strings.TrimSpace(C.GoString(folder))
+	rule := strings.TrimSpace(C.GoString(policy))
+	out, err := ws.SetFolderConflictPolicy(id, rule)
+	if err != nil {
+		return marshalReply(statusRenderDTO{Er: err.Error()}, "status set conflict rule")
+	}
+
+	// Read afterwards so the table and the note come from one reading —
+	// returning only the note would leave the old rule on screen until
+	// something else refreshed, which reads as the control having done
+	// nothing.
+	snap, err := ws.StatusSnapshot()
+	if err != nil {
+		return marshalReply(statusRenderDTO{Er: err.Error()}, "status set conflict rule")
+	}
+	dto := statusOutcomeToDTO(hp.AppPeer.PeerID(), ws.Local.Alias, ws, snap)
+
+	// **Says when nothing moved.** Setting the rule a folder already has
+	// is a no-op the verb reports honestly (`Changed`), and an action
+	// line claiming a change either way would be the surface describing
+	// its own mode rather than what happened.
+	if out.Changed {
+		dto.Actions = append(dto.Actions,
+			out.Label+": conflicts now "+out.Policy+" (was "+out.Previous+") — "+out.Caveat)
+	} else {
+		dto.Actions = append(dto.Actions,
+			out.Label+": already set to "+out.Policy+", nothing changed")
+	}
+	return marshalReply(dto, "status set conflict rule")
 }
 
 // StatusPauseDevice pauses or resumes a declared peer.

@@ -105,6 +105,24 @@ type PublishRequest struct {
 
 	// At pins `published_at`. Zero means now.
 	At time.Time
+
+	// Feed asks for `A-38` ruling (D)'s binding set: publish at the PEER
+	// ROOT — the only prefix containing both `app/feed/…` and
+	// `system/signature/…`, which is what `A-36` requires for a static
+	// reader to attribute an entry — and commit to exactly the entries,
+	// the index head and pages, and the signature held for each entry.
+	//
+	// It implies the peer-root prefix and does NOT imply AllowWholePeer:
+	// the acknowledgement exists for the keys a prefix SCAN sweeps along,
+	// and a curated set sweeps none. Measured on this tree's own fixture,
+	// 9 committed keys where the scan commits to 399.
+	//
+	// A separate field from Prefix for the reason AllowWholePeer is one:
+	// what an operator is asking for is *publish my feed*, and the peer
+	// root is a mechanism that would otherwise have to be typed — and
+	// typing it would ask for the scan, which is the disclosure this is
+	// the fix for.
+	Feed bool
 }
 
 // PublicGrantState is what the `default` policy row says right now.
@@ -184,6 +202,18 @@ type PublishOutcome struct {
 
 	// Bindings is how many tree keys the signed root commits to.
 	Bindings int
+
+	// ContentSet is how those keys were chosen —
+	// [workbench.PublishContentScan] or [workbench.PublishContentFeed].
+	//
+	// **A surface MUST render this**, because after `A-38` the prefix no
+	// longer implies the set: a peer-root publish is 9 keys or 399
+	// depending on a choice the prefix does not record, and the
+	// difference is whether an operator's folder paths and their peers'
+	// addresses are in the artifact. `Prefix` and `Bindings` together
+	// still do not say it — 9 under `/` is only legible if you already
+	// know a curated set exists.
+	ContentSet string
 
 	// NarrowedFrom is the prefix the PREVIOUS published root committed
 	// to, set only when this publish stopped committing to part of it.
@@ -288,8 +318,30 @@ func (ws *ShellWorkspace) Publish(ctx context.Context, req PublishRequest) (Publ
 				"about who may read this site and there is no sensible order to apply them in")
 	}
 	ap := ws.Local.Peer
+
+	// `A-38` (D): the feed set implies the peer-root prefix, because the
+	// prefix is the BOUND and a `system/signature/…` key is only
+	// expressible as a relative_key under a prefix that contains it.
+	// Refuse a contradicting prefix rather than silently widening it — an
+	// operator who typed both told us two things and we cannot do both.
+	var (
+		content     *publish.ContentSet
+		contentName = workbench.PublishContentScan
+	)
 	prefix := strings.TrimSpace(req.Prefix)
-	if prefix == "" {
+	if req.Feed {
+		if prefix != "" && strings.Trim(prefix, "/") != "" {
+			return PublishOutcome{}, fmt.Errorf(
+				"publish: -feed publishes at the peer root and -prefix %q names something "+
+					"narrower — a feed's per-entry signatures live at `system/signature/…` and "+
+					"`app/feed/` does not contain them, so a narrower prefix cannot commit to "+
+					"the evidence that attributes an entry. Drop -prefix, or drop -feed and "+
+					"publish the narrow set knowing a static reader cannot attribute it", prefix)
+		}
+		prefix = ""
+		content = publish.FeedContent()
+		contentName = workbench.PublishContentFeed
+	} else if prefix == "" {
 		prefix = ws.currentPublishPrefix(ctx)
 	}
 	// Both grant refusals, before anything durable happens. See the doc
@@ -327,24 +379,39 @@ func (ws *ShellWorkspace) Publish(ctx context.Context, req PublishRequest) (Publ
 			OriginURL:      req.OriginURL,
 			At:             req.At,
 			AllowWholePeer: req.AllowWholePeer,
+			Content:        content,
 		})
 		signed = static.SignedRoot
 	} else {
 		signed, err = publish.MintRoot(ctx, publish.MintOpts{
-			Peer: ap, Prefix: prefix, At: req.At, AllowWholePeer: req.AllowWholePeer,
+			Peer: ap, Prefix: prefix, At: req.At,
+			AllowWholePeer: req.AllowWholePeer, Content: content,
 		})
 	}
 	if err != nil {
 		return PublishOutcome{}, err
 	}
 
+	// Record WHICH set produced the live root, after the mint and before
+	// anything can fail — see `workbench.RecordPublishContentSet`. A root
+	// whose set is unrecorded reads as a scan, which for a curated root
+	// makes `feed` report it stale forever, so the window between the two
+	// writes is the one thing to keep short rather than conditional.
+	if recErr := workbench.RecordPublishContentSet(ap.Store(), contentName); recErr != nil {
+		return PublishOutcome{}, fmt.Errorf(
+			"publish: the root was minted but recording which binding set produced it failed: %w — "+
+				"re-run `publish` to restore the record; until then this peer will report its "+
+				"root as behind", recErr)
+	}
+
 	out := PublishOutcome{
-		PeerID:   ap.PeerID(),
-		Prefix:   signed.Data.Prefix,
-		Seq:      signed.Data.Seq,
-		RootHash: signed.Data.RootHash.String(),
-		Bindings: signed.Bindings,
-		Minted:   true,
+		PeerID:     ap.PeerID(),
+		Prefix:     signed.Data.Prefix,
+		Seq:        signed.Data.Seq,
+		RootHash:   signed.Data.RootHash.String(),
+		Bindings:   signed.Bindings,
+		ContentSet: contentName,
+		Minted:     true,
 	}
 	if narrowedFrom(signed.PriorPrefix, signed.Data.Prefix) {
 		out.NarrowedFrom = signed.PriorPrefix
@@ -403,12 +470,19 @@ func (ws *ShellWorkspace) PublishStatus(ctx context.Context) (PublishOutcome, er
 		out.Prefix = pr.Data.Prefix
 		out.Seq = pr.Data.Seq
 		out.RootHash = pr.Data.RootHash.String()
+		out.ContentSet = workbench.ReadPublishContentSet(ap.Store())
 		// Re-derived rather than remembered: the binding count is a fact
 		// about the tree NOW, and the interesting case is precisely when
 		// it has moved since the publish — that is an operator who has
 		// added pages and not re-published.
-		out.Bindings = len(entitysdk.ListEntriesSorted(
-			ap.RawLocationIndex(), strings.TrimPrefix(pr.Data.Prefix, "/")))
+		//
+		// **Through the recorded content set**, or a curated root reports
+		// the count of what its prefix BOUNDS rather than what it commits
+		// to — 399 against the 9 the publish printed, on the same root,
+		// with nothing on screen to explain the difference. The number
+		// would not merely be wrong, it would be the exact number this
+		// ruling exists to stop being true.
+		out.Bindings = publishBindingCount(ap, strings.TrimPrefix(pr.Data.Prefix, "/"), out.ContentSet)
 	} else {
 		// The headline already says nothing is published; what this adds
 		// is WHY, which is the part that separates "never published" from
@@ -717,4 +791,45 @@ func publishProblems(out PublishOutcome) []string {
 				"the origin before a reader can fetch anything from there", out.StaticDir))
 	}
 	return probs
+}
+
+// publishContentSetNamed turns a stored content-set name into the selector
+// that produces it.
+//
+// The one place the mapping lives, in both directions: `Publish` writes the
+// name it minted with and every re-derivation reads it back through here. Two
+// copies of this switch is how a curated root comes to be re-derived as a scan
+// on one surface and not another — and the symptom is a staleness line that
+// disagrees between `feed` and `publish status`, which reads as a bug in
+// whichever one the operator checked second.
+func publishContentSetNamed(name string) *publish.ContentSet {
+	switch name {
+	case workbench.PublishContentFeed:
+		return publish.FeedContent()
+	default:
+		return nil
+	}
+}
+
+// publishBindingCount is how many keys a root over this prefix, minted with
+// this content set, would commit to right now.
+//
+// The scan case is a `ListEntriesSorted` and nothing else, which is what this
+// was before `A-38`. The curated case has to run the selector, because the
+// whole point of a curated set is that its size is not a function of its
+// prefix.
+func publishBindingCount(ap *entitysdk.AppPeer, prefix, contentSet string) int {
+	entries := entitysdk.ListEntriesSorted(ap.RawLocationIndex(), prefix)
+	set := publishContentSetNamed(contentSet)
+	if set == nil || set.Select == nil {
+		return len(entries)
+	}
+	chosen, err := set.Select(ap, entries)
+	if err != nil {
+		// Report the bound rather than zero. A selector that errors here
+		// is a bug, and "0 keys" would read as an empty publish — the one
+		// diagnosis this package works hardest to keep honest.
+		return len(entries)
+	}
+	return len(chosen)
 }

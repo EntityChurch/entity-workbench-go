@@ -727,6 +727,21 @@ public static class Bridge
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusResolveConflict", CharSet = CharSet.Ansi)]
     public static extern IntPtr StatusResolveConflict(long peerHandle, string key, string keep);
 
+    // Declare what happens when another peer's change lands on a file you
+    // edited: policy is "record" or "keep-both", with no default at this
+    // boundary for the reason above — the two outcomes differ in whether
+    // the folder keeps converging, which is not a choice to make silently.
+    //
+    // REFUSES on a folder this peer does not own. A shared folder names
+    // one rule and it is the owner's, so the Go side answers with the
+    // sentence naming the machine to run it on rather than writing a
+    // field nothing reads. Returns the StatusRender envelope, same as
+    // StatusResolveConflict and for the same reason.
+    //
+    // A declaration only: no dial, no re-handshake, no reconcile pass.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusSetConflictRule", CharSet = CharSet.Ansi)]
+    public static extern IntPtr StatusSetConflictRule(long peerHandle, string folderId, string policy);
+
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusPauseDevice", CharSet = CharSet.Ansi)]
     public static extern IntPtr StatusPauseDevice(long peerHandle, string peer, int paused);
 
@@ -767,11 +782,21 @@ public static class Bridge
     // new page would silently un-publish the site, which is a change to
     // who can read it made by a button that does not say so.
     //
+    // feed: non-zero asks for A-38 ruling (D)'s curated binding set —
+    // publish at the peer root, the only prefix containing both the feed
+    // and the `system/signature/…` keys that attribute an entry, and commit
+    // to exactly the entries, the index and each entry's signature.
+    //
+    // A SECOND PARAMETER and not a mode enum: "what does this root commit
+    // to" and "who may read it" are independent questions, and folding them
+    // together would make "publish my feed" also restate a disclosure
+    // decision — the mistake the tri-state above exists to avoid.
+    //
     // Walks the tree and, with a grant change, re-handshakes every
     // declared peer. Thread-pool worker, like StatusReconcile and for the
     // same AP31 reason.
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "PublishNow")]
-    public static extern IntPtr PublishNow(long peerHandle, int makePublic);
+    public static extern IntPtr PublishNow(long peerHandle, int makePublic, int feed);
 
     // --- Feeds: following, reading a timeline, resolving a reference ------
     //
@@ -793,6 +818,15 @@ public static class Bridge
     //
     // `advanced` in the reply means a position MOVED, not that the
     // catch-up entry point was the one called.
+    //   FeedOwnRender       reads THIS peer's OWN feed and whether anyone
+    //                       else can read it. Dials nobody, mints nothing.
+    //                       Safe on a wake — and note it deliberately does
+    //                       not publish: a surface that refreshed by
+    //                       minting would bump `seq` every time somebody
+    //                       looked at it. The act is PublishNow(…, feed: 1).
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FeedOwnRender")]
+    public static extern IntPtr FeedOwnRender(long peerHandle);
+
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FeedFollowsRender")]
     public static extern IntPtr FeedFollowsRender(long peerHandle);
 

@@ -37,7 +37,7 @@ D12–D27 here are ours, earned on the eight crash-hunt commits, two feedback ep
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP108, and the promotion
+  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP113, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -640,7 +640,7 @@ one — name the recurring cycle first, then let each step own one lever of it.
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
 - The project measures everything against the **27 disciplines (D1–D27)**, ten review
-  questions, and anti-pattern catalog (AP1–AP108) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+  questions, and anti-pattern catalog (AP1–AP113) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A COPY OF A LIVE SQLITE STORE IS NOT THE STORE, AND THE MISSING WRITES READ AS ZERO ROWS**
   (AP76). File-backed `SqliteStore` opens **WAL** (`core/store/sqlite.go`, `buildSqliteDSN`
   defaults `JournalMode` to `"WAL"`), so everything since the last checkpoint is in the `-wal`
@@ -1322,8 +1322,38 @@ one — name the recurring cycle first, then let each step own one lever of it.
   a counter documented as *things this process acted on*. **And ask the owner by the CANONICAL
   folder id** (`FolderID(owner, root)`), not by our local record's id — they differ only for a
   pre-S6 record `MigrateFolderIDs` could not move, and there the local id asks for a path the owner
-  does not have, holding every collision **forever** while files keep flowing. Known gap, named
-  rather than left to be found: **there is no GUI control for the rule at all.**
+  does not have, holding every collision **forever** while files keep flowing.
+  ~~Known gap, named rather than left to be found: **there is no GUI control for the rule at
+  all.**~~ — **CLOSED 2026-09-16.** `StatusSetConflictRule` (bridge) + the *Sharing Status* panel's
+  per-folder rule line and toggle. It was `D23`/`AP57` in its purest form — `StatusResolveConflict`
+  was exported so *resolving* was reachable, `SetFolderConflictPolicy` was not, so the read-write
+  model wore a read-only surface — and `AP49` underneath it: `FolderStatus.OwnerRuleKnown` and
+  `OwnerConflictPolicy` were computed on **every** reading and declared by nothing in the DTO, so
+  `System.Text.Json` dropped both one field short of the screen.
+  Three rules the control obeys, each already earned elsewhere in this file.
+  **The control is offered on OWNED folders only** and the row otherwise names who owns it: the
+  verb refuses on a folder this peer does not own, so an enabled button would be a surface
+  accepting an instruction it cannot carry out, and a *disabled* one would read as a permission
+  fault. **`ruleSettableHere` is its own DTO field rather than the renderer reading `local`** —
+  the two are the same predicate (`OwnerOf(self) != self` ⟺ `!IsLocal()`) asked for different
+  reasons, and conflating those two questions is what `AP94` is the entry about.
+  **Three states, not two:** `OwnerConflictPolicy` is empty exactly when `OwnerRuleKnown` is false,
+  and a renderer defaulting that to `record` deletes the one sentence that explains the symptom —
+  while the rule is unread a collision is **HELD**, not applied. Gates:
+  `SharingStatusPanelTests.The_Conflict_Rule_Is_Settable_Only_On_A_Folder_This_Peer_Owns` and
+  `An_Unread_Owner_Rule_Says_Held_Rather_Than_Defaulting_To_Record`, each mutation-checked and each
+  caught by exactly the mutation it is named for; plus
+  `SyncPanelTwoPeerTests.The_Status_Envelope_Carries_The_Conflict_Rule_And_The_Export_Changes_It`,
+  which is the only arm that reads what Go actually emits — **both panel tests drive
+  `SeedFolderForTests` and would pass with all three fields renamed on the Go side**, rendering
+  *"rule not yet read"* for every folder forever. It runs on a **test-scoped** peer because the
+  fields are per folder and `BridgeFixture.DefaultPeer` is shared (`AP70`), and it carries the
+  anti-vacuity arm that sets the rule **back** — without it an export that writes `keep-both`
+  unconditionally passes, which is the one value that stops a folder converging.
+  ⚠ **The height floor moved 900 → 960 and that is not a fix.** The two earlier raises were new
+  *sections* — fixed chrome. This is a line, and sometimes a button, on every row of the **folders
+  list, which has no height bound**, so the growth is per folder and no constant bounds it. The
+  open item below is now one row of text closer to firing.
   **A path with no chain is NOT a conflict**, and that is the storm rule, not caution: recording
   is what the classification reads, so treating an absence as a collision conflicts a whole
   folder on the first pass after an upgrade. Carried on the record as `recoverable: false`.
@@ -1967,19 +1997,104 @@ entities):
   subtree and not the universal tree. We made a negative claim about the corpus on recall — the
   rule this file already states about our own tree, one level out. `PublicSiteGrants`'s
   universal-tree refusal is confirmed correct and stays.
-  ⛔ **`A-36` IS RULED AND THE FIX IS BUILT, MEASURED AND DELIBERATELY NOT SHIPPED — read `A-38`
-  before you ship it.** Publishing over the peer root does put every signature in the committed key
-  set (`publish/a36_peer_root_probe_test.go`, with `FEED-14`'s negative arm as its anti-vacuity
-  half). It also moves the committed set from **4 keys to 386** and the static emit from **7
-  entities to 400 across 379 paths**, and the upload directory then contains an operator's folder
-  path, another peer's LAN address and the body of a document from a folder nobody shared. **The
-  ruling answers the objection we FILED, which was about the grant; the obligation is about the
-  STATIC road and the static road has no grant** — there the disclosure control is the published
-  prefix, which is the thing the fix moves (AP103). ⭐ The structural statement: **`system/signature/`
-  is kernel-placed, so a root committing to ONE contiguous prefix can never commit to an artifact
-  *and* its evidence** without also containing everything between them — for a feed, `app/` to
-  `system/`, i.e. the whole peer. Filed as `A-38` in `ROUTING-2026-09-15-b-…`; **`entity-browser-rust`
-  is waiting on it**, and the corridor fixture is cuttable both ways meanwhile.
+  ✅ **`A-36` AND `A-38` ARE BOTH RULED AND SHIPPED (2026-09-16) — `publish -feed`.** Publishing
+  over the peer root does put every signature in the committed key set
+  (`publish/a36_peer_root_probe_test.go`, with `FEED-14`'s negative arm as its anti-vacuity half).
+  It also moved the committed set from **4 keys to 386** and the static emit from **7 entities to
+  400 across 379 paths**, putting an operator's folder path, another peer's LAN address and the body
+  of a document from a folder nobody shared into the upload directory — so we filed `A-38` offering
+  three answers and did not ship.
+  ⭐ **Arch ruled NONE of the three, and the correction is the part to carry: all three rested on
+  the premise that widening the `prefix` widens what is PUBLISHED, and `EXTENSION-TREE` §3.3a denies
+  it three separate times.** The prefix *"bounds the publication's scope; it is NOT a completeness
+  claim"*; a publisher *"MAY declare `/{peer_id}/` and publish a small subset"*; and the
+  negative-scoping `[MUST]` lets one *"serve different subsets to different audiences from the same
+  prefix"*. A completeness `[MUST]` that would have made our premise true landed in v4.1 and was
+  **withdrawn in full.** ⇒ **Ruling (D): move the PREFIX, do not move the CONTENT.** The 4→386 was
+  never a cost of the ruling; it was the cost of **deriving the content set from the prefix**.
+  Measured after: **9 committed keys against the 399 the peer root bounds** on the gate's fixture,
+  and **71 vs 438** on the 34-entry corridor cut — entries + their signatures + the index head and
+  pages, exactly.
+  ⭐ **Why it survived review, and this is the transferable half:** nothing in `publish/` ever chose
+  a binding set, because **the easy helper implements the reading the ruling rejects.**
+  `tree.BuildTrieForPrefix` takes a prefix and scans; `tree.BuildTrie(cs, bindings)` takes an
+  explicit list and is exported, and core-go's own publish path and `root_tracker` both reach for the
+  scanning form. Arch said so in our favour and routed it to `entity-core-go` themselves — *the
+  reference API makes the prefix the subset selector*. **When a defect is "we used the obvious
+  helper", the finding is about the helper.**
+  ⚠ **The structural statement we filed — `system/signature/` is kernel-placed, so a root committing
+  to ONE contiguous prefix can never commit to an artifact *and* its evidence without containing
+  everything between them — is TRUE about the PREFIX and was wrong about the PUBLISH.** Keeping it
+  visible because the error is the reusable one: *a bound and a content set are different things,
+  and we collapsed them because one function took only the bound.*
+  **Shape:** `publish.ContentSet` + `publish.FeedContent()` (`publish/content_set.go`); nil is the
+  scan and stays the default, because a site's prefix genuinely IS its content. `mintSignedRoot`
+  takes the binding set and never scans. **The disclosure guard moved with it** —
+  `disclosureAcrossSystem` is about SCANNING, not about the prefix's spelling, so `-feed` needs no
+  `-whole-peer`: the acknowledgement exists for keys a scan sweeps along and a curated set sweeps
+  none.
+  ⚠ **A ROOT DOES NOT RECORD HOW ITS SET WAS CHOSEN, so the publisher must**
+  (`workbench.PublishRecordPath`). A curated root and a scanned root over one prefix are two hashes
+  and nothing distinguishes them — correctly, since a consumer is forbidden to read the prefix as a
+  completeness claim. But `publish.RootNow` answers *"does what I published still describe what I
+  have"* by RE-DERIVING, and re-deriving with the wrong set reports **"your root is behind" on a
+  root that is exactly current, permanently**, which is the identical symptom the trimmed trailing
+  slash produced. **Absent means SCAN and that is a fact, not a default** — the curated mode did not
+  exist before 2026-09-16, so there was only one possible answer (`FolderData.Mode`'s shape).
+  Gates, and they are deliberately two because neither sees the other's failure:
+  `publish/a38_curated_content_set_test.go` is the **mechanism** — including the no-regression arm
+  asserted against `tree.BuildTrieForPrefix` itself, the function the publisher no longer calls, so
+  it cannot pass by agreeing with itself (AP96) — and `shellboot/feed_publish_curated_test.go` is the
+  **wiring**, because the mechanism gate builds its own content set and hands it in, which is AP108
+  exactly. Both mutation-checked: unshare the name→selector mapping and the wiring gate fires on
+  *"reported as behind immediately after `publish -feed`"*; make the selector re-scan and the
+  mechanism gate names the leaked declarations one by one.
+  ~~⚠ **Owed: no GUI control.**~~ — **CLOSED 2026-09-16.** `PublishNow(handle, public, feed)` +
+  `FeedOwnRender`, and the *Feed* panel's **your feed** section with a **Publish feed** button.
+  It was D23 at field granularity in the purest form measured here: the act that makes a feed
+  attributable reached a shell verb and nothing else, and `SignatureNote` — `FEED-R2`'s caveat,
+  the whole point — had never crossed the bridge in **any** form.
+  Four rules, each already earned elsewhere in this file and each paid for again.
+  **`feed` is a SECOND PARAMETER and not a mode enum**: *what does this root commit to* and *who
+  may read it* are independent questions, and folding them together makes "publish my feed" also
+  restate a disclosure decision — which is exactly what the `public` tri-state exists to avoid one
+  field over. **The publish is an ACT and the section is a READ**, two exports, because a surface
+  that refreshed by minting bumps `seq` every time somebody looks at it. **`contentSet` crosses
+  the bridge too and the Local Site panel renders it**, because `PublishOutcome.ContentSet` already
+  said a surface MUST — after `A-38` a peer-root root is 9 keys or 399 and the prefix does not
+  record which.
+  ⭐ **Three states, not two — and empty is a real answer on BOTH sides of the interesting line.**
+  `signatureNote` empty means *attributable* when a root is published and covers the feed, and it
+  is ALSO what an unpublished peer produces, because there is no root to be wrong about. A renderer
+  short-circuiting on the empty string therefore tells an operator who has published nothing that
+  every entry is attributable — the confident direction of wrong.
+  `An_Unpublished_Feed_Does_Not_Render_As_Attributable` drives all three arms through
+  `ApplyOwnFeedForTests` (the fixture peer is shared, so two of the three are unreachable from the
+  bridge — AP70), and `The_Own_Feed_Envelope_Does_Not_Drop_The_Attribution_Fields` asserts the
+  names against what Go actually emits. Both mutation-checked and each fired on exactly its own
+  mutation: renaming `signatureNote` on the Go side, and collapsing the renderer to two states.
+  ⛔ **The wake is the SHARING wake, so a post made from `entity-shell` while the panel is open
+  does not refresh it.** Entries live under `app/feed/`, which nothing here subscribes to — and by
+  this file's own rule (AP73) the honest fix is a subscription, not a refresh button, so the gap is
+  named in the panel and left open rather than papered over with a control that would read as one.
+  ⚠ **And `A-38`'s lesson arrived in `FeedPrivacyProblem` one function later than in the
+  publisher.** §2.4's *publishing a follow list is a separate, voluntary act* warning read the
+  published PREFIX — so a `publish -feed`, which declares the peer root and commits to nine keys,
+  **accused the operator of publishing their follow list in the same sentence that told them to fix
+  it by doing what they had just done.** It takes the content set now. *A warning that fires on the
+  one action that cannot cause the harm is worse than no warning*: it is the line an operator
+  learns to skip, on the surface where the real disclosure would appear. Gate:
+  `TestFeedPrivacyProblem_TheCuratedFeedSetIsSilentAtEveryPrefixTheScanWarnsAt`, whose scan arm is
+  the control — without it the test passes against a check that has been deleted rather than
+  narrowed.
+  ⚠ **Also corrected: `feedProblems` still named `publish -prefix app/feed/`**, which the ruling
+  made the *weaker* instruction — same entries, no signatures, so every entry stays unattributable
+  to a static reader while the next line the operator reads is the caveat saying so. AP80's shape:
+  guidance that survives the ruling that superseded it, still true-sounding, quietly costing the
+  reader the thing they came for.
+  ⚠ **Still owed: no way to POST from the GUI.** A composer is in flight between arch and
+  `entity-browser-rust`, so building one here unilaterally would be inventing the surface they are
+  ruling on; the panel publishes what the shell authored.
   Three rules the build earned. **POSTING IS NOT PUBLISHING and nothing in the substrate says so**
   — a published root commits to a trie root taken at mint time, so a post is invisible to every
   reader on both roads and looks exactly like not having posted; `publish.RootNow` is the check and
@@ -2025,6 +2140,101 @@ entities):
   `ValidateInNamespace` has callers now — the emitting side and the live gate's reading side — so
   one of §40's four ungated reader `[MUST]`s is gated and **the other three are not**. `feed` is
   **not a reader**: it reads this peer's own tree with this peer's own authority and says so.
+- **THE MIRROR VOCABULARY IS BUILT — `entitysdk/feed_mirror.go` — AND IT IS NOT A FEED FEATURE**
+  (2026-09-16). `app/feed/mirror` + `app/feed/mirror-page`, the subject's two arms, and §6.0.1's
+  coordinate. **`APP-CONVENTION-FEED` §6.0a's first line hands authority to `SYSTEM-DATA-EXCHANGE`
+  §2.5 and says the exchange wins on any disagreement** — a gatherer is any peer that republishes
+  what it obtained, and a wiki on this substrate would inherit gathering from the identical rule
+  with a different noun. What is feed-specific is the type tag.
+  ⭐ **The coordinate agrees with `entity-browser-rust` byte for byte, against a literal neither of
+  us computed with the function under test.** Their `the_live_coordinate_is_pinned_to_a_literal`
+  derives it with `hashlib` from the ECF framing rules; ours comes out of the kernel's
+  `revision.PrefixHash`. Two implementations, two languages, two kernels, one independently-derived
+  value ⇒ per [ADR-0012] this is **not** cohort-consistent. Vector:
+  `2AliceExamplePeerIdForKeyVectors` → `004bba2675…8856d`.
+  **Call the kernel, never restate the three lines.** §6.0.1 pins the live coordinate to
+  `EXTENSION-REVISION` §3.1's `prefix_hash` and `[v0.3]` adds a MUST NOT against implementing it as
+  a new derivation — it is **derive-to-meet**, so a drift fails *nothing*: the two peers write
+  mirrors at different keys and never meet. ⚠ It is pinned to the ECFv1-SHA-256 floor whatever the
+  peer's home format, and **core-go's own `PrefixHash` comment records that this differs from one
+  available reading of §3.1** and that nothing has failed only because it pins SHA-256 today. If
+  that function ever follows the home format, this coordinate MUST NOT follow it.
+  Four refusals, each structural rather than a validation: **no completeness field and there will
+  not be one** (`DX-R14` — the verifiable property is *omit but never substitute*); **`entries` is
+  always PINNED**, because a live reference mirrors whatever is at that address now, which is not a
+  mirror; **the derivation reads identifying fields only** (`FEED-R27`) — the Go stand-in for their
+  destructuring match is an **unkeyed composite literal of `EntityRef`** in the gate, which stops
+  compiling the moment the atom grows a field; and **`page` MUST equal its key**.
+  ⛔ **What is NOT built: the gathering loop, and the reason is `DX-R8`.** A gatherer's write is
+  §2.1's byte-preservation MUST, `AppPeer.PutEntity` is this repo's operation for it, and **it has
+  never been used against foreign bytes anywhere in this tree** — all twenty callers are in
+  `programs/`, writing their own state. §6.0a's real rules are properties of a SEQUENCE of writes
+  (gather order; a page sealed when its successor opens; a sealed page never rewritten) and
+  `ToEntity` sees one, so they belong to the loop and their gate is `DX-C8`. Also still missing:
+  `app/feed/collection`, the seventh type. **Measured 2026-09-16: FEED declares 7 types,
+  `entity-browser-rust` implements 7, we implement 6.**
+- **THE GATHERING LOOP IS BUILT — `workbench/feed_gather.go` — AND `DX-C1`'s THIRD HOP CARRIES
+  INTEGRITY WITHOUT AUTHORSHIP** (2026-09-16). `GatherTimeline` → `PlanMirror` → `WriteMirror`,
+  plus `LoadMirror` for the prior view. It is the first place in this tree where `PutEntity` meets
+  bytes we did not author — the audit had measured **twenty callers, all in `programs/`, all
+  writing their own state**, so §2.1's required operation existed and was unproven against foreign
+  input. Read through `BrowseModel`'s road (`feedConsumerFor`, shared with `ReadFeedOf`) because
+  **a gatherer that read the projection some other way would republish bytes nobody verified**, and
+  the artifact is durable, signed by us and indistinguishable from a good one (AP108, aimed at a
+  write).
+  Three outcomes per entry and **only one is a drop**: carried with its signature; **carried
+  WITHOUT one** (`DX-C5` — §2.3 rule 3 binds the *reader* to say unattributed and does not licence
+  a gatherer to drop, because **a mirror's only lie is omission**); refused, for an entry the reader
+  already rejected under `FEED-R1`, since republishing it propagates a forgery we had just finished
+  detecting. Foreign bytes land **under the AUTHOR's namespace** (`Carried{peer, key, entity}`,
+  the shape `entity-browser-rust` reached independently), never ours — `DX-R4`/`DX-C6` hold by
+  construction because every key is derived from an entry hash.
+  ⛔ **`AppPeer.PutEntity` COULD NOT EXPRESS THE WRITE, AND ITS ERROR NAMES THE WRONG MACHINE**
+  (AP112). `resolveDispatchTarget` routes by peer segment, so
+  `PutEntity("/{author}/app/feed/entries/{hex}", …)` resolves to `entity://{author}/system/tree`
+  and asks **the author** to accept a write; they refuse, correctly, with `403 capability_denied`,
+  and the sentence an operator reads is indistinguishable from *"that publisher revoked us"* when
+  the author is not involved at all. `AppPeer.PutObtainedEntity` pins the handler LOCAL and lets the
+  peer-qualified path travel as the resource; the capability is a parameter because V7 §1.4 layer 1
+  grants the authority and §PR-8 stops the owner self-cap from *saying* so
+  (`MintMirrorCapability`).
+  ⛔ **The finding, measured** (`publish/feed_gather_reach_test.go`, three peers, C a stranger to
+  A): view addressable at the derived coordinate ✓, 3 entries all referencing A ✓, B serves all 3
+  by hash ✓, **0 of 3 attributable by C** against a control of **3 of 3 read directly from A**.
+  §2.2 names `/{signer_peer_id}/system/signature/{hex}`; every reader resolves it relative to the
+  peer it is **reading from**, and those coincide on a direct read only. **B HOLDS the signature**
+  at the right key — nothing is missing, it is looked for in the wrong place. ⚠ **Ruled out and
+  measured so nobody reaches for it:** B's root commits to **0 keys under A's namespace**, which is
+  expected (a detached signature is read outside the committed set by design), so *"carry it in the
+  root"* is not the fix and is `A-38`(D) pushed past where moving a prefix can go. **Not patched
+  here** — it changes the verification path, and a second way to locate a signature is a second
+  trust argument. Asks `A-45`/`A-46`, packet `ROUTING-2026-09-16-c-…`.
+  ⭐ **The generalisation is bidirectional and is the half to carry: a peer-qualified path means
+  both *"ask A for x"* and *"my own copy of A's x"*, and republication is the first operation in
+  this cohort that needs the second on the READ and the WRITE side.** AP11 has covered the read
+  half since August; the exchange tier is what makes the other reading load-bearing.
+  ⭐ **AND OUR OWN LIVE GATE WAS VACUOUS, found by mutation, which is `DX-R9` happening inside the
+  gate written to honour it.** The pure gates use a fixture carrying a field this build does not
+  declare; the live one used the publisher's entries, which our own encoder authored — so
+  decode-and-re-encode is lossless over them and **a gatherer mutated to do exactly that passed the
+  whole live suite.** §2.1.1 says it in as many words (*a round trip through bytes your own encoder
+  produced proves nothing*) and `DX-C2a` is a separate conformance row precisely because this check
+  *"has a documented history of passing while measuring nothing"*. It has one more instance now.
+  Fixed by `undeclaredFieldEntry`, which asserts its own premise at the point of planting.
+  **Every gate here is mutation-checked and each fired on exactly its own mutation** (re-encode;
+  self-generated fixture; drop-the-unsigned; restamp-every-page; wall-clock stamp).
+  **`gathered_at` is the gathered set's HIGH-WATER MARK, not a clock** — §6 gives the field no
+  semantics, `entity-browser-rust` made the same call and routed the question, and we **match them
+  deliberately and say so** (`A-41`'s rule: one seat is the baseline either way). A wall clock moves
+  the entity, the trie and the signed root on every run, and invalidates every consumer's cached
+  copy of a view whose content did not change.
+  ⭐ **One place the substrate puts us ahead, and it is not better code:** their `--gather` passes
+  `&[]` for prior pages by stated bound, so a second gather re-pages from scratch and `FEED-R32`'s
+  **cross-run** sealed-page property is gated natively only. We write into a tree, so `LoadMirror`
+  reads the prior view back — second gather carries **0** entities and the head hash does not move.
+  **Still owed:** the pointer-body blob closure (an embed over EMBED §3's 16 KiB ceiling
+  republishes with its body unreachable — named in `MirrorPlan.Notes` at plan time rather than left
+  to be found), a thread gather, and `app/feed/collection`.
 - **A LIVE REFERENCE RESOLVES NOW, AND THE ABSENCE IT REPORTS HAS TWO CAUSES THAT MUST NOT BE ONE**
   (`workbench/ref_resolve.go`, verb `ref`, 2026-09-15). `APP-CONVENTION-FEED` §2.2.2 gives a live
   reference four outcomes and `FEED-R7` **[MUST]s that a reader be able to tell which one it got**.
@@ -2112,8 +2322,16 @@ entities):
   (including rule 6 driven end to end), both corridor ① cuts and `TestFeedLive_*`/`TestFeedPost_*`
   all stay **green**. Every one of them builds its own `fetch.Consumer` and calls `ReadFeed` with
   it, and **a test that constructs the reader's transport cannot fail on the transport the product
-  chooses.** Counted the other way, which is the cleaner evidence: before `aeacd56` **no test in
-  this tree named `Timeline` or the `timeline` verb at all.** Gates:
+  chooses.** ⚠ **This bullet said *"no test in this tree named `Timeline` at all"* and that is
+  FALSE — corrected 2026-09-16, and the true version is sharper.** One test named it
+  (`FeedPanelTests.cs:134`, `Bridge.FeedTimelineRead`) and **could not reach `ReadFeedOf`**: it
+  passes `Subject == ""` against `BridgeFixture.DefaultPeer`, which no test ever follows with, so
+  `FeedTimeline`'s target loop runs **zero** times and the call under test is never made — it
+  asserts three JSON key names, and it stays green under the mutation. So: **no GO test drove
+  `FeedTimeline` or the verb, and the one test that named it was structurally incapable of
+  exercising it.** *A test can NAME the thing it does not exercise*, so a grep for coverage finds
+  it and stops looking — which is why the enumeration was offered as evidence in the first place
+  and why it has to be read at the call and not at the name. Gates:
   `publish/feed_road_wiring_test.go` (the road, with the enumeration control arm that also proves
   the memoized consumer sees a re-minted root) and `shellboot/feed_timeline_test.go` (the verb,
   through `Dispatch`, asserting the discrimination reaches the **rendered** source block; plus the
@@ -2149,6 +2367,34 @@ entities):
   at the next save — those bytes are on real machines — and an element in neither shape is an
   **error**, never a zero-valued entry, because a silent zero puts a member nobody named into an
   audience.
+- **A RULE DESCRIBED AS "GATED" IS GATED OVER SOMEBODY'S CORPUS, AND OURS WAS NOT IT** (AP110,
+  `A-44`, fixed 2026-09-16 — volunteered against ourselves). `STYLE-NAMING-CONVENTIONS` §3 makes an
+  entity-type path segment **kebab** and §7 marks it *gated (high precision): snake = violation*.
+  The gate reads `specs/` and `guides/`. **Entity type names are string literals in source**, so
+  the rule was unenforced everywhere it is actually written, in every implementation at once — 15
+  in `entity-browser-rust`'s `app/state/*`, **1 in ours**, and neither seat could see its own.
+  Nobody re-asks whether the thing being scanned is the thing they are writing.
+  Ours was `app/state/peer_roster_entry` (`shellboot/peer_roster.go`), wrong twice: snake, and in
+  the namespace `GUIDE-ENTITY-WORKBENCH-APP` §4.1.1 makes **cross-impl portable canonical**
+  (*"consumers MUST follow the canonical schema"*) — minted there to match ONE other
+  implementation, which runs §4.1.1's ladder backwards (app-owned first; promote *when a type
+  proves convergeable*). **The file's own comment said both things outright**, and had been read
+  for months. It is `app/entity-workbench/peer-roster-entry` now, beside
+  `entity-browser-rust`'s `app/entity-browser/peer-roster-entry`, which is where the ladder can
+  actually run forward from.
+  **No migration code and that is checked, not assumed**: `ListRosterEntries` lists a path prefix
+  and decodes, so it never consults the type, and `RestoreFromRoster` → `Create` →
+  `WriteRosterEntry` rewrites every entry on the first launch after the change. The app-id in the
+  type is a **literal**, not `PeerManager.appID` — §4.1.1's disambiguation keeps the type-name
+  namespace separate from the instance-path one, the schema is shellboot's single contract, and
+  deriving it from the path would give two frontends two names for one shape.
+  Gate: `shellboot/naming_convention_test.go`, in `test-each` rather than in a lint nobody runs.
+  Two things it had to get right. **A source-walking gate has two ways to pass while measuring
+  nothing** — wrong tree, or a detector that flags nothing — so it asserts a floor on literals
+  scanned (474 at writing) *and* runs its detector over a synthetic violation. And **the one
+  character that makes the naming split legible on sight is what makes the scan precise: a slash
+  means the namespace axis**, so a `cbor:"peer_id"` tag cannot match and will never be "waived".
+  It excludes its own source, named, because its fixture must contain a violation.
 - **A SITE LIVES AT `/{peer}/sites/{id}/`, AND THE SDK WROTE IT SOMEWHERE ELSE FOR FOUR MONTHS**
   (AP96, fixed 2026-09-12). `APP-CONVENTION-SEMANTIC-CONTENT-SITE` v0.5 §2 **drops
   `content/sites/` by name** — `system/content/*` is the CONTENT extension's namespace, where the
@@ -2229,17 +2475,39 @@ entities):
   by a stranger. The second arm is the anti-vacuity one and it is not optional — without it the
   probe is satisfied by a receiver that refuses everything. It is also the only cross-peer test in
   this repo with **no `OpenAccess` anywhere**, which is the whole experiment (AP63).
-- **THE FOLDERS AND PEERS LISTS IN THE SHARING STATUS PANEL HAVE NO HEIGHT BOUND, AND THEY ARE THE
-  TWO THAT GROW WITH USE** (open, found 2026-09-12). Conflicts, delivery and recording are all
-  bounded; these two are not. Measured: **one extra line of text above the folders list pushed the
-  Remount button outside its clipping ancestor** and turned
-  `Remount_Is_Offered_Only_When_The_Loop_Is_Stuck_On_A_Missing_Mount` red. That is AP64's other
-  half — *never put an unbounded list in a docked region* — live, and one row of honest text away
-  from an operator meeting it. **Adding `MaxHeight` is not a one-line fix and was reverted:** a
-  bounded list becomes its own clipping ancestor, so that test's reachability predicate then reads
-  a scrolled-out row as unreachable, and the predicate has to learn the difference between *below
-  the fold of something scrollable* and *cannot be clicked at all*. The workaround in place is to
-  put standing facts in the section they belong to rather than on every row.
+- **THE FOLDERS AND PEERS LISTS IN THE SHARING STATUS PANEL HAVE NO HEIGHT BOUND** (found
+  2026-09-12; **the reachability half is CLOSED 2026-09-16 and the premise was partly wrong**).
+  Conflicts, delivery and recording are bounded; these two are not.
+  What the original entry recorded: one extra line of text above the folders list pushed the
+  Remount button outside its clipping ancestor and turned
+  `Remount_Is_Offered_Only_When_The_Loop_Is_Stuck_On_A_Missing_Mount` red — read as AP64's other
+  half, *never put an unbounded list in a docked region*, one row of honest text from an operator
+  meeting it. The conflict-rule line reproduced it exactly on 2026-09-16, and **both failures were
+  the TEST**.
+  ⭐ **`SharingStatusPanel` puts its whole body in a working `ScrollViewer`, on purpose, so an
+  under-estimated floor degrades to scrolling rather than to an unreachable control — and the
+  predicate could not see the difference.** `IsWithinAllClippingAncestors` was three byte-identical
+  private copies asking *is this inside every clipping ancestor's bounds*, which is right for AP64
+  (where the stack's scrollbar sat **inert** and there was nothing to scroll) and wrong in general.
+  One copy now: `avalonia/tests/…/Reachable.cs`.
+  ⭐ **The non-obvious half, and the first fix still failed on it.** Walking every ancestor is the
+  wrong shape: a control inside an UNSCROLLED viewport has a position that is only true while it is
+  unscrolled, so measuring it against ancestors above the viewport measures a position the operator
+  is about to change. Measured — a button 560px down a 600px stack in a 100px `ScrollViewer` passed
+  both scroll containers and was then rejected by the **`Window`**, `y=894` against `h=768`. So on
+  leaving a scrollable viewport the subject is **substituted**: the question becomes *is the
+  viewport reachable*. That also keeps AP64 caught at the right level — a panel whose own
+  `ScrollViewer` is clipped out of its slot reveals nothing by scrolling, and the substituted check
+  fails.
+  Gate on the gate: `ReachableTests`, whose **negative** arm (clipped, nothing to scroll) is the
+  one that matters — a widened predicate is one step from a predicate that never fails.
+  ⚠ **What is genuinely still open is smaller than the entry claimed.** Controls are reachable;
+  the lists are still unbounded, so a peer with many folders pushes the sections *below* them
+  behind a long scroll. That is ergonomic, not unreachable. **Adding `MaxHeight` remains not a
+  one-line change** — a bounded list becomes its own clipping ancestor and is NOT a scroll
+  container unless it is given one, so `Reachable` would correctly call its overflow unreachable.
+  The floor is 960 (900 → 960 with the conflict-rule line) to reduce scrolling in the common case,
+  which is comfort and not correctness.
 - **The consume side is a JOURNEY now, not an inspector** (2026-08-21). `fetch.Registry` +
   `workbench.BrowseModel` do `name → binding → transports → the target's signed root → walk →
   page`, and the three surfaces are `entity-shell`'s `registry` / `browse` / `open`, the Avalonia

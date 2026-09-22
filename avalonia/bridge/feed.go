@@ -210,6 +210,77 @@ type refDTO struct {
 	Er string `json:"error"`
 }
 
+// ownFeedDTO is THIS peer's own feed and whether anybody else can read it.
+//
+// # Why every reach field is carried separately
+//
+// `shellcmd.FeedReach` keeps three facts apart on purpose — unpublished,
+// published under a prefix that does not cover the feed, and
+// published-and-behind — because they are three different operator
+// actions and the middle one is the quietest: everything looks published
+// and the feed keys are not in the root. Collapsing them into one boolean
+// here would undo that at the last boundary, which is AP49's shape: the
+// model computes the distinction, the renderer never sees it, and the
+// screen says "published" for all three.
+//
+// **`signatureNote` is the field this whole export exists for.** It is
+// `FEED-R2`'s attribution caveat, and it had never crossed this boundary
+// in any form — so a GUI operator's feed could be unattributable to every
+// static reader with nothing on screen saying so, and no control to fix
+// it. That is D23 at field granularity.
+type ownFeedDTO struct {
+	PeerID string `json:"peerId"`
+
+	// Posted is whether an index head exists at all, and Entries counts
+	// what was read. FALSE with zero entries and TRUE with zero entries are
+	// different facts — *never posted* versus *a feed that is empty* — and
+	// only the first is a reason to say "nothing here yet".
+	Posted  bool `json:"posted"`
+	Entries int  `json:"entries"`
+	Pages   int  `json:"pages"`
+
+	// Truncated reports that [ownFeedLimit] stopped the read before the
+	// oldest page, so Entries is a floor and not a total.
+	Truncated bool `json:"truncated"`
+
+	// Published / Prefix / CoversFeed / Current are the three reach facts
+	// plus what the root commits to.
+	Published  bool   `json:"published"`
+	Prefix     string `json:"prefix"`
+	CoversFeed bool   `json:"coversFeed"`
+	Current    bool   `json:"current"`
+
+	// ContentSet is how the live root chose its bindings — "" for the scan,
+	// "feed" for the curated set. It is what decides the other two below,
+	// so it is carried rather than re-derived by the renderer.
+	ContentSet string `json:"contentSet"`
+
+	// SignatureNote is the attribution sentence, and EMPTY IS A REAL ANSWER:
+	// it means the published root commits to the entries' signatures and to
+	// little else, i.e. `A-38` ruling (D) has been applied. A renderer must
+	// not treat empty as "unknown".
+	SignatureNote string `json:"signatureNote"`
+
+	// PublicPresent / PublicOurs are the `default` policy row, reused from
+	// the publish surface so the two panels cannot describe one row
+	// differently. A feed nobody is authorized to read is published in the
+	// signing sense and readable by no stranger.
+	PublicPresent bool `json:"publicPresent"`
+	PublicOurs    bool `json:"publicOurs"`
+
+	Problems []string `json:"problems"`
+	Er       string   `json:"error"`
+}
+
+// ownFeedLimit bounds the read behind the count.
+//
+// The panel renders a summary rather than the entries, so this exists only
+// to keep an enormous feed from being decoded for a number. `Truncated` is
+// why the count is reported as "at least" past the limit rather than as a
+// total — a surface that renders a limited list as the whole feed is
+// telling the operator their older posts are gone.
+const ownFeedLimit = 500
+
 // --- per-peer browser -------------------------------------------------
 
 var (
@@ -247,6 +318,61 @@ func feedBrowserFor(peerHandle int64, ap *entitysdk.AppPeer) *wb.BrowseModel {
 const panelFeedReadTimeout = 120 * time.Second
 
 // --- exports ----------------------------------------------------------
+
+// FeedOwnRender reads THIS peer's own feed and whether anyone can read it.
+//
+// **A READ throughout.** It reads the local tree, rebuilds the trie over
+// the published prefix in memory and reads the policy table; it mints
+// nothing, writes nothing and dials nobody — which is what makes it safe
+// on a wake, unlike `FeedTimelineRead` one export up. The distinction is
+// the whole reason this file has three safety classes rather than one.
+//
+// It reads rather than publishes on purpose: `PublishStatus`'s rule is that
+// a status surface that refreshed by minting would bump `seq` on a timer,
+// which is a publisher claiming a new release every time somebody looks at
+// it. The act is `PublishNow(handle, 0, feed: 1)` and it is a button.
+//
+//export FeedOwnRender
+func FeedOwnRender(peerHandle C.int64_t) (result *C.char) {
+	defer recoverToErrorEnvelope("FeedOwnRender", &result)
+	ws, _, errEnv := shareWorkspace(peerHandle)
+	if errEnv != "" {
+		return C.CString(errEnv)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := ws.Feed(ctx, ownFeedLimit)
+	if err != nil {
+		return marshalReply(ownFeedDTO{Er: err.Error()}, "feed own")
+	}
+	return marshalReply(ownFeedToDTO(out), "feed own")
+}
+
+func ownFeedToDTO(out shellcmd.FeedOutcome) ownFeedDTO {
+	probs := out.Problems
+	if probs == nil {
+		// Never null across the boundary: a C# `List<string>?` that arrives
+		// null and one that arrives empty take different paths in the
+		// renderer, and the difference is not meaningful here.
+		probs = []string{}
+	}
+	return ownFeedDTO{
+		PeerID:        out.PeerID,
+		Posted:        out.Readout.Published,
+		Entries:       len(out.Readout.Entries),
+		Pages:         int(out.Readout.Pages),
+		Truncated:     out.Readout.Truncated,
+		Published:     out.Reach.Published,
+		Prefix:        out.Reach.Prefix,
+		CoversFeed:    out.Reach.CoversFeed,
+		Current:       out.Reach.Current,
+		ContentSet:    out.Reach.ContentSet,
+		SignatureNote: out.Reach.SignatureNote,
+		PublicPresent: out.Reach.Public.Present,
+		PublicOurs:    out.Reach.Public.Ours,
+		Problems:      probs,
+	}
+}
 
 // FeedFollowsRender lists this peer's follows. Dials nobody.
 //

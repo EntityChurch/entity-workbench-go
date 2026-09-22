@@ -10,6 +10,29 @@ package workbench
 // manifest stay back-compatible with pre-nesting readers (the
 // `children` key is emitted only when non-empty); same for section
 // headers (empty `target`).
+//
+// ⚠ THAT SENTENCE WAS FALSE ABOUT `nav` UNTIL 2026-09-16 and is kept
+// visible rather than quietly corrected: `Nav` was tagged `cbor:"nav"`
+// with no `omitempty`, directly under a comment saying optional fields
+// have it. A doc comment claiming a property is the sentence the next
+// reader checks the behaviour against, which is how this survived.
+//
+// ⭐ THESE TYPES ARE A SECOND COPY. `entitysdk.SiteManifest` /
+// `entitysdk.SitePage` / `entitysdk.NavItem` are the same three shapes,
+// and until the fix above the two copies encoded ONE authored manifest to
+// TWO different content hashes. Nothing compared them —
+// `fetch/site_entity_crossimpl_test.go`, the gate that proves our site
+// bytes match another implementation's, drives the **entitysdk** copy,
+// while every resolver in this package drives **this** one. That is AP96
+// exactly (the `SitesSubpath` divergence), at the struct instead of the
+// path constant, and the same answer applies: the two are held together by
+// `site_type_agreement_test.go`, which asserts BOTH against spelled-out
+// literal bytes so neither can pass by agreeing with itself.
+//
+// ⛔ Collapsing them to one definition is owed and deliberately NOT done
+// here — it touches every resolver, the console renderer and the bridge,
+// and it deserves its own change with its own gate rather than riding a
+// one-tag fix. Until then the agreement test is what stands in for it.
 
 // SiteManifestType is the type tag for site manifests.
 const SiteManifestType = "app/site-manifest"
@@ -40,10 +63,15 @@ type NavNode struct {
 //
 // Per v0.5 §4 the manifest holds NO page-collection field (the killed
 // pages field); discovery is lazy `.list`.
+// `nav` carries `omitempty` because SITE §4 declares it `? nav` and the
+// convention says title-only is conformant. Without it, decoding an ordinary
+// one-page manifest and re-encoding it ADDS `nav: []` — measured, 25 B -> 30 B,
+// a moved content hash on an entity carrying no unknown field at all. See
+// TestSiteTypeCopies_AgreeByteForByte, and AP111 in the charter.
 type SiteManifest struct {
 	SiteID string            `cbor:"site_id"`
 	Title  string            `cbor:"title"`
-	Nav    []NavNode         `cbor:"nav"`
+	Nav    []NavNode         `cbor:"nav,omitempty"`
 	Params map[string]string `cbor:"params,omitempty"`
 }
 

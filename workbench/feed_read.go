@@ -540,6 +540,25 @@ func advanceCursor(out *FeedRead, current uint64) {
 	}
 }
 
+// feedConsumerFor is the one road a feed is read over, extracted so that
+// **reading a feed and GATHERING one cannot take different transports**.
+//
+// `AP108` is the reason it is a function rather than two call sites: the
+// feed reader was once wired to the static road while every gate stayed
+// green, because each gate built its own consumer. A gatherer picking its
+// own road would be the same defect with a durable, signed artifact at the
+// end of it — [GatherTimeline] republishes what this returns.
+func (m *BrowseModel) feedConsumerFor(ctx context.Context, subject string) (*fetch.Consumer, error) {
+	if why, ok := m.canReachLive(subject); !ok {
+		return nil, fmt.Errorf("cannot read %s's feed: %s. Following requires no permission from "+
+			"them (§2.4) and it does require a route to them", subject, why)
+	}
+	return m.consumerForRoad(ctx, browseRoad{
+		Class:     fetch.ClassLive,
+		Candidate: fetch.TransportCandidate{Class: fetch.ClassLive, PeerID: subject},
+	})
+}
+
 // ReadFeedOf reads a subject's feed through the browser's road chooser,
 // consumer cache and `seq` floor.
 //
@@ -552,14 +571,7 @@ func (m *BrowseModel) ReadFeedOf(ctx context.Context, subject string, opts FeedR
 		return FeedRead{}, fmt.Errorf("no subject: a feed is read from a peer, and §2.4 makes the " +
 			"subject a namespace")
 	}
-	if why, ok := m.canReachLive(subject); !ok {
-		return FeedRead{}, fmt.Errorf("cannot read %s's feed: %s. Following requires no permission from "+
-			"them (§2.4) and it does require a route to them", subject, why)
-	}
-	c, err := m.consumerForRoad(ctx, browseRoad{
-		Class:     fetch.ClassLive,
-		Candidate: fetch.TransportCandidate{Class: fetch.ClassLive, PeerID: subject},
-	})
+	c, err := m.feedConsumerFor(ctx, subject)
 	if err != nil {
 		return FeedRead{}, err
 	}

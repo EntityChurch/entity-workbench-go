@@ -140,6 +140,12 @@ type Opts struct {
 	// tree, and this writes every byte of it into a directory whose
 	// purpose is to be uploaded.
 	AllowWholePeer bool
+
+	// Content is [MintOpts.Content], and this is the projection it was
+	// ruled for: `A-38`'s cost was never the signature reaching the
+	// committed set, it was the 393 other keys that came with it landing
+	// in an upload directory.
+	Content *ContentSet
 }
 
 // Result summarises what got emitted.
@@ -199,7 +205,12 @@ func Publish(ctx context.Context, opts Opts) (Result, error) {
 
 	// The empty-prefix refusal (AP97) lives in prepareMint, so the
 	// static and live projections cannot drift apart on it. See mint.go.
-	entries, err := prepareMint(opts.Peer, opts.Prefix, opts.AllowWholePeer)
+	// `entries` is the CURATED set when one was chosen, so everything
+	// downstream — the trie, the closure walk, the emitted content shards
+	// and the listings — is derived from the same set. That is what makes
+	// `A-38`'s ruling reach the upload directory rather than only the
+	// signature: the static projection's disclosure IS this list.
+	entries, err := prepareMint(opts.Peer, opts.Prefix, opts.AllowWholePeer, opts.Content)
 	if err != nil {
 		return Result{}, err
 	}
@@ -251,11 +262,12 @@ func Publish(ctx context.Context, opts Opts) (Result, error) {
 	if at.IsZero() {
 		at = time.Now()
 	}
-	signed, err := mintSignedRoot(opts.Peer, opts.Prefix, at)
+	signed, err := mintSignedRoot(opts.Peer, opts.Prefix, entries, at)
 	if err != nil {
 		return Result{}, err
 	}
 	signed.Bindings = len(entries)
+	signed.ContentSet = contentSetName(opts.Content)
 
 	closure, err := collectClosure(cs, entries, opts)
 	if err != nil {

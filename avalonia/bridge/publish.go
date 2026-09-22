@@ -52,6 +52,19 @@ type publishDTO struct {
 	RootHash string `json:"rootHash"`
 	Bindings int    `json:"bindings"`
 
+	// ContentSet is how those keys were CHOSEN — "" for the prefix scan,
+	// "feed" for `A-38` ruling (D)'s curated set.
+	//
+	// **`shellcmd.PublishOutcome.ContentSet` says a surface MUST render
+	// this, and until 2026-09-16 it did not cross the boundary at all.**
+	// After `A-38` the prefix no longer implies the set: a peer-root
+	// publish is 9 keys or 399 depending on a choice the prefix does not
+	// record, and the difference is whether an operator's folder paths and
+	// their peers' addresses are in the artifact. `prefix` and `bindings`
+	// together still do not say it — 9 under `/` is only legible if you
+	// already know a curated set exists.
+	ContentSet string `json:"contentSet"`
+
 	// Minted separates the act from the read. See the file header.
 	Minted bool `json:"minted"`
 
@@ -107,6 +120,7 @@ func publishOutcomeToDTO(out shellcmd.PublishOutcome) publishDTO {
 		Seq:           out.Seq,
 		RootHash:      out.RootHash,
 		Bindings:      out.Bindings,
+		ContentSet:    out.ContentSet,
 		Minted:        out.Minted,
 		NarrowedFrom:  out.NarrowedFrom,
 		PublicPresent: out.Public.Present,
@@ -162,8 +176,26 @@ func PublishRender(peerHandle C.int64_t) (result *C.char) {
 // un-publish their site — which is a change of who can read it, made by a
 // button that does not say so.
 //
+// `feed` non-zero asks for `A-38` ruling (D)'s curated binding set: publish
+// at the peer root — the only prefix containing both `app/feed/…` and the
+// `system/signature/…` keys that attribute an entry — and commit to exactly
+// the entries, the index head and pages, and each entry's signature.
+//
+// **It is a second parameter and not a mode enum**, because the two
+// questions are independent: *what does this root commit to* and *who may
+// read it*. Collapsing them would make "publish my feed" also restate a
+// disclosure decision, which is the same mistake the `public` tri-state
+// exists to avoid one field over.
+//
+// It does NOT imply the whole-peer disclosure acknowledgement, and that is
+// the ruling rather than a shortcut: the acknowledgement exists for the
+// keys a prefix SCAN sweeps along, and a curated set sweeps none. There is
+// therefore deliberately no way to ask for a peer-root SCAN from this
+// bridge — that is the `-whole-peer` flag on the shell verb, where an
+// operator types the acknowledgement out.
+//
 //export PublishNow
-func PublishNow(peerHandle C.int64_t, public C.int) (result *C.char) {
+func PublishNow(peerHandle C.int64_t, public C.int, feed C.int) (result *C.char) {
 	defer recoverToErrorEnvelope("PublishNow", &result)
 	ws, _, errEnv := shareWorkspace(peerHandle)
 	if errEnv != "" {
@@ -174,6 +206,7 @@ func PublishNow(peerHandle C.int64_t, public C.int) (result *C.char) {
 	out, err := ws.Publish(ctx, shellcmd.PublishRequest{
 		Public:   public > 0,
 		Unpublic: public < 0,
+		Feed:     feed != 0,
 	})
 	if err != nil {
 		return marshalReply(publishDTO{Er: err.Error()}, "publish now")

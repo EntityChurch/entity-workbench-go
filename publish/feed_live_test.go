@@ -146,6 +146,20 @@ func newLiveFeedPairUnder(t *testing.T, posts int, prefix string) liveFeedPair {
 // set and pass while reporting that nothing is exposed.
 func newLiveFeedPairSeeded(t *testing.T, posts int, prefix string, seed func(*entitysdk.AppPeer)) liveFeedPair {
 	t.Helper()
+	return newLiveFeedPairContent(t, posts, prefix, seed, nil)
+}
+
+// newLiveFeedPairContent is the same pair with `A-38`'s binding set as a
+// parameter — nil being the prefix scan this package did exclusively until
+// the ruling.
+//
+// A PARAMETER RATHER THAN A SECOND HARNESS, for the reason the prefix became
+// one two entries above: the four mutual-authorization facts in AP63 are
+// established here, in the policy row and the dial below, and a forked
+// harness is how they come to live in two places and drift. The content set
+// is the only variable this fork would have added.
+func newLiveFeedPairContent(t *testing.T, posts int, prefix string, seed func(*entitysdk.AppPeer), content *publish.ContentSet) liveFeedPair {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
@@ -167,8 +181,9 @@ func newLiveFeedPairSeeded(t *testing.T, posts int, prefix string, seed func(*en
 	}
 
 	if _, err := publish.MintRoot(ctx, publish.MintOpts{
-		Peer:   publisher,
-		Prefix: prefix,
+		Peer:    publisher,
+		Prefix:  prefix,
+		Content: content,
 		// A harness measuring what a whole-peer publish exposes has to be
 		// able to perform one. The guard it is opting out of is gated on
 		// its own, in `a36_peer_root_probe_test.go`.

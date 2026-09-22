@@ -92,6 +92,13 @@ public sealed class FeedPanelTests
             Assert.Contains("Catch up", labels);
             Assert.Contains("Resolve", labels);
 
+            // The produce side. Until 2026-09-16 every verb on this panel
+            // was a READER's: an operator could see what everyone else had
+            // posted and could not make their own feed readable, which is
+            // AP57's tell — a read-only surface over a read-write model,
+            // the one shape `make reachability` cannot see.
+            Assert.Contains("Publish feed", labels);
+
             // Read and Catch up are SEPARATE controls on purpose: one
             // dials, the other dials and moves durable read positions. A
             // single button with a checkbox beside it would make a
@@ -209,6 +216,144 @@ public sealed class FeedPanelTests
                 "`moved` is gone from the ref envelope — and its absence deserializes to false, "
                 + "which does not read as a missing field. It reads as a positive claim that the "
                 + "document has not moved since somebody linked to it");
+        }
+    }
+
+    // ⭐ The own-feed envelope arm. AP49, and this one is the reason the
+    // section exists at all.
+    //
+    // `signatureNote` is `FEED-R2`'s attribution caveat and it had never
+    // crossed this boundary in ANY form before 2026-09-16 — so a GUI
+    // operator's feed could be unattributable to every static reader with
+    // nothing on screen saying so. A rename on the Go side puts it back in
+    // exactly that state, silently, because a missing string deserializes
+    // to `""` and `""` is the value that means *attributable*. **The
+    // dangerous fields here all fail SAFE-LOOKING**: absent `coversFeed`
+    // and absent `current` are `false`, which over-warns; absent
+    // `signatureNote` is the one that under-warns, and it is the field the
+    // whole export was added for.
+    //
+    // Read against the shared fixture peer deliberately: the SHAPE is the
+    // assertion and the contents are whatever that peer happens to hold
+    // (AP70). This export dials nobody, so it is safe in a suite that may
+    // not reach the network.
+    [AvaloniaFact]
+    public void The_Own_Feed_Envelope_Does_Not_Drop_The_Attribution_Fields()
+    {
+        var own = Bridge.TakeString(Bridge.FeedOwnRender(_bridge.DefaultPeer));
+        using var doc = JsonDocument.Parse(own);
+        var root = doc.RootElement;
+
+        Assert.True(root.TryGetProperty("signatureNote", out _),
+            "`signatureNote` is gone from the own-feed envelope — and its absence deserializes to "
+            + "the empty string, which on this surface is not a missing field. It is the positive "
+            + "claim that every entry is attributable to a static reader, which is the exact "
+            + "sentence A-38 exists to make true or false");
+        Assert.True(root.TryGetProperty("published", out _),
+            "`published` is gone — the panel cannot then tell *no root is signed* from *a root is "
+            + "signed and does not reach the feed*, and those send an operator to different actions");
+        Assert.True(root.TryGetProperty("coversFeed", out _),
+            "`coversFeed` is gone — this is the quietest of the three reach states: everything "
+            + "looks published and the feed keys are not in the root");
+        Assert.True(root.TryGetProperty("current", out _),
+            "`current` is gone — posting without re-publishing is invisible to every reader on "
+            + "both roads and looks exactly like not having posted");
+        Assert.True(root.TryGetProperty("contentSet", out _),
+            "`contentSet` is gone — after A-38 the prefix does not imply the set, so this is the "
+            + "only field that says whether a peer-root root committed to 9 keys or to 399");
+        Assert.True(root.TryGetProperty("posted", out _),
+            "`posted` is gone — *never posted* and *a feed that is empty* are different facts and "
+            + "only the first is a reason to say \"nothing here yet\"");
+        Assert.True(root.TryGetProperty("problems", out _),
+            "`problems` is gone — that is the operator's whole action list, and this panel is "
+            + "where it renders (AP84: stderr is not a surface)");
+
+        // And the publish envelope's half of the same change. A surface
+        // MUST render the content set: 9 keys under `/` is only legible if
+        // you already know a curated set exists.
+        var publish = Bridge.TakeString(Bridge.PublishRender(_bridge.DefaultPeer));
+        using var pdoc = JsonDocument.Parse(publish);
+        Assert.True(pdoc.RootElement.TryGetProperty("contentSet", out _),
+            "`contentSet` is gone from the publish envelope — the Local Site panel then reports a "
+            + "binding count with nothing saying which choice produced it");
+    }
+
+    // ⭐ Three states, not two — the rule the conflict-rule control earned,
+    // applied to attribution.
+    //
+    // `signatureNote` empty is a REAL ANSWER (A-38 ruling (D) applied) and
+    // is ALSO what an unpublished peer produces, because there is no root
+    // to be wrong about. A renderer that treats empty as *attributable*
+    // therefore tells an operator who has published nothing that every
+    // entry is attributable — confidently, and in the wrong direction.
+    //
+    // Driven through `ApplyOwnFeedForTests` rather than the bridge: two of
+    // the three states are facts about a published root, and the fixture
+    // peer is shared across the assembly (AP70), so the bridge cannot reach
+    // them deterministically. The field names are covered above, against
+    // what Go actually emits.
+    [AvaloniaFact]
+    public void An_Unpublished_Feed_Does_Not_Render_As_Attributable()
+    {
+        var (window, panel) = Open();
+        using (window as IDisposable)
+        {
+            // (1) Posted, nothing published. The note is empty and must not
+            //     be read as good news.
+            panel.ApplyOwnFeedForTests(
+                """
+                {"posted":true,"entries":2,"published":false,"coversFeed":false,
+                 "current":false,"contentSet":"","signatureNote":"","problems":[]}
+                """);
+            Assert.DoesNotContain("attributable", panel.OwnFeedAttributionForTests);
+            Assert.Contains("nothing is published", panel.OwnFeedLineForTests);
+
+            // (2) Published, covering, with the caveat. The caveat is the
+            //     sentence, verbatim — a panel that paraphrased it would be
+            //     the second place that wording lives.
+            panel.ApplyOwnFeedForTests(
+                """
+                {"posted":true,"entries":2,"published":true,"coversFeed":true,"current":true,
+                 "prefix":"app/feed/","contentSet":"",
+                 "signatureNote":"a static reader cannot attribute any entry","problems":[]}
+                """);
+            Assert.Contains("a static reader cannot attribute any entry",
+                panel.OwnFeedAttributionForTests);
+
+            // (3) Published, covering, silent — and ONLY here may the panel
+            //     say so. This is the arm that fails if a renderer
+            //     short-circuits on the empty note.
+            panel.ApplyOwnFeedForTests(
+                """
+                {"posted":true,"entries":2,"published":true,"coversFeed":true,"current":true,
+                 "prefix":"/","contentSet":"feed","signatureNote":"","problems":[]}
+                """);
+            Assert.Contains("every entry is attributable", panel.OwnFeedAttributionForTests);
+        }
+    }
+
+    // The button an operator has to be able to press.
+    //
+    // Reachability and not mere existence: a control that exists, has
+    // layout and reports a screen coordinate is still one an operator
+    // cannot click if it is clipped with nothing to scroll (AP64). This
+    // panel's body IS in a working `ScrollViewer`, so below the fold is one
+    // scroll away and reachable — which is the distinction `Reachable`
+    // exists to draw, and the one the first version of that predicate got
+    // wrong.
+    [AvaloniaFact]
+    public void The_Publish_Feed_Button_Is_Reachable()
+    {
+        var (window, panel) = Open();
+        using (window as IDisposable)
+        {
+            var button = panel.GetVisualDescendants()
+                .OfType<Button>()
+                .FirstOrDefault(b => (b.Content?.ToString() ?? "") == "Publish feed");
+            Assert.NotNull(button);
+            Assert.True(Reachable.IsClickable(button!),
+                "the only control that makes a feed readable is not clickable: "
+                + Reachable.DescribeClippers(button!));
         }
     }
 }

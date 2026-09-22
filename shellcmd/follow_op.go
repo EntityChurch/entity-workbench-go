@@ -160,8 +160,15 @@ func (ws *ShellWorkspace) FeedFollows(ctx context.Context) (FollowsOutcome, erro
 	// §2.4's privacy sentence, checked against what this peer actually
 	// publishes rather than asserted. Nothing else in the chain will
 	// mention it: the records are well-formed and the publish is correct.
+	//
+	// Read WITH the content set the live root was minted with, never with the
+	// prefix alone: a `publish -feed` declares the peer root and commits to
+	// nine keys, so the prefix-only reading warns the operator who followed
+	// the ruling that they published their follow list. See
+	// `workbench.FeedPrivacyProblem`.
 	if pr, err := ws.Local.Peer.ReadPublishedRoot(ctx, ws.Local.Peer.PeerID()); err == nil {
-		if p := workbench.FeedPrivacyProblem(pr.Data.Prefix); p != "" {
+		contentSet := workbench.ReadPublishContentSet(ws.Local.Peer.Store())
+		if p := workbench.FeedPrivacyProblem(pr.Data.Prefix, contentSet); p != "" {
 			out.Problems = append(out.Problems, p)
 		}
 	}

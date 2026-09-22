@@ -631,25 +631,55 @@ func (c *Consumer) leafAt(ctx context.Context, treePath string) (entity.Entity, 
 // no signature and no root vouched for, wearing the same UI as bytes that
 // came out of the walk.
 func (c *Consumer) SignatureOver(ctx context.Context, what string, signed entity.Entity) (types.SignatureData, string, error) {
+	_, sig, locator, err := c.SignatureEntityOver(ctx, what, signed)
+	return sig, locator, err
+}
+
+// SignatureEntityOver is [Consumer.SignatureOver] returning the signature
+// ENTITY as well as the verdict.
+//
+// **A rendering reader wants the verdict; a REPUBLISHING one needs the
+// bytes.** `SYSTEM-DATA-EXCHANGE` §2.3 rule 2 makes a republished entry
+// travel with its author's detached signature, and rule 2's other half —
+// a republisher **MUST NOT** supply one — is why this returns what was
+// served rather than anything derived: we do not hold the author's key and
+// cannot author in their name, so the only conformant thing to carry is
+// the exact entity they published. It comes back through
+// [Consumer.Blob] like everything else, so the bytes a caller republishes
+// are bytes this consumer recomputed and matched.
+//
+// The verdict is returned alongside on purpose. A gatherer that carried a
+// signature it had not verified would be propagating a claim it never
+// checked, and the failure is invisible downstream: the next reader
+// verifies against the author's key and simply reports the entry as
+// unattributed, which reads as the *author's* omission.
+func (c *Consumer) SignatureEntityOver(ctx context.Context, what string, signed entity.Entity) (entity.Entity, types.SignatureData, string, error) {
 	if signed.ContentHash.IsZero() {
 		// Everything this consumer returns carries a recomputed hash, so a
 		// zero one means the caller built the entity rather than fetching
 		// it — and deriving the pointer from a hash nobody checked is the
 		// exact steering this two-hop shape exists to prevent.
-		return types.SignatureData{}, "", fmt.Errorf(
+		return entity.Entity{}, types.SignatureData{}, "", fmt.Errorf(
 			"fetch: cannot verify a signature over an entity with no recomputed content hash")
 	}
 	pub, keyType, err := publishedroot.DeriveKey(c.src.PeerID())
 	if err != nil {
-		return types.SignatureData{}, "", err
+		return entity.Entity{}, types.SignatureData{}, "", err
 	}
 	sigEnt, locator, err := c.leafAt(ctx, publishedroot.SignatureRelPath(signed.ContentHash))
 	if err != nil {
-		return types.SignatureData{}, locator, fmt.Errorf("resolving the §5.2 signature pointer at %s: %w",
-			locator, err)
+		return entity.Entity{}, types.SignatureData{}, locator,
+			fmt.Errorf("resolving the §5.2 signature pointer at %s: %w", locator, err)
 	}
 	sig, err := publishedroot.VerifySignatureOver(what, locator, signed, sigEnt, pub, keyType)
-	return sig, locator, err
+	if err != nil {
+		// The entity is deliberately NOT returned on a failed verification.
+		// A caller holding bytes that did not verify is one keystroke from
+		// republishing them, and §2.3 rule 2 is the rule that would be
+		// broken silently.
+		return entity.Entity{}, types.SignatureData{}, locator, err
+	}
+	return sigEnt, sig, locator, nil
 }
 
 // AbsolutePrefix resolves a published root's **configured** `prefix`

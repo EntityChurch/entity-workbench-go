@@ -372,7 +372,11 @@ public sealed class SiteViewPanel : UserControl, IDisposable, IPanelPreferredHei
         try
         {
             var reply = await System.Threading.Tasks.Task.Run(() =>
-                Bridge.TakeString(Bridge.PublishNow(_peerHandle, makePublic)));
+                // feed: 0 — this panel publishes SITES. The curated feed set
+                // is the Feed panel's button, because it publishes at the
+                // peer root and commits to something this panel does not
+                // show.
+                Bridge.TakeString(Bridge.PublishNow(_peerHandle, makePublic, 0)));
             ApplyPublish(reply, "publish");
         }
         finally
@@ -414,11 +418,18 @@ public sealed class SiteViewPanel : UserControl, IDisposable, IPanelPreferredHei
         }
         _publishLine.Foreground = Brushes.Gainsboro;
         _publishLine.Opacity = 0.9;
+        // The content set is rendered and never inferred. After A-38 the
+        // prefix does not imply the set: a peer-root root is 9 keys or 399
+        // depending on a choice the prefix does not record, and the
+        // difference is whether folder paths and peers' addresses are in the
+        // artifact. "9 keys under /" is only legible if you already know a
+        // curated set exists, so the words are on screen.
+        var set = dto.ContentSet == "feed" ? ", the feed set" : "";
         _publishLine.Text = dto.RootHash.Length == 0
             ? "this peer has published nothing"
             : (dto.Minted
-                ? $"published “{dto.Prefix}” — {dto.Bindings} keys, seq {dto.Seq}"
-                : $"published “{dto.Prefix}” — seq {dto.Seq}, {dto.Bindings} keys bound now");
+                ? $"published “{dto.Prefix}” — {dto.Bindings} keys{set}, seq {dto.Seq}"
+                : $"published “{dto.Prefix}” — seq {dto.Seq}, {dto.Bindings} keys bound now{set}");
 
         // The disclosure line. Goldenrod is not decoration: "anyone may
         // read this" is the single fact on this panel an operator can be
@@ -479,6 +490,7 @@ public sealed class SiteViewPanel : UserControl, IDisposable, IPanelPreferredHei
         [JsonPropertyName("seq")] public ulong Seq { get; set; }
         [JsonPropertyName("rootHash")] public string RootHash { get; set; } = "";
         [JsonPropertyName("bindings")] public int Bindings { get; set; }
+        [JsonPropertyName("contentSet")] public string ContentSet { get; set; } = "";
         [JsonPropertyName("minted")] public bool Minted { get; set; }
         [JsonPropertyName("narrowedFrom")] public string NarrowedFrom { get; set; } = "";
         [JsonPropertyName("publicPresent")] public bool PublicPresent { get; set; }

@@ -87,13 +87,13 @@ func TestFeedFollow_RoundTripsAndTakesItsCursorWithIt(t *testing.T) {
 func TestFeedPrivacyProblem_FiresExactlyWhenThePublishWouldCarryTheFollowList(t *testing.T) {
 	quiet := []string{"app/feed/", "sites/", "app/site/", "archives/"}
 	for _, p := range quiet {
-		if got := FeedPrivacyProblem(p); got != "" {
+		if got := FeedPrivacyProblem(p, PublishContentScan); got != "" {
 			t.Errorf("publishing %q warned about the follow list, which it does not contain: %s", p, got)
 		}
 	}
 	loud := []string{"app/workbench/", "app/workbench/feed/", "app/", "/", ""}
 	for _, p := range loud {
-		got := FeedPrivacyProblem(p)
+		got := FeedPrivacyProblem(p, PublishContentScan)
 		if got == "" {
 			t.Errorf("publishing %q carries this peer's own follow list and said nothing", p)
 			continue
@@ -106,12 +106,39 @@ func TestFeedPrivacyProblem_FiresExactlyWhenThePublishWouldCarryTheFollowList(t 
 	// universal tree "/" and everything else without a leading slash, so a
 	// naive prefix comparison gets the one case that covers everything
 	// backwards.
-	if FeedPrivacyProblem("/") == "" {
+	if FeedPrivacyProblem("/", PublishContentScan) == "" {
 		t.Error("publishing the whole tree does not carry the follow list, apparently")
 	}
 	// `app/feedback/` is not under `app/feed/` and neither is under the
 	// other — the segment-exactness these helpers all share.
-	if got := FeedPrivacyProblem("app/feedback/"); got != "" {
+	if got := FeedPrivacyProblem("app/feedback/", PublishContentScan); got != "" {
 		t.Errorf("a sibling directory warned: %s", got)
+	}
+}
+
+// TestFeedPrivacyProblem_TheCuratedFeedSetIsSilentAtEveryPrefixTheScanWarnsAt
+// is the `A-38` half: **a prefix is a bound, not a content set.**
+//
+// `publish -feed` declares the PEER ROOT, which bounds `app/workbench/feed/`
+// along with everything else this peer holds, and commits to nine keys — the
+// entries, the index and each entry's signature. So every prefix in the `loud`
+// set above is reachable by a conformant feed publish, and the prefix-only
+// reading accused an operator of publishing their follow list in the same
+// sentence that told them to fix it by doing what they had just done.
+//
+// The scan arm is not decoration: without it this test passes against a
+// `FeedPrivacyProblem` that returns "" unconditionally, which is the warning
+// deleted rather than corrected.
+func TestFeedPrivacyProblem_TheCuratedFeedSetIsSilentAtEveryPrefixTheScanWarnsAt(t *testing.T) {
+	reachableByAFeedPublish := []string{"", "/", "app/", "app/workbench/", "app/workbench/feed/"}
+	for _, p := range reachableByAFeedPublish {
+		if got := FeedPrivacyProblem(p, PublishContentFeed); got != "" {
+			t.Errorf("a curated feed publish bounded by %q warned about the follow list, which it "+
+				"does not commit to: %s", p, got)
+		}
+		if FeedPrivacyProblem(p, PublishContentScan) == "" {
+			t.Errorf("control arm: a SCAN over %q does carry the follow list and must still warn — "+
+				"if this is silent the check has been deleted rather than narrowed", p)
+		}
 	}
 }

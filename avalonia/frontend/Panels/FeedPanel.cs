@@ -13,8 +13,8 @@ using Avalonia.Threading;
 
 namespace EntityAvalonia.Panels;
 
-// FeedPanel — who this peer follows, what they posted, and what one
-// reference resolves to.
+// FeedPanel — this peer's own feed, who it follows, what they posted, and
+// what one reference resolves to.
 //
 // # Why it exists
 //
@@ -51,13 +51,34 @@ namespace EntityAvalonia.Panels;
 // Only the follows LIST is wake-driven, and that is the right split: it
 // is tree data under `app/workbench/feed/`, and a refresh button on tree
 // data is a bug report about a missing subscription (AP73).
+//
+// # And the fourth thing: YOUR feed, which had no pixel at all
+//
+// `Publish feed` signs a root over the curated set — the entries, the
+// index, and the signature attributing each entry — and the section above
+// it says whether anybody can read what you posted. Before 2026-09-16 the
+// produce side reached a shell verb and nothing else: `PublishNow` took a
+// public tri-state and no content set, and the `FEED-R2` attribution
+// caveat had never crossed the bridge in any form. So a GUI operator's
+// feed could be unattributable to every static reader, with no sentence
+// saying so and no control that would have fixed it.
+//
+// The publish is an ACT and the section is a READ, and they are two
+// exports for `PublishStatus`'s reason: a surface that refreshed by
+// minting would bump `seq` every time somebody looked at it, which is a
+// publisher claiming a release nobody asked for.
 public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
     // Chrome floor: the follow form, the action row, the reference form,
     // and room for a few entries. Declared because the 200px stack default
     // clips any panel that forgets (AP64) — and a clipped panel with an
     // unreachable button is what an operator meets, not a test.
-    public double PreferredSlotMinHeight => 460;
+    //
+    // 460 → 520 when the own-feed section landed. That section is FIXED
+    // chrome inside the scrolling body — a line, a sentence, a bounded
+    // problem block and one button — so an under-estimate costs a scroll
+    // rather than a control, and the raise is comfort, not correctness.
+    public double PreferredSlotMinHeight => 520;
 
     // P4 (bounded list). A timeline is unbounded — a followed publisher
     // can have posted any number of entries — and an unbounded list in a
@@ -93,6 +114,20 @@ public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
     private readonly TextBox _refBox;
     private readonly Button _refButton;
     private readonly StackPanel _refResult;
+
+    // --- this peer's own feed ---------------------------------------------
+    //
+    // Until 2026-09-16 the produce side of a feed reached a shell verb and no
+    // pixel. `PublishNow` took a public tri-state and nothing else, and the
+    // `FEED-R2` attribution caveat had never crossed the bridge in any form
+    // — so a GUI operator's feed could be unattributable to every static
+    // reader, with nothing on screen saying so and no control to fix it.
+    // That is D23 at field granularity.
+    private readonly TextBlock _ownLine;
+    private readonly TextBlock _ownAttribution;
+    private readonly TextBlock _ownProblems;
+    private readonly Button _publishFeedButton;
+    private bool _publishBusy;
 
     private Bridge.TreeWakeCallback? _wakeCallback;
     private GCHandle _wakeCallbackHandle;
@@ -174,6 +209,48 @@ public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
         _refButton.Click += (_, _) => DoResolve();
         _refResult = new StackPanel { Spacing = 2, Margin = new Thickness(0, 4, 0, 0) };
 
+        _ownLine = new TextBlock
+        {
+            Text = "(reading your feed…)",
+            FontSize = 12,
+            Opacity = 0.85,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        _ownAttribution = new TextBlock
+        {
+            Text = "",
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        _ownProblems = new TextBlock
+        {
+            Text = "",
+            FontSize = 11,
+            Foreground = Brushes.Goldenrod,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 2, 0, 0),
+            IsVisible = false,
+            // Bounded for AP64's other half. These are honest sentences of
+            // arbitrary length; an under-estimate must degrade to clipping
+            // the text rather than to pushing the button below it out of
+            // reach.
+            MaxHeight = 96,
+        };
+        _publishFeedButton = new Button
+        {
+            Content = "Publish feed",
+            FontSize = 12,
+            Padding = new Thickness(12, 3),
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+        ToolTip.SetTip(_publishFeedButton,
+            "Sign a root over your entries, the index and the signature attributing each entry. "
+            + "Publishes at the peer root — which BOUNDS what may be committed to and is not what "
+            + "gets committed to: the set is curated, so your folders, peers and documents are not "
+            + "in it. Does not change who may read it.");
+        _publishFeedButton.Click += (_, _) => _ = DoPublishFeed();
+
         var controls = new StackPanel { Spacing = 4, Margin = new Thickness(0, 0, 0, 6) };
         controls.Children.Add(new TextBlock
         {
@@ -205,6 +282,15 @@ public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
         controls.Children.Add(_statusLine);
 
         var body = new StackPanel { Spacing = 6 };
+        // Your own feed first, because it is the half an operator can act
+        // on. Inside the scrolling body rather than docked: the section
+        // grows by one problem line at a time and docked chrome that grows
+        // is what pushed a button out of reach in the sharing panel.
+        body.Children.Add(SectionLabel("your feed — and whether anyone can read it"));
+        body.Children.Add(_ownLine);
+        body.Children.Add(_ownAttribution);
+        body.Children.Add(_ownProblems);
+        body.Children.Add(_publishFeedButton);
         body.Children.Add(SectionLabel("following"));
         body.Children.Add(_followList);
         // FEED-R23: a view of more than one publisher MUST declare what
@@ -234,6 +320,7 @@ public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
         _wakeRegistration = ParseRegistration(reply);
 
         RefreshFollows();
+        RefreshOwnFeed();
         PanelLog.Write("feed", $"Mount peer={_peerHandle}");
     }
 
@@ -275,6 +362,107 @@ public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
     {
         var reply = Bridge.TakeString(Bridge.FeedFollowsRender(_peerHandle));
         ApplyFollows(reply, null);
+    }
+
+    // RefreshOwnFeed READS. It mints nothing, writes nothing and dials
+    // nobody, which is what makes it safe here and safe on a wake — unlike
+    // the two timeline buttons, which reach other machines.
+    //
+    // ⚠ A known gap, named rather than left to be found: the wake this panel
+    // holds is the SHARING wake (the declaration prefixes), so a post made
+    // from `entity-shell` while this panel is open does not refresh it.
+    // Entries live under `app/feed/`, which nothing here subscribes to —
+    // which by this tree's own rule (AP73) means the honest fix is a
+    // subscription and not a refresh button, and it is owed rather than
+    // papered over with one.
+    internal void RefreshOwnFeed()
+    {
+        if (_peerHandle < 0) return;
+        ApplyOwnFeed(Bridge.TakeString(Bridge.FeedOwnRender(_peerHandle)), "feed");
+    }
+
+    // DoPublishFeed signs a root over the curated feed set.
+    //
+    // `makePublic: 0` on purpose, exactly as the site panel's plain Publish
+    // button does: making a feed readable is a separate decision from
+    // signing one, and a button that quietly restated it would change who
+    // can read this peer's feed without saying so. When nobody is
+    // authorized, the problems list says so and names the verb.
+    //
+    // Thread-pool worker for AP31's reason: `PublishNow` is a synchronous
+    // cgo export that walks the tree.
+    private async Task DoPublishFeed()
+    {
+        if (_peerHandle < 0 || _publishBusy) return;
+        _publishBusy = true;
+        _publishFeedButton.IsEnabled = false;
+        _ownLine.Text = "signing a root over your feed…";
+        PanelLog.Write("feed", "PublishFeed");
+        try
+        {
+            var reply = await Task.Run(() =>
+                Bridge.TakeString(Bridge.PublishNow(_peerHandle, 0, 1)));
+            // The publish reply is the PUBLISH envelope, not the feed one.
+            // Re-read the feed rather than rendering that envelope here: the
+            // attribution sentence is derived from the feed's own keys
+            // against the new root, and a panel that inferred it from the
+            // publish reply would be the second place that derivation lives.
+            var err = ErrorOf(reply);
+            if (err.Length > 0)
+            {
+                _ownLine.Text = "publish failed: " + err;
+                _ownLine.Foreground = Brushes.IndianRed;
+                return;
+            }
+            RefreshOwnFeed();
+        }
+        catch (Exception ex)
+        {
+            _ownLine.Text = "publish failed: " + ex.Message;
+            _ownLine.Foreground = Brushes.IndianRed;
+        }
+        finally
+        {
+            _publishBusy = false;
+            _publishFeedButton.IsEnabled = true;
+        }
+    }
+
+    // PublishFeedForTests is the driver seam. Tests await this rather than
+    // synthesizing a click: `.GetAwaiter().GetResult()` on the test thread
+    // deadlocks the headless dispatcher, because the continuation resumes on
+    // the UI thread.
+    internal Task PublishFeedForTests() => DoPublishFeed();
+
+    // ApplyOwnFeedForTests drives the renderer with a synthetic envelope.
+    //
+    // The three attribution states depend on facts about a PUBLISHED ROOT,
+    // and `BridgeFixture.DefaultPeer` is shared across the assembly (AP70)
+    // — so a test that asserted them against whatever that peer happens to
+    // have published would assert on another test's state and would be
+    // unable to reach two of the three cases at all. The field NAMES are
+    // covered separately, against the raw Go reply.
+    internal void ApplyOwnFeedForTests(string reply) => ApplyOwnFeed(reply, "feed");
+
+    internal string OwnFeedLineForTests => _ownLine?.Text ?? "";
+    internal string OwnFeedAttributionForTests => _ownAttribution?.Text ?? "";
+    internal string OwnFeedProblemsForTests =>
+        _ownProblems is { IsVisible: true } ? _ownProblems.Text ?? "" : "";
+    internal Button PublishFeedButtonForTests => _publishFeedButton;
+
+    private static string ErrorOf(string reply)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(reply);
+            return doc.RootElement.TryGetProperty("error", out var e)
+                ? e.GetString() ?? ""
+                : "";
+        }
+        catch (JsonException ex)
+        {
+            return ex.Message;
+        }
     }
 
     // DoTimeline dials. Off the UI thread, and the buttons are disabled
@@ -335,6 +523,97 @@ public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
     }
 
     // --- applying replies ------------------------------------------------
+
+    // ApplyOwnFeed renders the produce side, and the rule it follows is the
+    // conflict-rule control's: **three states, not two.**
+    //
+    // `signatureNote` empty is a REAL ANSWER — it means the published root
+    // commits to the entries' signatures and to little else, i.e. A-38
+    // ruling (D) has been applied — but it is only that answer when a root
+    // is published and covers the feed. Rendering empty as "attributable"
+    // unconditionally would tell an operator who has published nothing that
+    // their entries are attributable, which is the confident direction of
+    // wrong. So: unpublished says unpublished, note says the note, and only
+    // published-and-covered-and-silent says attributable.
+    private void ApplyOwnFeed(string reply, string what)
+    {
+        OwnFeedDto? dto = null;
+        string err = "";
+        try
+        {
+            dto = JsonSerializer.Deserialize<OwnFeedDto>(reply, Json);
+        }
+        catch (JsonException ex)
+        {
+            err = ex.Message;
+        }
+        if (dto is null || !string.IsNullOrEmpty(dto.Error))
+        {
+            _ownLine.Text = $"{what} failed: " + (dto?.Error is { Length: > 0 } e ? e : err);
+            _ownLine.Foreground = Brushes.IndianRed;
+            return;
+        }
+
+        _ownLine.Foreground = Brushes.Gainsboro;
+        // Posted-with-nothing and never-posted are different facts and only
+        // the second is a reason to say "nothing here yet".
+        var count = dto.Truncated ? $"at least {dto.Entries}" : $"{dto.Entries}";
+        var posted = !dto.Posted
+            ? "you have never posted"
+            : $"{count} " + (dto.Entries == 1 && !dto.Truncated ? "entry" : "entries");
+        var published = !dto.Published
+            ? "nothing is published"
+            : !dto.CoversFeed
+                ? $"published “{dto.Prefix}”, which does not contain your feed"
+                : !dto.Current
+                    ? "published and BEHIND — you have posted since"
+                    : "published and current";
+        _ownLine.Text = posted + " · " + published;
+
+        if (!dto.Published)
+        {
+            _ownAttribution.Text = "attribution: not yet a question — no root is signed over anything";
+            _ownAttribution.Foreground = Brushes.Gainsboro;
+            _ownAttribution.Opacity = 0.7;
+        }
+        else if (dto.SignatureNote.Length > 0)
+        {
+            _ownAttribution.Text = dto.SignatureNote;
+            _ownAttribution.Foreground = Brushes.Goldenrod;
+            _ownAttribution.Opacity = 1.0;
+        }
+        else if (dto.CoversFeed)
+        {
+            _ownAttribution.Text =
+                "every entry is attributable: the published root commits to each entry's signature, "
+                + "so a reader fetching this feed from a static directory can verify who wrote it";
+            _ownAttribution.Foreground = Brushes.DarkSeaGreen;
+            _ownAttribution.Opacity = 1.0;
+        }
+        else
+        {
+            // Published, does not cover the feed. The note is empty because
+            // there is no root over the feed to be wrong about; the problem
+            // list carries the actionable sentence.
+            _ownAttribution.Text = "attribution: nothing to say — the published root does not reach your feed";
+            _ownAttribution.Foreground = Brushes.Gainsboro;
+            _ownAttribution.Opacity = 0.7;
+        }
+
+        // Rendered HERE and not only in the run log. This panel's AP84
+        // obligation: a diagnosis whose visibility depends on which window
+        // is open is not a surface.
+        if (dto.Problems is { Count: > 0 })
+        {
+            _ownProblems.Text = string.Join("\n", dto.Problems.ConvertAll(p => "• " + p));
+            _ownProblems.IsVisible = true;
+        }
+        else
+        {
+            _ownProblems.Text = "";
+            _ownProblems.IsVisible = false;
+        }
+    }
 
     private void ApplyFollows(string reply, string? note)
     {
@@ -711,6 +990,7 @@ public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
                 return;
             }
             RefreshFollows();
+            RefreshOwnFeed();
         });
     }
 
@@ -847,6 +1127,30 @@ public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
     // surface the dropped field is the one that says an entry is NOT
     // attributable or that a reference has MOVED — which renders as
     // everything being fine.
+
+    // Every field the Go DTO carries is declared. AP49: an undeclared field
+    // is dropped by System.Text.Json in total silence, and the ones that
+    // would go are `signatureNote` and `coversFeed` — i.e. this section
+    // would render "published, nothing wrong" for a feed no static reader
+    // can attribute a single entry of.
+    private sealed class OwnFeedDto
+    {
+        [JsonPropertyName("peerId")] public string PeerId { get; set; } = "";
+        [JsonPropertyName("posted")] public bool Posted { get; set; }
+        [JsonPropertyName("entries")] public int Entries { get; set; }
+        [JsonPropertyName("pages")] public int Pages { get; set; }
+        [JsonPropertyName("truncated")] public bool Truncated { get; set; }
+        [JsonPropertyName("published")] public bool Published { get; set; }
+        [JsonPropertyName("prefix")] public string Prefix { get; set; } = "";
+        [JsonPropertyName("coversFeed")] public bool CoversFeed { get; set; }
+        [JsonPropertyName("current")] public bool Current { get; set; }
+        [JsonPropertyName("contentSet")] public string ContentSet { get; set; } = "";
+        [JsonPropertyName("signatureNote")] public string SignatureNote { get; set; } = "";
+        [JsonPropertyName("publicPresent")] public bool PublicPresent { get; set; }
+        [JsonPropertyName("publicOurs")] public bool PublicOurs { get; set; }
+        [JsonPropertyName("problems")] public List<string>? Problems { get; set; }
+        [JsonPropertyName("error")] public string Error { get; set; } = "";
+    }
 
     private sealed class FollowsDto
     {

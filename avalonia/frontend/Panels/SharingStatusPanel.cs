@@ -67,14 +67,30 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
     // with a bounded list. Every panel declares one; a panel that does not
     // claims the 200px default and clips every panel in the stack.
     //
-    // Raised 620 -> 800 with the delivery/catch-up/recording section and
-    // 800 -> 900 with the conflicts section.
+    // Raised 620 -> 800 with the delivery/catch-up/recording section,
+    // 800 -> 900 with the conflicts section, and 900 -> 960 with the
+    // per-folder conflict RULE line and its control.
     // A section added without moving this number is the AP64 bug rebuilt
     // by hand: the stack sizes its slot to what the panel CLAIMS, so new
     // chrome under an unchanged floor is chrome nobody can reach — and the
     // control that falls off the bottom is the newest one, which is the
     // one nobody has learned to look for yet.
-    public double PreferredSlotMinHeight => 900;
+    //
+    // ⚠ The 960 is COMFORT, not correctness, and the difference matters.
+    // The two raises before it were new SECTIONS — fixed chrome, where an
+    // unchanged floor means chrome nobody can reach. This one is a line and
+    // sometimes a button on every row of the FOLDERS list, which has no
+    // height bound, so no constant bounds it and none needs to: the body
+    // below is in a working ScrollViewer, so overflow degrades to
+    // scrolling. The number just means the ordinary case (a peer with a
+    // folder or two) does not have to scroll.
+    //
+    // On 2026-09-16 this line's arrival turned two reachability tests red
+    // and **both failures were the test** — the predicate could not tell
+    // "below the fold of something scrollable" from "cannot be clicked at
+    // all". See `avalonia/tests/…/Reachable.cs`; do not respond to a red
+    // reachability assertion here by raising this number.
+    public double PreferredSlotMinHeight => 960;
 
     private readonly long _peerHandle;
     private long _wakeRegistration = -1;
@@ -194,15 +210,27 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
     // after the directory the operator picked. A seed that left both empty
     // could not exercise that clause at all, and the test named after it
     // would pass on the strength of a row belonging to some other test.
+    //
+    // The three conflict-rule parameters default to the state a folder is
+    // in before anybody has read the owner's declaration — unknown, no
+    // policy, not settable here — because that is the honest default and
+    // because a seed that quietly said "known: record, settable" would
+    // make every existing caller assert against a state it never chose.
+    // They are parameters at all for AP70's reason: a helper that cannot
+    // express the distinction a test is named after makes the test
+    // decoration, and "whose rule is this" is precisely the distinction.
     internal void SeedFolderForTests(string id, string label, bool local, string origin,
         string root, string localRoot,
         bool mounted, bool syncing, bool accepted, string path,
         int filesPresent, int filesIngested, bool filesObservable,
-        string rollbackWitnessNote = "")
+        string rollbackWitnessNote = "",
+        bool ownerRuleKnown = false, string ownerConflictPolicy = "",
+        bool ruleSettableHere = false)
     {
         _folders.Add(new FolderVm(id, label, local, origin, root, localRoot, path, mounted,
             syncing, accepted, filesPresent, filesIngested, filesObservable, "",
-            rollbackWitnessNote, new List<FolderPeerVm>()));
+            rollbackWitnessNote, ownerRuleKnown, ownerConflictPolicy, ruleSettableHere,
+            new List<FolderPeerVm>()));
         _foldersEmpty.IsVisible = false;
         // The seed drives the SAME section-level line the render path
         // fills. A helper that populated the list and not the line would
@@ -739,9 +767,40 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         {
             stack.Children.Add(Line($"    {p.Label} — {p.State}", Brushes.Gray));
         }
+        stack.Children.Add(Line(vm.ConflictRuleLine, vm.ConflictRuleBrush));
         if (!string.IsNullOrEmpty(vm.Note))
         {
             stack.Children.Add(Line(vm.Note, Brushes.Goldenrod));
+        }
+
+        // The rule's control, and it is offered on OWNED folders only.
+        //
+        // A shared folder names one rule and it is the owner's (AP94), so
+        // `SetFolderConflictPolicy` refuses here and names the machine to
+        // run it on. Drawing a disabled button on a received folder would
+        // suggest a permission problem; drawing an enabled one that then
+        // refuses would be a surface accepting an instruction it cannot
+        // carry out. The row says who owns it instead — that sentence is
+        // on `ConflictRuleLine`, above, and is the only thing a received
+        // folder needs from this feature.
+        if (vm.RuleSettableHere && vm.OwnerRuleKnown)
+        {
+            var ruleButtons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Margin = new Thickness(0, 4, 0, 0),
+            };
+            ruleButtons.Children.Add(RowButton($"Conflicts: {vm.OtherConflictRule}",
+                vm.OtherConflictRule == "keep-both"
+                    ? "When a change from another peer lands on a file you edited, keep BOTH: "
+                      + "their version arrives beside yours under a suffixed name. Nothing is "
+                      + "lost and this folder stops converging until you resolve it."
+                    : "When a change from another peer lands on a file you edited, let theirs "
+                      + "win on disk and RECORD yours — recoverable from the Conflicts section "
+                      + "below, and the folder keeps converging.",
+                () => _ = SetConflictRuleAsync(vm.Id, vm.OtherConflictRule)));
+            stack.Children.Add(ruleButtons);
         }
 
         // The action the reconciler NAMES and refuses to take, offered
@@ -897,7 +956,8 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
             }
             _folders.Add(new FolderVm(f.Id, f.Label, f.Local, f.Origin, f.Root, f.LocalRoot,
                 f.Path, f.Mounted, f.Syncing, f.Accepted, f.FilesPresent, f.FilesIngested,
-                f.FilesObservable, f.Note, f.RollbackWitnessNote, peers));
+                f.FilesObservable, f.Note, f.RollbackWitnessNote,
+                f.OwnerRuleKnown, f.OwnerConflictPolicy, f.RuleSettableHere, peers));
         }
         _foldersEmpty.IsVisible = _folders.Count == 0;
         // The section-level witness line. Taken from whichever row carries
@@ -1123,6 +1183,37 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
     // Local work — a reassemble and a file write — so it neither dials nor
     // waits on another machine, but it writes a file whose size nobody
     // here chose, so it goes on a thread-pool worker like the rest.
+    // SetConflictRuleAsync declares the folder's reconciliation rule.
+    //
+    // A DECLARATION and nothing else — no dial, no re-handshake, no pass.
+    // A policy change needs a re-handshake because grants are assembled
+    // at one (AP63); this is not one, and running a pass afterwards would
+    // make an idle panel a dialer for a write that changed no substrate.
+    //
+    // It still goes on a worker: it is a synchronous cgo export that
+    // writes to the store.
+    public async Task SetConflictRuleAsync(string folderId, string policy)
+    {
+        if (_busy) return;
+        _busy = true;
+        SetStatus($"setting the conflict rule to {policy}…", Brushes.Gainsboro);
+        try
+        {
+            var reply = await Task.Run(() =>
+                Bridge.TakeString(Bridge.StatusSetConflictRule(_peerHandle, folderId, policy)));
+            if (Apply(reply, "conflict rule"))
+            {
+                // The reading carries the sentence in its actions list —
+                // including the "already set, nothing changed" case — so
+                // the status line is the last of them rather than a second
+                // description composed here, which would be free to claim
+                // a change that did not happen.
+                SetStatus(_actions.Count > 0 ? _actions[^1] : "rule set.", Brushes.Gainsboro);
+            }
+        }
+        finally { _busy = false; }
+    }
+
     public async Task ResolveConflictAsync(string key, string keep)
     {
         if (_busy) return;
@@ -1309,9 +1400,55 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         string Path, bool Mounted, bool Syncing, bool Accepted,
         int FilesPresent, int FilesIngested, bool FilesObservable, string Note,
         string RollbackWitnessNote,
+        bool OwnerRuleKnown, string OwnerConflictPolicy, bool RuleSettableHere,
         List<FolderPeerVm> Peers)
     {
         public string Label => string.IsNullOrEmpty(LabelRaw) ? Id : LabelRaw;
+
+        // ConflictRuleLine — AP94 as ONE line, on purpose.
+        //
+        // The folders list in this panel has no height bound, and one
+        // extra line of text above it has already pushed a button outside
+        // its clipping ancestor once (the 2026-09-12 open item, AP64's
+        // other half). So the rule, who owns it, and whether it is unknown
+        // are a single line and never a paragraph.
+        //
+        // Three states and they are not two. Unknown is NOT a kind of
+        // "record": while it holds, a delivery that lands on a local edit
+        // is HELD — `409 conflict_rule_unknown`, nothing overwritten,
+        // released by the next pass that reads the owner's declaration.
+        // An operator looking for a file that has not arrived needs that
+        // word, and it is the one a defaulted render would delete.
+        public string ConflictRuleLine
+        {
+            get
+            {
+                if (!OwnerRuleKnown)
+                {
+                    return "conflicts: rule not yet read from "
+                        + (Local ? "this peer" : Short(Origin))
+                        + " — a change landing on your edit is HELD, not applied";
+                }
+                var what = OwnerConflictPolicy == "keep-both"
+                    ? "keep-both (their version lands beside yours; this folder stops converging)"
+                    : "record (their version wins on disk; yours stays recoverable)";
+                return RuleSettableHere
+                    ? $"conflicts: {what}"
+                    : $"conflicts: {what} — set by {Short(Origin)}, who owns this folder";
+            }
+        }
+
+        // Goldenrod for unknown and Gray otherwise: a held delivery is a
+        // state an operator may need to act on, and a declared rule is
+        // ordinary.
+        public IBrush ConflictRuleBrush =>
+            OwnerRuleKnown ? Brushes.Gray : Brushes.Goldenrod;
+
+        // The rule this peer would move TO. A two-value toggle rather than
+        // a picker, because there are exactly two values and a picker
+        // would need a third, empty, "choose one" state that means nothing.
+        public string OtherConflictRule =>
+            OwnerConflictPolicy == "keep-both" ? "record" : "keep-both";
 
         public string DirectionLine => Local
             ? "shared out from this peer"
@@ -1533,6 +1670,25 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         // it comes from `shellcmd.FolderStatus.RollbackWitnessNote`, one
         // writer shared with the shell and the pass.
         [JsonPropertyName("rollbackWitnessNote")] public string RollbackWitnessNote { get; set; } = "";
+
+        // AP94's rule: what happens when their change lands on your edit.
+        //
+        // `OwnerConflictPolicy` is empty EXACTLY when `OwnerRuleKnown` is
+        // false, and the two must not be collapsed into one string here.
+        // "we have never read their rule" is the state in which a
+        // collision is HELD rather than resolved — nothing overwritten,
+        // deliveries unaffected, and the operator's file not where they
+        // expect it — so rendering a default in its place converts the one
+        // fact that explains the symptom into the reassuring one.
+        [JsonPropertyName("ownerRuleKnown")] public bool OwnerRuleKnown { get; set; }
+        [JsonPropertyName("ownerConflictPolicy")] public string OwnerConflictPolicy { get; set; } = "";
+
+        // Whether THIS peer may change it. Answered by the bridge, from
+        // the same predicate `SetFolderConflictPolicy` refuses on — not
+        // re-derived here from `local`, which is the same test asked for a
+        // different reason and is exactly the conflation AP94 records.
+        [JsonPropertyName("ruleSettableHere")] public bool RuleSettableHere { get; set; }
+
         [JsonPropertyName("peers")] public List<FolderPeerDto>? Peers { get; set; }
     }
 
