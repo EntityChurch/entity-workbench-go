@@ -5,6 +5,50 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Figures.** A site's `assets/` subgraph is read, and the site convention's embed
+  directive (`::embed[caption]{ref=assets/figures/x.png}`) renders as a picture in the
+  desktop browser instead of as literal text. On the live federation that is 665
+  committed figures on one site that were previously unreachable. Asset references are
+  resolved only inside the site's own signed subgraph — an external URL, an absolute
+  path, a `data:` URI or a `..` escape is refused, so a page body cannot make the
+  renderer fetch something the publisher never committed.
+- **Tables** render as tables, with links and figures inside cells still working.
+- **HTML pages** — a page published as `format: html` is lowered to readable text with
+  a note saying what was lost, instead of being parsed as markdown and drawn as its own
+  source. Bodies are capped for display, with the full verified size still reported on
+  the trust chain. `docs/architecture/HTML-PAGE-RENDERING.md` records why an embedded
+  browser engine is not the answer today and what is.
+- **A content cache** in the consume stack, keyed by content hash and by signed root
+  hash. Bytes that have been fetched and proved once are not fetched again.
+
+### Changed
+
+- **The browser is roughly an order of magnitude faster to navigate.** Measured against
+  the live federation: opening a page 7.3 s → 2.4 s, following a link 6.2 s → 0.36 s,
+  going back 5.9 s → 0.23 s. The verification is unchanged; what changed is that a
+  content-addressed body is no longer re-downloaded and re-hashed on every click, and
+  that a trie walk runs concurrently rather than one node at a time.
+- **The pinned registry is shown in the browser chrome**, with the two facts about it
+  that were being computed and silently dropped before reaching the screen: whether the
+  pin was nominated by the origin itself (trust-on-first-use) and whether the layout was
+  re-based onto a co-hosted peer.
+- **The page no longer resets while you read it.** Lists and the page body are rebuilt
+  only when they change, scroll position is remembered per page, and the trust chain is
+  dimmed during a navigation rather than blanked — the chain beside a page always
+  describes that page.
+
+### Fixed
+
+- **A published root whose sequence number goes backwards is refused.** A verifying
+  reader now spans a session, so an origin replaying a previous publish page by page —
+  every response correctly signed — is detected rather than invisible.
+- Markdown link-reference definitions no longer render a spurious "unsupported block"
+  notice; inline HTML inside a markdown page is lowered to its text rather than dropped.
+
 ## [0.9.0]
 
 The first release since `v0.8.0`. The theme is **reach**: several arcs that were

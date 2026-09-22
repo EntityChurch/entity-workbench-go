@@ -10,6 +10,7 @@ using Avalonia.Controls.Templates;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using EntityAvalonia.Panels;
 
 namespace EntityAvalonia;
 
@@ -113,7 +114,7 @@ public class MainWindow : Window
         {
             Padding = new Thickness(0),
             ItemsSource = _tabItems,
-            ItemTemplate = new FuncDataTemplate<object>((vm, _) =>
+            ItemTemplate = Rows.Of<object>((vm, _) =>
             {
                 if (vm is NewPeerTabMarker)
                 {
@@ -131,7 +132,7 @@ public class MainWindow : Window
                 }
                 return new TextBlock { Text = vm?.ToString() ?? "" };
             }, supportsRecycling: false),
-            ContentTemplate = new FuncDataTemplate<object>((vm, _) =>
+            ContentTemplate = Rows.Of<object>((vm, _) =>
             {
                 if (vm is PeerTab pt) return pt.View;
                 if (vm is NewPeerTabMarker)

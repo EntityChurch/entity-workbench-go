@@ -118,7 +118,7 @@ public sealed class ShellPanel : UserControl, IDisposable
             FontSize = 13,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            ItemTemplate = new FuncDataTemplate<DispatchLineVm>((vm, _) =>
+            ItemTemplate = Rows.Of<DispatchLineVm>((vm, _) =>
                 new SelectableTextBlock
                 {
                     Text = vm.Text,

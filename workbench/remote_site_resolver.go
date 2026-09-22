@@ -207,6 +207,48 @@ func (r *RemoteSiteResolver) ResolvePage(loc Location) ResolveOutcome {
 	})
 }
 
+// ResolveAsset implements [AssetResolver].
+//
+// The whole security argument sits in the two lines that reject: the
+// name comes from [AssetNameFromRef], so a page body cannot point this
+// at another origin, and the path is then looked up in `r.keys` — the
+// SIGNED key set. An asset the publisher did not commit does not
+// resolve, however the page refers to it, and the bytes that come back
+// are hash-verified by [fetch.Consumer.Blob] like every other body.
+//
+// Assets are why the blob cache is byte-bounded rather than
+// entry-bounded: billslab's methodology site commits 665 figures, and a
+// gallery page pulls thirteen at a time.
+func (r *RemoteSiteResolver) ResolveAsset(loc Location, ref string) (SiteAsset, bool) {
+	pid := loc.PeerID
+	if pid == "" {
+		pid = r.peerID
+	}
+	if pid != r.peerID {
+		return SiteAsset{}, false
+	}
+	name, ok := AssetNameFromRef(ref)
+	if !ok {
+		return SiteAsset{}, false
+	}
+	raw, ok := r.at(relPath(AssetPath(pid, loc.SiteID, name), pid))
+	if !ok {
+		return SiteAsset{}, false
+	}
+	var a SiteAsset
+	if err := ecf.Decode(raw, &a); err != nil || len(a.Bytes) == 0 {
+		// Some emitters store the bytes bare rather than in the
+		// two-field body. Accept both, and do not invent a media type
+		// the publisher did not declare — derive it from the name, which
+		// is what the name is for.
+		a = SiteAsset{Bytes: raw}
+	}
+	if a.MediaType == "" {
+		a.MediaType = MediaTypeForName(name)
+	}
+	return a, true
+}
+
 // ListChildren implements [ContentResolver] out of the committed key
 // set — no fetch, no listing artifact, nothing the origin gets a say in.
 func (r *RemoteSiteResolver) ListChildren(loc Location, under string) []ChildEntry {

@@ -179,7 +179,16 @@ func cmdRegistryPin(sh *Shell, args []string) (Result, error) {
 		fmt.Sprintf("pinned   %s", out.Registry),
 		fmt.Sprintf("origin   %s", out.RegistryOrigin),
 	}
-	if out.RegistryDiscovered {
+	if out.RegistryPinFromOrigin {
+		lines = append(lines, "pin      OFFERED BY THE ORIGIN (entity-deployment.json), not by you — "+
+			"trust-on-first-use. Everything below verifies under this key, but the origin chose "+
+			"which key that is. Re-pin with -peer <id> if you have one from elsewhere.")
+	}
+	if out.RegistryDiscovered && out.RegistryRebasedFrom != "" {
+		lines = append(lines, "layout   the origin's advertised layout, RE-BASED onto your pin "+
+			"(it features "+out.RegistryRebasedFrom+"). One origin can host several peers; the "+
+			"pinned root's own signature is what checks that the substitution was right")
+	} else if out.RegistryDiscovered {
 		lines = append(lines, "layout   discovered from the origin's transport-profile")
 	} else {
 		lines = append(lines, "layout   PINNED by you — this origin serves no transport-profile, "+
@@ -233,7 +242,7 @@ func cmdRegistryShow(sh *Shell) (Result, error) {
 	lines := []string{
 		fmt.Sprintf("registry %s", out.Registry),
 		fmt.Sprintf("origin   %s", out.RegistryOrigin),
-		fmt.Sprintf("layout   %s", pinnedOrDiscovered(out.RegistryDiscovered)),
+		fmt.Sprintf("layout   %s", pinnedOrDiscovered(out.RegistryDiscovered, out.RegistryRebasedFrom)),
 	}
 	if out.RegistryFresh != "" {
 		lines = append(lines, fmt.Sprintf("root     verified as of %s", out.RegistryFresh))
@@ -325,9 +334,24 @@ func cmdRegistryIssue(sh *Shell, args []string) (Result, error) {
 			targetOrigin, err)
 	}
 	if layout.PeerID != target {
-		return Result{}, fmt.Errorf("registry issue: %s advertises peer %s, you named %s — "+
-			"refusing to sign a binding whose target and whose reach disagree",
-			targetOrigin, layout.PeerID, target)
+		// This refusal STAYS, and it is deliberately not the re-base the
+		// consumer paths take (fetch.Layout.RebaseTo). There the
+		// substitution is checked one hop later by the target's own
+		// signature, so a wrong guess fails closed. Here we are the
+		// ISSUER: a re-based profile would go into a binding that WE
+		// then sign, so our signature would be the only thing asserting
+		// a reach we synthesized, and nothing downstream could catch it.
+		// A derivation is safe exactly when someone else's key checks it.
+		//
+		// The remedy is not a flag — it is the target's own published
+		// profile. A co-hosted peer publishes one (the live registry
+		// commits `system/peer/transport/{peer}/primary` for every peer
+		// it names), and that is the honest source for a binding's reach.
+		return Result{}, fmt.Errorf("registry issue: %s features peer %s, you named %s — refusing "+
+			"to SIGN a binding whose reach we would have had to derive. One origin can host "+
+			"several peers, so this is not necessarily wrong; supply %s's own advertised "+
+			"transport-profile as the source of its reach",
+			targetOrigin, layout.PeerID, target, target)
 	}
 
 	issued, err := sh.Local.Peer.IssueBinding(entitysdk.IssueOpts{
@@ -488,7 +512,7 @@ func cmdBrowseWhere(sh *Shell) (Result, error) {
 	}
 	if out.Registry != "" {
 		lines = append(lines, fmt.Sprintf("via      registry %s (%s)", out.Registry,
-			pinnedOrDiscovered(out.RegistryDiscovered)))
+			pinnedOrDiscovered(out.RegistryDiscovered, out.RegistryRebasedFrom)))
 	} else {
 		lines = append(lines, "via      nothing — you supplied a peer-id, so no name authority vouched for this target")
 	}
@@ -548,7 +572,15 @@ func renderPage(out workbench.BrowseOutput) []string {
 		lines = append(lines, strings.Join(crumbs, " / "))
 	}
 	lines = append(lines, "")
-	lines = append(lines, strings.Split(out.Content.BodyMarkdown, "\n")...)
+	// The DISPLAY body, not the raw one. A terminal is a better place to
+	// dump 8 MB than a GUI is — there is a pager behind it — but an HTML
+	// page still has to be lowered to text or it is unreadable either
+	// way, and `::embed` directives are figures, not prose. Both are
+	// decided once, renderer-neutrally, in workbench/body_display.go.
+	if out.Body.Note != "" {
+		lines = append(lines, "("+out.Body.Note+")", "")
+	}
+	lines = append(lines, strings.Split(out.Body.Text, "\n")...)
 
 	if len(out.Content.Nav) > 0 {
 		var nav []string
@@ -601,9 +633,16 @@ func renderChain(out workbench.BrowseOutput) []string {
 	return lines
 }
 
-func pinnedOrDiscovered(discovered bool) string {
-	if discovered {
-		return "discovered from the origin's transport-profile"
+// pinnedOrDiscovered names the layout's provenance. THREE states, not
+// two: a re-based layout came from the origin but is not the layout the
+// origin advertised, and reporting it as "discovered" claims a fact the
+// origin never asserted. See fetch.Layout.RebaseTo.
+func pinnedOrDiscovered(discovered bool, rebasedFrom string) string {
+	if !discovered {
+		return "pinned by hand"
 	}
-	return "pinned by hand"
+	if rebasedFrom != "" {
+		return "the origin's layout, re-based onto your pin (it features " + rebasedFrom + ")"
+	}
+	return "discovered from the origin's transport-profile"
 }

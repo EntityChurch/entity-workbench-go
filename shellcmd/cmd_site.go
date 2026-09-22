@@ -142,7 +142,11 @@ func renderConsume(out workbench.ConsumeOutput, listKeys bool) []string {
 		fmt.Sprintf("origin   %s", out.Origin),
 		fmt.Sprintf("peer     %s", dashIfEmpty(out.PeerID)),
 	}
-	if out.Discovered {
+	if out.Discovered && out.RebasedFrom != "" {
+		lines = append(lines, "layout   the origin's advertised layout, RE-BASED onto the peer you "+
+			"asked for (it features "+out.RebasedFrom+"). Co-hosting is ordinary; this peer's own "+
+			"root signature is what checks the substitution")
+	} else if out.Discovered {
 		lines = append(lines, "layout   discovered from the origin's transport-profile")
 	} else {
 		lines = append(lines, "layout   PINNED by you — this origin serves no transport-profile, so a "+

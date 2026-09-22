@@ -109,7 +109,7 @@ public sealed class QueryBrowserPanel : UserControl, IDisposable
             FontSize = 13,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            ItemTemplate = new FuncDataTemplate<MatchVm>((vm, _) =>
+            ItemTemplate = Rows.Of<MatchVm>((vm, _) =>
             {
                 var stack = new StackPanel
                 {

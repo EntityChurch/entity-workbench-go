@@ -117,6 +117,26 @@ type ContentResolver interface {
 	ListChildren(loc Location, under string) []ChildEntry
 }
 
+// AssetResolver is the OPTIONAL half of [ContentResolver]: reading a
+// site's embedded assets — its figures.
+//
+// Optional rather than folded into ContentResolver on purpose. A
+// resolver that cannot serve assets is a real and correct thing (the
+// bundled demo site has none), and widening the required interface would
+// force every implementation to grow a method returning "no" — which is
+// how a capability stops being checkable. A renderer type-asserts, and
+// a resolver that does not implement this simply renders no figures,
+// visibly, rather than silently rendering broken ones.
+//
+// `ref` is the raw reference from the page body. The implementation MUST
+// put it through [AssetNameFromRef] rather than trusting it: that
+// function is the gate that stops a page from steering the process at
+// an arbitrary URL, and a resolver that skips it has opened the hole for
+// every renderer above it.
+type AssetResolver interface {
+	ResolveAsset(loc Location, ref string) (SiteAsset, bool)
+}
+
 // LocalTreeResolver resolves pages from the bound peer's tree via
 // the entitysdk Store. Synchronous L0 reads — no I/O, no HTTP, no
 // goroutine.

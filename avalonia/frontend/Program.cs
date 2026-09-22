@@ -215,37 +215,56 @@ public class App : Application
         // Register the panels available to PanelSlot dropdowns.
         // Order here = order in the slot picker menu.
         PanelRegistry.Register("detail", "Detail",
-            (handle, host) => new DetailPanel(handle, host));
+            (handle, host) => new DetailPanel(handle, host),
+            PanelRegistry.Category.ThisPeer, "The selected entity, decoded.");
         PanelRegistry.Register("peer-info", "Peer Info",
-            (handle, _) => new PeerInfoPanel(handle));
+            (handle, _) => new PeerInfoPanel(handle),
+            PanelRegistry.Category.ThisPeer, "This peer's identity, storage and listener.");
         PanelRegistry.Register("log-viewer", "Log Viewer",
-            (handle, _) => new LogViewerPanel(handle));
+            (handle, _) => new LogViewerPanel(handle),
+            PanelRegistry.Category.Diagnostics, "This process's log stream.");
         PanelRegistry.Register("markdown-view", "Markdown View",
-            (handle, host) => new MarkdownViewPanel(handle, host));
+            (handle, host) => new MarkdownViewPanel(handle, host),
+            PanelRegistry.Category.ThisPeer, "Renders the selected markdown entity.");
         PanelRegistry.Register("markdown-files", "Markdown Files",
-            (handle, host) => new MarkdownFilesPanel(handle, host));
+            (handle, host) => new MarkdownFilesPanel(handle, host),
+            PanelRegistry.Category.ThisPeer, "Markdown entities in this peer's tree.");
         PanelRegistry.Register("query-browser", "Query Browser",
-            (handle, host) => new QueryBrowserPanel(handle, host));
+            (handle, host) => new QueryBrowserPanel(handle, host),
+            PanelRegistry.Category.Diagnostics, "Query this peer's tree by type and path.");
         PanelRegistry.Register("handler-browser", "Handler Browser",
-            (handle, host) => new HandlerBrowserPanel(handle, host));
-        PanelRegistry.Register("site-view", "Site",
-            (handle, host) => new SiteViewPanel(handle, host));
+            (handle, host) => new HandlerBrowserPanel(handle, host),
+            PanelRegistry.Category.Diagnostics, "Handlers this peer has registered, and their ops.");
+        PanelRegistry.Register("site-view", "Local Site (this peer's own)",
+            (handle, host) => new SiteViewPanel(handle, host),
+            PanelRegistry.Category.ThisPeer,
+            "A site published by THIS peer. Opens the bundled demo. For sites out on "
+            + "the network, use Browser.");
         // The reader's surface is above; this is the operator's. Same
         // published bytes, opposite question — "what does it say" vs
         // "is it serving what it signed". Both shapes exist on purpose;
         // the contrast is the UX research.
-        PanelRegistry.Register("publisher-verify", "Publisher Verify",
-            (handle, host) => new PublisherVerifyPanel(handle, host));
+        PanelRegistry.Register("publisher-verify", "Origin Inspector (is it serving what it signed?)",
+            (handle, host) => new PublisherVerifyPanel(handle, host),
+            PanelRegistry.Category.Network,
+            "Point it at an origin URL and it reports which link of the verification chain "
+            + "held and what each one proves. It shows the CHAIN, never a page — use Browser "
+            + "to read the content.");
         // The browser is the journey; Publisher Verify is the inspector.
         // Both stay: they answer different questions about the same
         // bytes, and an operator debugging an origin does not want a
         // page in the way.
-        PanelRegistry.Register("browser", "Browser",
-            (handle, host) => new BrowserPanel(handle, host));
+        PanelRegistry.Register("browser", "Browser — registry + sites on the network",
+            (handle, host) => new BrowserPanel(handle, host),
+            PanelRegistry.Category.Network,
+            "START HERE for anything remote. Type a domain (entitychurchregistry.org), walk "
+            + "its registry, and open any name it carries.");
         PanelRegistry.Register("shell", "Shell",
-            (handle, host) => new ShellPanel(handle, host));
+            (handle, host) => new ShellPanel(handle, host),
+            PanelRegistry.Category.ThisPeer, "The entity-shell REPL against this peer.");
         PanelRegistry.Register("peer-connections", "Peer Connections",
-            (handle, _) => new PeerConnectionsPanel(handle));
+            (handle, _) => new PeerConnectionsPanel(handle),
+            PanelRegistry.Category.Network, "Who this peer is connected to, from the tree's liveness record.");
         // The generic host: ONE panel class, every program, mounted from
         // descriptors.
         //
@@ -261,11 +280,14 @@ public class App : Application
         // Note what is NOT here: three panel classes. The only per-program thing
         // is the string, and it is used for authoring only.
         PanelRegistry.Register("program-life", "Life (generic host)",
-            (handle, _) => new ProgramPanel(handle, "life"));
+            (handle, _) => new ProgramPanel(handle, "life"),
+            PanelRegistry.Category.Programs, "");
         PanelRegistry.Register("program-snake", "Snake (generic host)",
-            (handle, _) => new ProgramPanel(handle, "snake"));
+            (handle, _) => new ProgramPanel(handle, "snake"),
+            PanelRegistry.Category.Programs, "");
         PanelRegistry.Register("program-asteroids", "Asteroids (generic host)",
-            (handle, _) => new ProgramPanel(handle, "asteroids"));
+            (handle, _) => new ProgramPanel(handle, "asteroids"),
+            PanelRegistry.Category.Programs, "");
 
         // The sharding floor on a screen: 64×64 Life, past the single-eval budget
         // cliff, mounting only because the host runs the static-k shard family.
@@ -273,13 +295,15 @@ public class App : Application
         // sharded (the descriptor's shard block is the host's concern). This is
         // the visual validation of the host-as-compute-kernel floor.
         PanelRegistry.Register("program-life-big", "Life 64×64 (sharded host)",
-            (handle, _) => new ProgramPanel(handle, "life-big"));
+            (handle, _) => new ProgramPanel(handle, "life-big"),
+            PanelRegistry.Category.Programs, "");
 
         // Interactive Life: a d-pad cursor + toggle/regen/pause action buttons,
         // one key-set input port — the standard controller (controls.go),
         // mounted through the SAME generic ProgramPanel as every other program.
         PanelRegistry.Register("program-life-edit", "Life (interactive)",
-            (handle, _) => new ProgramPanel(handle, "life-edit"));
+            (handle, _) => new ProgramPanel(handle, "life-edit"),
+            PanelRegistry.Category.Programs, "");
     }
 
     public override void OnFrameworkInitializationCompleted()

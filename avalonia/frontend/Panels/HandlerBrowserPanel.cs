@@ -84,7 +84,7 @@ public sealed class HandlerBrowserPanel : UserControl, IDisposable
             FontSize = 13,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            ItemTemplate = new FuncDataTemplate<HandlerVm>((vm, _) =>
+            ItemTemplate = Rows.Of<HandlerVm>((vm, _) =>
             {
                 var stack = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
                 stack.Children.Add(new TextBlock { Text = vm.Pattern, FontSize = 13 });
@@ -114,7 +114,7 @@ public sealed class HandlerBrowserPanel : UserControl, IDisposable
             FontSize = 13,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            ItemTemplate = new FuncDataTemplate<OpVm>((vm, _) =>
+            ItemTemplate = Rows.Of<OpVm>((vm, _) =>
             {
                 var stack = new StackPanel { Orientation = Orientation.Vertical };
                 stack.Children.Add(new TextBlock { Text = vm.Name, FontSize = 13 });
@@ -171,7 +171,7 @@ public sealed class HandlerBrowserPanel : UserControl, IDisposable
         _outputView = new ItemsControl
         {
             ItemsSource = _output,
-            ItemTemplate = new FuncDataTemplate<OutputVm>((vm, _) => new SelectableTextBlock
+            ItemTemplate = Rows.Of<OutputVm>((vm, _) => new SelectableTextBlock
             {
                 Text = vm.Text,
                 FontFamily = new FontFamily("monospace"),

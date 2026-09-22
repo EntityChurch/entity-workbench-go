@@ -76,7 +76,7 @@ public sealed class MarkdownFilesPanel : UserControl, IDisposable
             ItemsSource = _rows,
             FontFamily = new FontFamily("monospace"),
             FontSize = 13,
-            ItemTemplate = new FuncDataTemplate<RowVm>((vm, _) => BuildRow(vm), supportsRecycling: true),
+            ItemTemplate = Rows.Of<RowVm>((vm, _) => BuildRow(vm), supportsRecycling: true),
         };
         _list.DoubleTapped += (_, _) => ToggleSelectedRow();
         _list.KeyDown += (_, e) =>

@@ -53,7 +53,7 @@ public sealed class DetailPanel : UserControl, IDisposable
             FontSize = 13,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            ItemTemplate = new FuncDataTemplate<DetailLineVm>((vm, _) =>
+            ItemTemplate = Rows.Of<DetailLineVm>((vm, _) =>
                 new SelectableTextBlock
                 {
                     Text = vm.Text,

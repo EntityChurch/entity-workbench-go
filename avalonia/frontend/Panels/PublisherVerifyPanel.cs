@@ -134,7 +134,7 @@ public sealed class PublisherVerifyPanel : UserControl, IDisposable
         _stepList = new ItemsControl
         {
             ItemsSource = _steps,
-            ItemTemplate = new FuncDataTemplate<StepRow>((row, _) => BuildStepView(row), supportsRecycling: false),
+            ItemTemplate = Rows.Of<StepRow>((row, _) => BuildStepView(row), supportsRecycling: false),
         };
 
         _keyList = new ListBox
@@ -144,7 +144,7 @@ public sealed class PublisherVerifyPanel : UserControl, IDisposable
             FontSize = 11,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            ItemTemplate = new FuncDataTemplate<string>((line, _) =>
+            ItemTemplate = Rows.Of<string>((line, _) =>
                 new SelectableTextBlock { Text = line, Opacity = 0.75, TextWrapping = TextWrapping.NoWrap },
                 supportsRecycling: true),
         };

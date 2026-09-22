@@ -185,6 +185,22 @@ type BrowseOutput struct {
 	// RegistryDiscovered is false when the registry's layout was pinned
 	// by hand rather than read from a `transport-profile`.
 	RegistryDiscovered bool
+	// RegistryRebasedFrom is the peer the ORIGIN features, set only when
+	// the registry we pinned is a different peer co-hosted on it. A
+	// third provenance state, and a surface that collapses it into
+	// "discovered" tells the operator the origin advertised a layout it
+	// did not.
+	RegistryRebasedFrom string
+	// RegistryPinFromOrigin is true when the operator supplied no pin and
+	// we took one from the origin's `entity-deployment.json`.
+	//
+	// **This is trust-on-first-use and a surface MUST say so.** An
+	// operator's pin is the one fact the origin did not choose; a pin
+	// the origin nominated means the origin picked its own trust root.
+	// Everything still verifies under that key — a hostile origin cannot
+	// forge a binding for a key it does not hold — but it can hand you
+	// one it does hold and be perfectly consistent underneath it.
+	RegistryPinFromOrigin bool
 	// RegistryFresh is the registry root's `published_at`, rendered.
 	RegistryFresh string
 
@@ -193,6 +209,11 @@ type BrowseOutput struct {
 	// NamesAuthority says where Names came from, in words a user reads:
 	// the walk is authoritative, the listing is a menu.
 	NamesAuthority string
+	// NamesNotARegistry is true when the pinned peer publishes something
+	// other than registry bindings — the co-hosting case. A renderer
+	// should show NamesNote prominently rather than an empty list, and
+	// should offer re-pinning rather than implying the registry is empty.
+	NamesNotARegistry bool
 	// NamesNote carries a reconciliation disagreement, when there is
 	// one. Empty when the menu and the signed key set agree.
 	NamesNote string
@@ -204,16 +225,39 @@ type BrowseOutput struct {
 	// chosen for the user.
 	//
 	// It is surfaced because there is **no landing-site field anywhere in
-	// the tree** to consult: `entity-browser-rust` carries theirs in an
-	// `entity-deployment.json` beside the emission, which is deployment
-	// configuration and not something a signature covers. So the choice
-	// here is first-in-byte-order, which is arbitrary, and an arbitrary
-	// choice presented as "the site" is a small lie that compounds — a
-	// user reads a page believing it is the publisher's front door.
+	// the tree** to consult — a signature covers no such thing. Since
+	// 2026-08-30 we do consult the origin's `entity-deployment.json`
+	// `home_site` first, which is the cohort's deployment-configuration
+	// answer, and this flag is now true only when that was absent or
+	// named a site the signed root does not commit, leaving
+	// first-in-byte-order. An arbitrary choice presented as "the site"
+	// is a small lie that compounds — a user reads a page believing it
+	// is the publisher's front door.
 	SiteDefaulted bool
+
+	// Notice is a message about the LAST ACTION that did not change the
+	// page — currently, a link that leaves the entity system (see
+	// [BrowseModel.Follow]).
+	//
+	// Deliberately not Err. A renderer clears the page on Err, because a
+	// refused navigation must never leave the previous page sitting under
+	// a failed chain. Clicking an external link refuses nothing and
+	// invalidates nothing, so routing it through Err would blank a page
+	// the user is still reading. Cleared at the start of every Follow.
+	Notice string
 
 	// Site content, via [SiteModel] over a [RemoteSiteResolver].
 	Content SiteRenderOutput
+
+	// Body is Content's body PREPARED FOR DISPLAY: HTML lowered to text,
+	// `::embed` directives lowered into markdown images, and a size cap
+	// with a note saying what was dropped.
+	//
+	// It is separate from Content.BodyMarkdown, which stays the verified
+	// bytes, because those two answer different questions and collapsing
+	// them is how an 8.27 MB pre-rendered paper ended up going through
+	// Markdig on the UI thread. See body_display.go.
+	Body BodyView
 
 	// Steps is the trust chain for THESE bytes. Never a summary, never
 	// collapsed, and a step that could not run is Failed or Skipped with
@@ -254,11 +298,28 @@ type BrowseModel struct {
 	// rather than assumed here.
 	targetOrigin string
 
+	// cache is process-lifetime and shared by every consumer this model
+	// builds, registry included. Keyed by content hash, so it is a
+	// memoization of proofs already done and not a freshness claim — the
+	// argument is in fetch/cache.go, along with the measurement that
+	// made it necessary (61 requests to open a page, 60 to click a link
+	// in it, 51 of them the same trie every time).
+	cache *fetch.Cache
+	// consumers holds one verifying reader per publisher, for the life
+	// of the browser. Rebuilding one per navigation is what reset the
+	// seq floor to nothing (fetch.ErrSeqRollback) and threw away every
+	// verified byte between two clicks.
+	consumers map[string]*fetch.Consumer
+
 	history []Address
 	hpos    int
 
 	site *SiteModel
-	out  BrowseOutput
+	// assets serves the current page's figures. Held separately from
+	// `site` because it is read from a renderer thread, long after the
+	// navigation that produced it returned.
+	assets AssetResolver
+	out    BrowseOutput
 
 	running   bool
 	listeners []func()
@@ -271,10 +332,40 @@ type BrowseModel struct {
 // registry is pinned or an address names a peer-id outright.
 func NewBrowseModel(client *http.Client) *BrowseModel {
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = fetch.NewHTTPClient(0)
 	}
-	return &BrowseModel{client: client, hpos: -1}
+	return &BrowseModel{
+		client:    client,
+		hpos:      -1,
+		cache:     fetch.NewCache(0),
+		consumers: map[string]*fetch.Consumer{},
+	}
 }
+
+// consumerFor returns the verifying reader for a layout, building it
+// once and keeping it.
+//
+// Keyed by (peer-id, origin, manifest URL) rather than by peer-id alone:
+// a re-based layout and a discovered one can name the same peer through
+// different prefixes, and they are different readers of the same
+// publisher. Two consumers for one peer would each hold their own seq
+// floor, which is how a floor stops being one.
+func (m *BrowseModel) consumerFor(layout fetch.Layout) *fetch.Consumer {
+	key := layout.PeerID + "|" + layout.Origin + "|" + layout.ManifestURL()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c, ok := m.consumers[key]; ok {
+		return c
+	}
+	c := fetch.NewConsumerWithCache(layout, m.client, m.cache)
+	m.consumers[key] = c
+	return c
+}
+
+// CacheStats reports what the content cache is holding and how often it
+// has answered. Exposed so a surface can say *why* a navigation was
+// fast, rather than leaving the speed-up looking like a shortcut.
+func (m *BrowseModel) CacheStats() fetch.CacheStats { return m.cache.Stats() }
 
 // PinRegistry sets the trust root.
 //
@@ -286,27 +377,44 @@ func NewBrowseModel(client *http.Client) *BrowseModel {
 // from here.
 func (m *BrowseModel) PinRegistry(ctx context.Context, origin, peerID string, ep *types.TransportEndpoint) error {
 	var (
-		layout fetch.Layout
-		err    error
+		layout        fetch.Layout
+		err           error
+		pinFromOrigin bool
 	)
 	if ep != nil {
 		layout, err = fetch.PinnedLayout(origin, peerID, *ep)
 	} else {
+		// No pin supplied: ask the origin what registry it nominates.
+		// This is TOFU and is labelled as such downstream — but refusing
+		// to look would repeat AP44, protecting an invariant at the cost
+		// of the feature when the honest move is to do it and say what
+		// it rests on. An operator with a domain and nothing else is the
+		// normal first experience, not an edge case.
+		if peerID == "" {
+			if d, derr := fetch.LoadDeployment(ctx, origin, m.client); derr == nil && d.RegistryPin != nil {
+				peerID = d.RegistryPin.PeerID
+				if d.RegistryPin.Origin != "" {
+					origin = d.RegistryPin.Origin
+				}
+				pinFromOrigin = true
+			}
+		}
 		layout, err = fetch.LoadLayout(ctx, origin, m.client)
 		if err == nil && peerID != "" && layout.PeerID != peerID {
-			// The operator pinned a key and the origin advertised a
-			// different one. That is not a mismatch to reconcile — it is
-			// the origin claiming to be someone else, and the pin wins
-			// by refusing rather than by overriding.
-			return fmt.Errorf("origin %s advertises peer %s; you pinned %s — refusing rather than "+
-				"picking one, because the pin is the only thing here you brought yourself",
-				origin, layout.PeerID, peerID)
+			// NOT a mismatch: one origin may host several peers, and the
+			// well-known profile features exactly one of them. This
+			// refusal made the live federation's registry unreachable —
+			// entitychurchregistry.org features its SITE peer while the
+			// registry peer sits beside it (measured 2026-08-30). Re-base
+			// the origin's layout onto the pin; the pinned root's own
+			// signature is what checks the substitution, one hop later.
+			layout, err = layout.RebaseTo(peerID)
 		}
 	}
 	if err != nil {
 		return err
 	}
-	reg, err := fetch.NewRegistry(layout, m.client)
+	reg, err := fetch.NewRegistryWithCache(layout, m.client, m.cache)
 	if err != nil {
 		return err
 	}
@@ -319,6 +427,8 @@ func (m *BrowseModel) PinRegistry(ctx context.Context, origin, peerID string, ep
 	m.out.Registry = layout.PeerID
 	m.out.RegistryOrigin = layout.Origin
 	m.out.RegistryDiscovered = ep == nil
+	m.out.RegistryRebasedFrom = layout.RebasedFrom
+	m.out.RegistryPinFromOrigin = pinFromOrigin
 	m.mu.Unlock()
 	m.fire()
 	return nil
@@ -371,10 +481,19 @@ func (m *BrowseModel) RefreshNames(ctx context.Context) error {
 	m.regRoot = &set.Root
 	m.out.RegistryFresh = freshnessOf(set.Root.Data.PublishedAt)
 	m.out.Names = rowsFrom(set)
+	if set.Diagnosis != "" {
+		// An empty list is a confident wrong answer when the peer is not a
+		// registry. Lead with WHY, not with the count.
+		m.out.NamesAuthority = "no names — and here is why, because an empty list would be misleading"
+		m.out.NamesNote = set.Diagnosis
+		m.out.NamesNotARegistry = set.NotARegistry
+		return nil
+	}
 	m.out.NamesAuthority = fmt.Sprintf("%d names, from the walk of signed root %s — "+
 		"the origin cannot hide one of these without the walk failing",
 		len(set.Names), shortHash(set.Root.Data.RootHash.String()))
 	m.out.NamesNote = reconcileNote(set)
+	m.out.NamesNotARegistry = false
 	return nil
 }
 
@@ -439,6 +558,73 @@ func (m *BrowseModel) Open(ctx context.Context, address string) error {
 		m.fire()
 		return err
 	}
+	if err := m.goTo(ctx, addr); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.history = append(m.history[:m.hpos+1], m.resolvedAddr())
+	m.hpos = len(m.history) - 1
+	m.syncNavLocked()
+	m.mu.Unlock()
+	m.fire()
+	return nil
+}
+
+// Follow navigates a link as written in the page currently on screen.
+//
+// This is the entry point a renderer calls when a user clicks a link in
+// the rendered markdown, and it exists so that **no renderer has to know
+// how a link resolves**. Classification is Layer-2 algorithm contract
+// (see [resolveInSitePage]) — a C# or tview reimplementation would be a
+// second, drifting copy of a rule that must be byte-identical across
+// implementations, and the first symptom of drift is a dead link, which
+// nobody files as a correctness bug.
+//
+// Three outcomes, and only the first moves the browser:
+//
+//   - in-site / cross-site / cross-peer → resolve against the current
+//     location and navigate, pushing history exactly like [Open].
+//   - external (`http(s)://`, `mailto:`) → **not followed**, and the page
+//     stays up. This browser's whole contract is that what is on screen
+//     came with a verification chain; opening an unverifiable URL in it
+//     would put bytes on that surface with nothing behind them. The URL
+//     is reported through Notice so a renderer can offer it for copying.
+//   - malformed `entity://` → reported the same way rather than guessed
+//     at, matching the reference implementation's fallback.
+//
+// A same-host link keeps the NAME we arrived by, not the resolved
+// peer-id, so the chain is re-run through the registry on every hop and
+// the address bar keeps saying what the user typed. That costs a name
+// resolution per click and it is the same trade [Back] makes: a cached
+// page is a claim about a moment that has passed.
+func (m *BrowseModel) Follow(ctx context.Context, target string) error {
+	m.mu.Lock()
+	cur := Location{PeerID: m.out.hostPeer, SiteID: m.out.Site, Page: m.out.Page}
+	name := m.out.hostName
+	m.out.Notice = ""
+	m.mu.Unlock()
+
+	loc, kind, ok := ClassifyTarget(target, cur)
+	if !ok || kind == LinkExternal {
+		m.mu.Lock()
+		m.out.Notice = fmt.Sprintf(
+			"%q leaves the entity system. It is not opened here: every page this browser shows "+
+				"arrives with the chain beside it, and an ordinary web URL has none.", target)
+		m.mu.Unlock()
+		m.fire()
+		return nil
+	}
+
+	addr := Address{SiteID: loc.SiteID, Page: loc.Page}
+	if kind == LinkCrossPeer {
+		// A cross-peer link names its own peer and no name vouches for
+		// it — goTo will say so in the chain (the skipAll branch).
+		addr.PeerID = loc.PeerID
+	} else {
+		addr.Name = name
+		addr.PeerID = cur.PeerID
+	}
+
 	if err := m.goTo(ctx, addr); err != nil {
 		return err
 	}
@@ -589,9 +775,22 @@ func (m *BrowseModel) goTo(ctx context.Context, addr Address) error {
 					"out-of-band in v1"), res)
 		}
 		layout, err = fetch.LoadLayout(ctx, targetOrigin, m.client)
-		nav.record("transport", err, fmt.Sprintf("discovered profile at %s", targetOrigin),
+		detail := fmt.Sprintf("discovered profile at %s", targetOrigin)
+		// The origin's well-known profile features ONE peer, and the
+		// address named a peer. When they differ the origin is hosting
+		// several peers — re-base onto the one that was asked for, or we
+		// would walk the featured peer's root and answer a question
+		// nobody asked, silently. (Measured 2026-08-30.)
+		if err == nil && addr.PeerID != "" && layout.PeerID != addr.PeerID {
+			featured := layout.PeerID
+			layout, err = layout.RebaseTo(addr.PeerID)
+			detail = fmt.Sprintf("%s features %s; layout RE-BASED onto the %s you addressed",
+				targetOrigin, featured, addr.PeerID)
+		}
+		nav.record("transport", err, detail,
 			"The layout came from the origin's own well-known profile, so no URL here was derived "+
-				"by convention (AP21).")
+				"by convention (AP21). Where a second peer is co-hosted, only the peer-id segment "+
+				"moves — and the target root's signature is what checks that it moved correctly.")
 		if err != nil {
 			return m.failedChain(nav, err, res)
 		}
@@ -612,7 +811,7 @@ func (m *BrowseModel) goTo(ctx context.Context, addr Address) error {
 		}
 	}
 
-	consumer := fetch.NewConsumer(layout, m.client)
+	consumer := m.consumerFor(layout)
 	root, err := consumer.VerifiedRoot(ctx)
 	nav.record("target root", err, fmt.Sprintf("%s seq=%d prefix=%q",
 		shortHash(root.Data.RootHash.String()), root.Data.Seq, root.Data.Prefix),
@@ -639,7 +838,34 @@ func (m *BrowseModel) goTo(ctx context.Context, addr Address) error {
 	sites := resolver.Sites()
 	defaulted := false
 	if addr.SiteID == "" && len(sites) > 0 {
-		addr.SiteID, defaulted = sites[0], true
+		// Ask the origin which site is its front door before falling back
+		// to byte order. `entity-deployment.json`'s `home_site` is the
+		// cohort's answer and we were ignoring it: billslab.com declares
+		// `billslab-main` and we opened `billslab-entity-system`, purely
+		// because it sorts first. That is an arbitrary choice presented
+		// as the publisher's front page, which is the small lie
+		// SiteDefaulted was added to confess. Reading the declaration
+		// removes the need to confess anything.
+		//
+		// Unsigned and origin-supplied, so it is a HINT: it may only
+		// select among sites the signed root already commits to. An
+		// origin naming a site that is not in the walk is ignored, not
+		// followed — otherwise it could point the reader at a page the
+		// publisher never signed.
+		home := ""
+		if d, derr := fetch.LoadDeployment(ctx, layout.Origin, m.client); derr == nil {
+			for _, s := range sites {
+				if s == d.HomeSite.Site {
+					home = s
+					break
+				}
+			}
+		}
+		if home != "" {
+			addr.SiteID = home
+		} else {
+			addr.SiteID, defaulted = sites[0], true
+		}
 	}
 
 	site := NewSiteModel(resolver, Location{PeerID: layout.PeerID, SiteID: addr.SiteID, Page: addr.Page})
@@ -669,8 +895,34 @@ func (m *BrowseModel) goTo(ctx context.Context, addr Address) error {
 	m.out.Sites = sites
 	m.out.SiteDefaulted = defaulted && len(sites) > 1
 	m.out.Content = content
+	m.out.Body = NewBodyView(content.BodyFormat, content.BodyMarkdown)
+	m.assets = resolver
 	m.mu.Unlock()
 	return nil
+}
+
+// Asset resolves one embed reference against the site currently on
+// screen, returning the verified bytes.
+//
+// **Bound to the CURRENT page's location, never to a caller-supplied
+// one.** A renderer asks for a reference it read out of the body it is
+// drawing; letting it name the site as well would let a stale or
+// mistaken caller pull bytes from a site the chain on screen does not
+// cover, and the whole contract of this panel is that the chain
+// describes the bytes displayed and no others.
+//
+// Returns ok=false for a ref [AssetNameFromRef] rejects, for an asset
+// the signed root does not commit, and for a fetch that fails — three
+// different facts that are one answer here, because a renderer's move is
+// the same in all three: draw the fallback text, not a broken image.
+func (m *BrowseModel) Asset(ref string) (SiteAsset, bool) {
+	m.mu.Lock()
+	res, loc := m.assets, Location{PeerID: m.out.hostPeer, SiteID: m.out.Site}
+	m.mu.Unlock()
+	if res == nil {
+		return SiteAsset{}, false
+	}
+	return res.ResolveAsset(loc, ref)
 }
 
 func (m *BrowseModel) failed(err error) error {

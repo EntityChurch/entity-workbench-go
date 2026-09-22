@@ -142,11 +142,28 @@ type Registry struct {
 // here, and the alternative to failing is verifying nothing while
 // looking like it verified something.
 func NewRegistry(layout Layout, client *http.Client) (*Registry, error) {
+	return NewRegistryWithCache(layout, client, NewCache(0))
+}
+
+// NewRegistryWithCache pins a registry over a shared content cache.
+//
+// The registry's own trie is walked once per enumeration and re-walked
+// on every name resolution that goes through [Registry.ResolveIn]; a
+// browser that re-pins nothing between clicks was paying four
+// round-trips per navigation to re-verify a root it had already
+// verified. Sharing the cache with the target publishers is safe for the
+// reason stated on [Consumer.Cache]: entries are keyed by the hash of
+// their own bytes, so no publisher can plant an entry another publisher
+// would read as its own.
+func NewRegistryWithCache(layout Layout, client *http.Client, cache *Cache) (*Registry, error) {
 	pub, keyType, err := publishedroot.DeriveKey(layout.PeerID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: pinning registry %s: %w", layout.PeerID, err)
 	}
-	return &Registry{Consumer: NewConsumer(layout, client), pub: pub, keyType: keyType}, nil
+	return &Registry{
+		Consumer: NewConsumerWithCache(layout, client, cache),
+		pub:      pub, keyType: keyType,
+	}, nil
 }
 
 // PeerID is the pinned registry's peer-id — the trust root and the
@@ -216,6 +233,36 @@ type NameSet struct {
 	// stale listing), and the shape a **targeted withholding** takes: a
 	// name hidden from the menu that the walk still proves is there.
 	CommittedOnly []string
+
+	// NotARegistry is true when the walk succeeded, the peer's root
+	// commits keys, and NONE of them is a by-name binding. The peer is a
+	// live publisher of something else — sites, apps — and asking it for
+	// names is a category error, not an empty registry.
+	//
+	// **This field exists because "0 names" is a confident wrong answer.**
+	// A consumer that reports an empty list here has told the operator
+	// the registry is empty, when what happened is that they are looking
+	// at the wrong peer. It is the same root cause as AP44 — one origin
+	// hosting several peers — in the shape that survived the AP44 fix,
+	// because it needs no refusal to go wrong: with no pin supplied we
+	// adopt whichever peer the origin features, and if that is the site
+	// peer the walk honestly commits zero bindings. Reported by the
+	// operator against the live registry within an hour of the fix.
+	NotARegistry bool
+	// Diagnosis is a plain-language account of an empty or unexpected
+	// result, or "" when Names is non-empty. Surfaces MUST show it
+	// instead of rendering a bare empty list.
+	Diagnosis string
+	// OtherPrefixes is the top path segment of every committed key, with
+	// counts, when NotARegistry. It is the evidence for Diagnosis and
+	// what tells an operator what this peer actually is.
+	OtherPrefixes []PrefixCount
+}
+
+// PrefixCount is one top-level path segment of a peer's committed keys.
+type PrefixCount struct {
+	Prefix string
+	Count  int
 }
 
 // Reconciled reports whether the served menu and the signed key set
@@ -291,7 +338,58 @@ func (r *Registry) Enumerate(ctx context.Context) (NameSet, error) {
 	if set.ListingErr == nil {
 		set.AdvertisedOnly, set.CommittedOnly = diffNames(set.Listing, set.NameStrings())
 	}
+	set.diagnose(absPrefix, r.Layout)
 	return set, nil
+}
+
+// diagnose explains an empty result instead of reporting it as one.
+//
+// Three shapes, and only the first is "this registry has no names":
+//
+//   - the root commits nothing at all — an empty publisher;
+//   - the root commits keys, none of them by-name bindings — a peer that
+//     publishes something ELSE, which is the co-hosting case and by far
+//     the most common way an operator lands here;
+//   - names found — nothing to say.
+func (n *NameSet) diagnose(absPrefix string, l Layout) {
+	if len(n.Names) > 0 {
+		return
+	}
+	if len(n.Walk.Bindings) == 0 {
+		n.Diagnosis = "this peer's signed root commits no keys at all — it is a peer that has " +
+			"published nothing, not a registry with no names."
+		return
+	}
+
+	seen := map[string]int{}
+	var order []string
+	for _, b := range n.Walk.Bindings {
+		seg, _, _ := strings.Cut(strings.TrimPrefix(absPrefix+b.Key, "/"+l.PeerID+"/"), "/")
+		if seg == "" {
+			continue
+		}
+		if _, ok := seen[seg]; !ok {
+			order = append(order, seg)
+		}
+		seen[seg]++
+	}
+	sort.Strings(order)
+	for _, seg := range order {
+		n.OtherPrefixes = append(n.OtherPrefixes, PrefixCount{Prefix: seg, Count: seen[seg]})
+	}
+
+	n.NotARegistry = true
+	var what []string
+	for _, p := range n.OtherPrefixes {
+		what = append(what, fmt.Sprintf("%s/ (%d)", p.Prefix, p.Count))
+	}
+	n.Diagnosis = fmt.Sprintf(
+		"peer %s is NOT a registry. Its signed root commits %d key(s) — %s — and not one "+
+			"binding under %s. This is almost always one origin hosting SEVERAL peers: the "+
+			"origin's profile features whichever peer it chose, and the registry beside it is a "+
+			"different peer-id. An origin cannot tell you that peer-id — it is the pin, and the "+
+			"pin is the one fact you supply yourself. Re-pin with the registry's peer-id.",
+		l.PeerID, len(n.Walk.Bindings), strings.Join(what, ", "), types.PeerIssuedByNamePrefix)
 }
 
 // listNames fetches the served by-name listing artifact — the *menu*.

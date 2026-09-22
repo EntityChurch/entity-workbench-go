@@ -77,7 +77,7 @@ public sealed class LogViewerPanel : UserControl, IDisposable
             FontSize = 12,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            ItemTemplate = new FuncDataTemplate<LogRowVm>((vm, _) =>
+            ItemTemplate = Rows.Of<LogRowVm>((vm, _) =>
                 new SelectableTextBlock
                 {
                     Text = vm.Display,

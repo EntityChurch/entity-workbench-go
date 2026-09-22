@@ -193,7 +193,28 @@ func TestConsumeWithholdingInteriorNode(t *testing.T) {
 			"thing: %v", err)
 	}
 
-	got, err := c.Walk(ctx, root.Data.RootHash)
+	// A COLD consumer, and the distinction is the whole content of this
+	// paragraph.
+	//
+	// `c` has already walked this root, so it holds the closure — every
+	// node, hash-verified, in `fetch.Cache` — and answers from it. That
+	// is correct and is not what this test is about: a consumer that has
+	// already obtained and proved the bytes does not need the origin's
+	// permission to keep them, and reporting the FULL site from verified
+	// memory is the opposite of the defect named below. What must never
+	// happen is a consumer meeting a withholding origin and reporting a
+	// SHORTER site, and that consumer is by definition one that has not
+	// walked this root yet.
+	//
+	// So the withholding is measured cold. Re-using `c` here would have
+	// tested the cache instead of the walk, silently, and would have gone
+	// green for the wrong reason the moment the cache landed — which is
+	// exactly what it did on 2026-08-31 before this comment existed.
+	cold := consumerFor(t, origin)
+	if _, err := cold.VerifiedRoot(ctx); err != nil {
+		t.Fatalf("cold consumer could not verify the root: %v", err)
+	}
+	got, err := cold.Walk(ctx, root.Data.RootHash)
 	if err == nil {
 		t.Fatalf("walk succeeded with %d of %d keys after an interior node was withheld — that is "+
 			"a withholding origin reported as a smaller site", len(got.Bindings), len(good.Bindings))

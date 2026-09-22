@@ -13,8 +13,10 @@ namespace EntityAvalonia.Panels;
 // The panel count is mutable:
 //
 //   - "+" button in the stack's header opens a flyout over
-//     PanelRegistry.All() and appends a new slot at the bottom with
-//     the chosen panel kind.
+//     PanelRegistry, GROUPED BY CATEGORY, and appends a new slot at the
+//     bottom with the chosen panel kind. Each entry carries a tooltip
+//     blurb: several panels read the same bytes and the names alone do
+//     not distinguish them.
 //   - Each child PanelSlot exposes a close (✕) button that fires
 //     RequestClose; PanelStack handles it by disposing the slot and
 //     rebuilding the grid.
@@ -347,16 +349,31 @@ public sealed class PanelStack : UserControl, IDisposable
         {
             Placement = PlacementMode.BottomEdgeAlignedRight,
         };
-        foreach (var entry in PanelRegistry.All())
+        // Grouped by category, not one flat list. Eighteen panels with no
+        // ordering principle is not a menu, it is an inventory — and an
+        // operator opening it is asking "what answers my question", which
+        // is what the categories are cut along.
+        foreach (var category in PanelRegistry.CategoriesInOrder())
         {
-            var item = new MenuItem
+            var entries = PanelRegistry.ByCategory(category);
+            if (entries.Count == 0) continue;
+
+            var group = new MenuItem { Header = category, FontSize = 13 };
+            foreach (var entry in entries)
             {
-                Header = entry.DisplayName,
-                FontSize = 13,
-            };
-            var name = entry.Name;
-            item.Click += (_, _) => AddSlot(name);
-            flyout.Items.Add(item);
+                var item = new MenuItem { Header = entry.DisplayName, FontSize = 13 };
+                // The blurb is the difference between a name and an
+                // answer: three of these panels read on the same bytes
+                // and the names alone do not say which does what.
+                if (!string.IsNullOrEmpty(entry.Blurb))
+                {
+                    ToolTip.SetTip(item, entry.Blurb);
+                }
+                var name = entry.Name;
+                item.Click += (_, _) => AddSlot(name);
+                group.Items.Add(item);
+            }
+            flyout.Items.Add(group);
         }
         flyout.ShowAt(_addBtn);
     }

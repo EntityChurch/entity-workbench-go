@@ -48,6 +48,80 @@ type Layout struct {
 	// to have shipped the §6.5.3 closure; it is a claim, not a proof.
 	Freshness     string
 	SignedPointer string
+	// RebasedFrom is the peer-id the origin's profile actually
+	// advertised, set only when RebaseTo built this Layout. Empty on a
+	// layout that came straight off the wire. A caller that reports
+	// provenance MUST distinguish the two — see RebaseTo.
+	RebasedFrom string
+}
+
+// RebaseTo re-points an origin's advertised layout at a DIFFERENT peer
+// hosted on that same origin.
+//
+// **One origin may serve several peers, and the well-known profile names
+// exactly one of them.** `{origin}/transport-profile` is the cold-start
+// entry point for an operator holding a URL and no prior relationship
+// (§6.5.3 Mode A2); nothing in the spec makes it an exclusivity claim,
+// and the live deployment at `entitychurchregistry.org` is the worked
+// counterexample — the well-known object features the *site* peer while
+// the *registry* peer (whose bindings are the entire point of the
+// domain) sits beside it under its own peer-rooted prefix. A consumer
+// that reads the profile's `peer_id` as "the peer here" cannot reach the
+// registry at all. Measured 2026-08-30; that refusal is what this method
+// exists to retire.
+//
+// What is reused and what is substituted, and why the split is safe:
+//
+//   - `content_url_prefix`, `content_layout`, both suffixes are
+//     properties of how the ORIGIN lays bytes out, not of any one peer.
+//     Carried verbatim.
+//   - `tree_url_prefix` / `manifest_url_prefix` may be peer-rooted. Any
+//     whole path SEGMENT equal to the advertised peer-id becomes the new
+//     one. Segment-exact, never a substring — a peer-id appearing inside
+//     a bucket or CDN path segment is not the same claim, the same
+//     discriminator treeBase() already uses.
+//   - A layout carrying the peer-id in no segment is peer-agnostic
+//     (our own origin-rooted emission is), so rebasing it is a change of
+//     PeerID and nothing else.
+//
+// **This is a derivation, and this package's rule is that it does not
+// derive.** The exception is bounded and it is bounded by a signature:
+// the very next fetch is the pinned peer's `published-root`, which is
+// verified against the key the PIN carries. A wrong substitution cannot
+// produce a verifying root — it fails closed, loudly, one hop later.
+// That is categorically unlike deriving a content URL, where a wrong
+// guess yields a 404 indistinguishable from a withholding origin. The
+// caller still owes the user the distinction: this layout is neither
+// "discovered" nor "pinned", and RebasedFrom is how it says so.
+func (l Layout) RebaseTo(peerID string) (Layout, error) {
+	if peerID == "" {
+		return Layout{}, fmt.Errorf("fetch: rebase needs a peer-id")
+	}
+	if peerID == l.PeerID {
+		return l, nil
+	}
+	out := l
+	out.PeerID = peerID
+	out.RebasedFrom = l.PeerID
+	out.Endpoint.TreeURLPrefix = substituteSegment(l.Endpoint.TreeURLPrefix, l.PeerID, peerID)
+	out.Endpoint.ManifestURLPrefix = substituteSegment(l.Endpoint.ManifestURLPrefix, l.PeerID, peerID)
+	return out, nil
+}
+
+// substituteSegment replaces every whole `/`-delimited segment equal to
+// old with new. Segment-exact by construction: a segment that merely
+// contains old is left alone.
+func substituteSegment(s, old, new string) string {
+	if s == "" || old == "" {
+		return s
+	}
+	parts := strings.Split(s, "/")
+	for i, p := range parts {
+		if p == old {
+			parts[i] = new
+		}
+	}
+	return strings.Join(parts, "/")
 }
 
 // LoadLayout fetches {origin}/transport-profile and decodes it.

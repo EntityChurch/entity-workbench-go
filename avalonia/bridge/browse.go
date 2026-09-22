@@ -39,6 +39,7 @@ import "C"
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"sync"
 	"sync/atomic"
@@ -60,11 +61,18 @@ type browseHandle struct {
 	// have entered the operation by the time the first Render lands.
 	ops int64
 
-	mu        sync.Mutex
-	navving   bool
-	listing   bool
-	wakeCb    unsafe.Pointer
-	cancelNav context.CancelFunc
+	mu      sync.Mutex
+	navving bool
+	listing bool
+	// autopinning is true while the start-up pin is resolving. An
+	// explicit BrowsePin during that window is REFUSED rather than
+	// allowed to interleave: both write the same model fields around
+	// network I/O, so last-writer-wins would be decided by which HTTP
+	// round trip finished first. Same single-flight rule the rest of
+	// this file uses, and for the same reason.
+	autopinning bool
+	wakeCb      unsafe.Pointer
+	cancelNav   context.CancelFunc
 }
 
 var (
@@ -148,6 +156,14 @@ func BrowsePin(handle C.int64_t, cJSON *C.char) (result *C.char) {
 	if bh == nil {
 		return C.CString(`{"ok":false,"error":"unknown browse handle"}`)
 	}
+	bh.mu.Lock()
+	if bh.autopinning {
+		bh.mu.Unlock()
+		return C.CString(`{"ok":false,"error":"the start-up registry pin is still resolving — ` +
+			`try again in a moment, or set WB_NO_AUTOPIN=1 to start unpinned"}`)
+	}
+	bh.mu.Unlock()
+
 	var p browsePin
 	if cJSON != nil {
 		if err := json.Unmarshal([]byte(C.GoString(cJSON)), &p); err != nil {
@@ -218,6 +234,74 @@ func BrowseNames(handle C.int64_t) (result *C.char) {
 	return C.CString(`{"ok":true}`)
 }
 
+// BrowseAutoPin pins the configured registry and enumerates it, so the
+// panel opens on a usable browser instead of an empty one. Async.
+//
+// Configuration and precedence live in `workbench.LoadBrowseConfig`
+// (env > ~/.entity/browser.json > built-in default). Nothing about the
+// choice is decided here — this is the call site, not the policy.
+//
+// **Async on purpose.** Pinning does a `entity-deployment.json` fetch and
+// a `transport-profile` fetch, and enumerating walks a signed root. Doing
+// that in `BrowseOpen` — which the panel calls from its constructor,
+// on the UI thread — would block the window's first paint on the network,
+// and on a slow or unreachable origin would hang the app before it drew
+// anything. The panel calls this after it is built and wakes when done.
+//
+// A failure here is not fatal and not silent: the model records it and
+// the operator can pin by hand, which is the pre-2026-08-31 flow.
+//
+//export BrowseAutoPin
+func BrowseAutoPin(handle C.int64_t) (result *C.char) {
+	defer recoverToErrorEnvelope("BrowseAutoPin", &result)
+
+	bh := lookupBrowse(int64(handle))
+	if bh == nil {
+		return C.CString(`{"ok":false,"error":"unknown browse handle"}`)
+	}
+
+	cfg, err := wb.LoadBrowseConfig()
+	if err != nil {
+		// A malformed config file is reported, never ignored — see
+		// LoadBrowseConfig. The browser still opens, unpinned.
+		b, _ := json.Marshal(map[string]any{"ok": false, "error": err.Error()})
+		return C.CString(string(b))
+	}
+	if !cfg.ShouldAutoPin() {
+		return C.CString(`{"ok":true,"skipped":true}`)
+	}
+
+	bh.mu.Lock()
+	if bh.listing || bh.autopinning {
+		bh.mu.Unlock()
+		return C.CString(`{"ok":false,"error":"the registry is already being enumerated"}`)
+	}
+	bh.listing = true
+	bh.autopinning = true
+	bh.mu.Unlock()
+
+	origin, peer := cfg.RegistryOrigin, cfg.RegistryPeer
+	go func() {
+		defer func() { _ = recover() }()
+		ctx := context.Background()
+		// nil endpoint = discover the layout from the origin, and (when
+		// peer is empty) adopt the registry the origin nominates.
+		if perr := bh.model.PinRegistry(ctx, origin, peer, nil); perr == nil {
+			_ = bh.model.RefreshNames(ctx)
+		}
+		atomic.AddInt64(&bh.ops, 1)
+		bh.mu.Lock()
+		bh.listing = false
+		bh.autopinning = false
+		cb := bh.wakeCb
+		bh.mu.Unlock()
+		if cb != nil {
+			C.invoke_tree_wake_browse(cb, C.int64_t(handle))
+		}
+	}()
+	return C.CString(`{"ok":true}`)
+}
+
 // BrowseGo navigates. Async; wakes on completion.
 //
 // A second navigation while one is in flight is refused rather than
@@ -246,6 +330,31 @@ func BrowseGo(handle C.int64_t, cAddr *C.char) (result *C.char) {
 	addr := C.GoString(cAddr)
 	return browseNavigate(handle, func(m *wb.BrowseModel, ctx context.Context) {
 		_ = m.Open(ctx, addr)
+	})
+}
+
+// BrowseFollow follows a link written in the page on screen. Async;
+// wakes on completion, exactly like BrowseGo.
+//
+// The renderer passes the link's raw href — `support.md`,
+// `site:billslab-entity-system`, `../notes/x.md`, `https://…` — and does
+// no interpretation of it whatsoever. Resolving an href to a page slug is
+// Layer-2 algorithm contract that must stay byte-identical with
+// `entity-browser-rust`; a copy of those rules in C# would be a second
+// implementation nobody diffs, and its failure mode is a silently dead
+// link rather than an error.
+//
+//export BrowseFollow
+func BrowseFollow(handle C.int64_t, cTarget *C.char) (result *C.char) {
+	defer recoverToErrorEnvelope("BrowseFollow", &result)
+
+	// Copy the C string HERE, not inside the goroutine — see BrowseGo's
+	// note. The same use-after-free applies verbatim, and its symptom
+	// here would be an empty href, which classifies as an in-site link to
+	// the site's root page: a click that plausibly "went somewhere".
+	target := C.GoString(cTarget)
+	return browseNavigate(handle, func(m *wb.BrowseModel, ctx context.Context) {
+		_ = m.Follow(ctx, target)
 	})
 }
 
@@ -306,13 +415,89 @@ func BrowseRender(handle C.int64_t) (result *C.char) {
 	if bh == nil {
 		return C.CString(`{"ok":false,"error":"unknown browse handle"}`)
 	}
+	view := bh.model.Render()
+	// The RAW body does not cross this boundary.
+	//
+	// `Content.BodyMarkdown` is the verified bytes at full size, and on
+	// the live federation those reach **8.27 MB** for a single page
+	// (billslab's `papers/full-corpus`). Marshalling that into a JSON
+	// string, copying it through cgo, and handing it to a markdown
+	// parser on the UI thread is most of the "fifteen seconds" an
+	// operator reported — and unlike the network half, caching does not
+	// help, because the cost is paid again on every display.
+	//
+	// `view.Body` is the display projection: HTML lowered to text,
+	// `::embed` directives lowered to markdown images, capped at
+	// MaxDisplayBytes with a note saying so, and carrying FullBytes so
+	// the honest size is still available. Everything a renderer needs;
+	// nothing it cannot draw. The shell keeps reading the full body
+	// because a terminal is a different medium with a pager behind it.
+	view.Content.BodyMarkdown = ""
+
 	b, err := json.Marshal(map[string]any{
 		"ok":   true,
-		"view": bh.model.Render(),
+		"view": view,
 		"ops":  atomic.LoadInt64(&bh.ops),
 	})
 	if err != nil {
 		return C.CString(`{"ok":false,"error":"marshal view failed"}`)
+	}
+	return C.CString(string(b))
+}
+
+// BrowseAsset resolves one embedded asset of the page currently on
+// screen and returns its bytes base64-encoded.
+//
+// **Synchronous, and that is a deliberate departure from every other
+// navigation export here.** An asset is a leaf fetch against a cache
+// that the walk has usually already filled, so the common case is a map
+// lookup; the async machinery (a goroutine, an ops bump, a wake, a full
+// re-render) would cost more than the work and would re-render the page
+// once per figure. A caller on a UI thread must still not call this
+// directly — the miss path is an HTTP round trip — and BrowserPanel
+// drives it off a worker.
+//
+// The ref is passed through UNINTERPRETED, for the same reason
+// BrowseFollow does it: [wb.AssetNameFromRef] is the security gate that
+// decides whether a string in someone else's page body may cause a
+// fetch, it is Layer-2 contract shared with entity-browser-rust, and a
+// C# copy of it would be a second implementation of a rule whose failure
+// mode is "the renderer fetched a tracking URL".
+//
+// The site is NOT a parameter. It is the page on screen, read inside the
+// model — see [wb.BrowseModel.Asset].
+//
+//export BrowseAsset
+func BrowseAsset(handle C.int64_t, cRef *C.char) (result *C.char) {
+	defer recoverToErrorEnvelope("BrowseAsset", &result)
+
+	// Copy before anything else — AP31. This one is synchronous so the
+	// pointer is live for the whole call, but the habit is the rule: the
+	// next person to make an export async does not re-derive it.
+	ref := C.GoString(cRef)
+
+	bh := lookupBrowse(int64(handle))
+	if bh == nil {
+		return C.CString(`{"ok":false,"error":"unknown browse handle"}`)
+	}
+	asset, ok := bh.model.Asset(ref)
+	if !ok {
+		// One answer for three facts — refused ref, uncommitted asset,
+		// failed fetch — because the renderer's move is the same in all
+		// three: draw the fallback text, never a broken image. The
+		// distinction that matters to an operator is on the chain, which
+		// says what the signed root committed.
+		b, _ := json.Marshal(map[string]any{"ok": false,
+			"error": "no committed asset for that reference in the site on screen"})
+		return C.CString(string(b))
+	}
+	b, err := json.Marshal(map[string]any{
+		"ok":         true,
+		"media_type": asset.MediaType,
+		"bytes":      base64.StdEncoding.EncodeToString(asset.Bytes),
+	})
+	if err != nil {
+		return C.CString(`{"ok":false,"error":"marshal asset failed"}`)
 	}
 	return C.CString(string(b))
 }

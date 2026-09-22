@@ -19,16 +19,61 @@ namespace EntityAvalonia.Panels;
 // peer host to register against — same shape, different lifetime.
 public static class PanelRegistry
 {
-    public sealed record Entry(string Name, string DisplayName, Func<long, IPanelHost, Control> Factory);
+    // Category groups panels in the slot picker. Without it every panel
+    // lands in one flat list — 18 rows with no ordering principle, which
+    // is what the picker was until 2026-08-30 and what an operator
+    // called "just a big-ass list of panels".
+    //
+    // The categories are by QUESTION the panel answers, not by
+    // subsystem, because that is how someone opening the picker is
+    // actually thinking: what is out there / what is on this peer / what
+    // is this thing doing / let me run something.
+    public static class Category
+    {
+        public const string Network = "Network & the outside world";
+        public const string ThisPeer = "This peer";
+        public const string Diagnostics = "Diagnostics";
+        public const string Programs = "Programs";
+    }
+
+    public sealed record Entry(
+        string Name,
+        string DisplayName,
+        Func<long, IPanelHost, Control> Factory,
+        string Category = PanelRegistry.Category.ThisPeer,
+        string Blurb = "");
 
     private static readonly List<Entry> _entries = new();
 
     public static void Register(string name, string displayName, Func<long, IPanelHost, Control> factory)
+        => Register(name, displayName, factory, Category.ThisPeer, "");
+
+    public static void Register(string name, string displayName,
+        Func<long, IPanelHost, Control> factory, string category, string blurb)
     {
         // Replace if already registered — supports hot-reloading
         // during dev without leaking old entries.
         _entries.RemoveAll(e => e.Name == name);
-        _entries.Add(new Entry(name, displayName, factory));
+        _entries.Add(new Entry(name, displayName, factory, category, blurb));
+    }
+
+    // CategoriesInOrder is the display order of the groups. Explicit
+    // rather than alphabetical: "Network" first because reaching the
+    // outside world is what someone opening a fresh workspace wants.
+    public static IReadOnlyList<string> CategoriesInOrder() => new[]
+    {
+        Category.Network, Category.ThisPeer, Category.Diagnostics, Category.Programs,
+    };
+
+    // ByCategory returns the entries in a category, registration order.
+    public static IReadOnlyList<Entry> ByCategory(string category)
+    {
+        var outp = new List<Entry>();
+        foreach (var e in _entries)
+        {
+            if (e.Category == category) outp.Add(e);
+        }
+        return outp;
     }
 
     public static IReadOnlyList<Entry> All() => _entries;

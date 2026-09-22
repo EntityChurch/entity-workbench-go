@@ -365,13 +365,23 @@ func TestShellIssueThenBrowseOurOwnName(t *testing.T) {
 	}
 }
 
-// TestShellIssueRefusesAnOriginThatIsSomeoneElse.
+// TestShellIssueRefusesToDeriveAReachItWouldThenSign.
 //
 // A registry signing `name → X` while carrying Y's reach is signing an
 // assertion it did not check. The consumer cannot catch it — the binding
 // verifies, and the reach leads somewhere the signature says nothing
 // about — so the refusal has to be here, at issue time.
-func TestShellIssueRefusesAnOriginThatIsSomeoneElse(t *testing.T) {
+//
+// **This is the one path that does NOT take fetch.Layout.RebaseTo**, and
+// the asymmetry is the point. Every consumer path re-bases a co-hosted
+// origin's layout onto the peer it was asked for, because the target's
+// own signature checks the substitution one hop later and a wrong guess
+// fails closed. Here we are the issuer: the derived reach would go into
+// a binding WE sign, our signature would be the only thing asserting it,
+// and nothing downstream could catch a bad one. A derivation is safe
+// exactly when someone else's key checks it. (Split made 2026-08-30,
+// when the live federation showed co-hosting is ordinary.)
+func TestShellIssueRefusesToDeriveAReachItWouldThenSign(t *testing.T) {
 	sh, _, targetSrv := issuerShell(t)
 
 	_, err := cmdRegistry(sh, []string{"issue", "wrong.test",
@@ -379,8 +389,14 @@ func TestShellIssueRefusesAnOriginThatIsSomeoneElse(t *testing.T) {
 	if err == nil {
 		t.Fatal("issued a binding whose named target and whose advertised reach disagree")
 	}
-	if !strings.Contains(err.Error(), "advertises peer") {
+	if !strings.Contains(err.Error(), "features peer") {
 		t.Errorf("the refusal does not say what disagreed: %v", err)
+	}
+	// The refusal must not read as "this origin is lying" — co-hosting is
+	// legal, and a message that says otherwise sends the operator to fix
+	// a deployment that is fine.
+	if !strings.Contains(err.Error(), "several peers") {
+		t.Errorf("the refusal presents co-hosting as an error rather than as ordinary: %v", err)
 	}
 }
 

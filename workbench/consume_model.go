@@ -98,6 +98,10 @@ type ConsumeOutput struct {
 	// claim about the origin, and an origin that serves no profile is
 	// indistinguishable from one whose layout we guessed wrong.
 	Discovered bool
+	// RebasedFrom is the peer the origin's profile features, set only
+	// when the peer asked for is a DIFFERENT one co-hosted on that same
+	// origin. Neither discovered nor pinned — see fetch.Layout.RebaseTo.
+	RebasedFrom string
 
 	Steps []ConsumeStep
 	Keys  []ConsumeKeyRow
@@ -139,7 +143,7 @@ type ConsumeOutput struct {
 // NewConsumeModel builds the model. A nil client means the default.
 func NewConsumeModel(client *http.Client) *ConsumeModel {
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = fetch.NewHTTPClient(0)
 	}
 	return &ConsumeModel{client: client, opts: fetch.ConsumeOpts{Bodies: true, Reconcile: true}}
 }
@@ -264,10 +268,24 @@ func runConsume(ctx context.Context, client *http.Client, origin, peerID string,
 		return fail(layoutStep, err)
 	}
 	if peerID != "" && peerID != layout.PeerID {
-		return fail(layoutStep, fmt.Errorf("this origin's profile is peer %s, you asked for %s — "+
-			"the bytes and the name would not be the same publisher's", layout.PeerID, peerID))
+		// One origin, several peers: the well-known profile features one
+		// of them and that is not a claim of exclusivity. Refusing here
+		// made every co-hosted peer unverifiable — the live federation's
+		// registry is exactly that shape (measured 2026-08-30). Re-base
+		// onto the peer that was asked for; the root fetched next is
+		// verified against THAT peer's key, so a wrong substitution
+		// fails closed at the signature rather than answering wrong.
+		featured := layout.PeerID
+		layout, err = layout.RebaseTo(peerID)
+		if err != nil {
+			return fail(layoutStep, err)
+		}
+		layoutStep.Detail += fmt.Sprintf("  (features %s; RE-BASED onto %s)", featured, peerID)
+		layoutStep.Proves = "the origin's byte layout, re-pointed at the peer you asked for. " +
+			"Only the peer-id segment moved; the signature on that peer's root is what checks it."
 	}
 	out.PeerID = layout.PeerID
+	out.RebasedFrom = layout.RebasedFrom
 	layoutStep.Status = StepOK
 	if pin == nil {
 		layoutStep.Detail += fmt.Sprintf("  (peer %s, content_layout %q)",

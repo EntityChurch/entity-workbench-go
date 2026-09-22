@@ -159,6 +159,12 @@ group = "Disciplines & runtime model"
 # ---------------------------------------------------------------------------
 
 [[doc]]
+path  = "docs/architecture/HTML-PAGE-RENDERING.md"
+title = "Rendering an HTML page in the browser panel"
+blurb = "What the browser does with a site page published as HTML rather than markdown, why it lowers to text instead of embedding a browser engine, and what a real document renderer would cost — including the trust boundary an engine introduces by fetching subresources nobody in the chain vouched for."
+group = "Disciplines & runtime model"
+
+[[doc]]
 path  = "docs/architecture/PERFORMANCE-CHARACTERISTICS.md"
 title = "Performance Characteristics & Proven Capabilities"
 blurb = "Measured numbers from the perfreview harness (write latency, signature cost, delivery throughput, continuations, compute, storage lifecycle, resilience) + the end-to-end capabilities the test suite proves. How to reproduce it all."

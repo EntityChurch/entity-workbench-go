@@ -170,9 +170,9 @@ func ClassifyTarget(target string, current Location) (Location, LinkKind, bool) 
 			Page:   page,
 		}, LinkCrossSite, true
 	}
-	// In-site link — normalize to root-relative slug. v0: strip leading
-	// ./, /, and naive ../ collapse (root-relative has no current dir).
-	p := normalizeInSitePage(t)
+	// In-site link — resolved RELATIVE TO THE CURRENT PAGE'S DIRECTORY,
+	// per the reference implementation. See [resolveInSitePage].
+	p := resolveInSitePage(t, current.Page)
 	return Location{
 		PeerID: current.PeerID,
 		SiteID: current.SiteID,
@@ -212,19 +212,78 @@ func parseEntityURI(rest string, _ Location) (Location, LinkKind, bool) {
 }
 
 // normalizeInSitePage strips leading ./ , /, and ../ to root-relative.
-func normalizeInSitePage(p string) string {
-	for {
-		switch {
-		case strings.HasPrefix(p, "./"):
-			p = p[2:]
-		case strings.HasPrefix(p, "/"):
-			p = p[1:]
-		case strings.HasPrefix(p, "../"):
-			p = p[3:]
+// resolveInSitePage turns an in-site markdown href into a page slug,
+// resolved relative to the CURRENT PAGE'S DIRECTORY.
+//
+// This is Layer-2 slug canonicalization, so it is byte-identical to the
+// reference implementation by obligation, not by preference:
+// `entity-browser-rust`'s `src/content_site/location.rs::resolve_in_site`.
+// `TestResolveInSitePage_MatchesRustReference` runs that file's own test
+// vectors, lifted verbatim — if the two ever disagree, the vectors are
+// the evidence and the divergence gets routed, not patched locally.
+//
+// # What the previous implementation did, and why it could not work
+//
+// It stripped leading `./`, `/` and `../` in a loop and returned the
+// rest — ignoring the current page entirely and, decisively, **not
+// stripping the `.md` extension**. Publishers write links the way they
+// write files (`[Support](support.md)`), and the tree commits the page
+// under the slug `support`. So on the live federation, billslab.com's
+// front page linked to `support.md`, we asked for the page `support.md`,
+// and the walk correctly reported `page missing` — measured 2026-08-31,
+// and it is why every in-page link in the browser was dead. The
+// directory-relative half is the same defect one level up: a nested page
+// linking `../notes/x.md` resolved to `notes/x.md` at the site root
+// instead of `research/notes/x`.
+//
+// Order matters and mirrors the reference: fragment/query are dropped
+// FIRST (they never participate in slug resolution), the extension is
+// stripped LAST and only from the final joined slug — so a directory
+// segment that happens to end in `.md` is left alone.
+func resolveInSitePage(href, currentPage string) string {
+	// Fragment/query never participate in slug resolution.
+	if i := strings.IndexAny(href, "#?"); i >= 0 {
+		href = href[:i]
+	}
+
+	// Base directory: the dir portion of the current page slug.
+	// `research/model/grounding` -> ["research","model"]; `index` -> [].
+	var base []string
+	if slash := strings.LastIndexByte(currentPage, '/'); slash >= 0 {
+		base = splitNonEmpty(currentPage[:slash], "/")
+	}
+
+	// A leading `/` is root-absolute: discard the current directory.
+	rel := href
+	if stripped, ok := strings.CutPrefix(href, "/"); ok {
+		base = nil
+		rel = stripped
+	}
+
+	// Walk the relative segments with `.`/`..` semantics.
+	for _, seg := range strings.Split(rel, "/") {
+		switch seg {
+		case "", ".":
+			// empty (`//`, trailing `/`) and `.` are no-ops
+		case "..":
+			// clamp at root: popping an empty base is a no-op
+			if len(base) > 0 {
+				base = base[:len(base)-1]
+			}
 		default:
-			return p
+			base = append(base, seg)
 		}
 	}
+
+	slug := strings.Join(base, "/")
+	// Strip a markdown extension from the final slug only.
+	if s, ok := strings.CutSuffix(slug, ".md"); ok {
+		return s
+	}
+	if s, ok := strings.CutSuffix(slug, ".markdown"); ok {
+		return s
+	}
+	return slug
 }
 
 func splitFirstSlash(s string) (string, string) {

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -162,20 +163,72 @@ public static class CrashDiagnostics
         catch { }
     }
 
+    // How many distinct UI-thread faults we contain before we stop
+    // containing. See InstallDispatcher for the reasoning.
+    private const int MaxContainedUiFaults = 8;
+
+    private static int _containedUiFaults;
+
+    // Number of UI-thread exceptions contained this session. A test (or
+    // a smoke run) asserts on this rather than on "the app is still up",
+    // which is true whether or not anything went wrong.
+    public static int ContainedUiFaults => Volatile.Read(ref _containedUiFaults);
+
     // InstallDispatcher hooks Avalonia's UI-thread exception event. It is
     // separate from Install() because the dispatcher does not exist until
     // the framework is up.
+    //
+    // # This handler used to let every UI fault kill the process
+    //
+    // The previous policy set no `e.Handled`, on the reasoning that
+    // swallowing a UI fault "leaves the app running in an undefined
+    // state and turns one diagnosable crash into a stream of downstream
+    // mysteries". That reasoning is sound for a fault that mutates
+    // shared state halfway. It is wrong as a blanket rule, and on
+    // 2026-08-31 it cost a user their whole session three times: a row
+    // template dereferenced a null the framework handed it (AP46), which
+    // corrupts nothing, and the process took SIGABRT and wrote an 872 MB
+    // core dump. The user's verdict — that a GUI dying on a cosmetic
+    // fault is not a diagnostic strategy — is correct.
+    //
+    // So: contain, but bounded, which keeps the original concern intact
+    // rather than overruling it.
+    //
+    //   * Every fault is still recorded in full by WriteFatal — same
+    //     crash log, same breadcrumb ring, same detail as before. We
+    //     lose no forensics.
+    //   * The first `MaxContainedUiFaults` are contained and the session
+    //     survives.
+    //   * Past that, we stop setting Handled and let it take its course.
+    //     A fault that keeps firing IS the "stream of downstream
+    //     mysteries" the old comment feared, and by then the log has
+    //     eight records of it — strictly more evidence than dying on the
+    //     first one produced.
+    //
+    // WB_UI_FAULTS_FATAL=1 restores the old behaviour, which is the only
+    // way to re-measure a fault as a hard crash.
     public static void InstallDispatcher()
     {
         try
         {
+            var alwaysFatal = !string.IsNullOrEmpty(
+                Environment.GetEnvironmentVariable("WB_UI_FAULTS_FATAL"));
+
             Dispatcher.UIThread.UnhandledException += (_, e) =>
             {
-                WriteFatal("Dispatcher.UnhandledException", e.Exception, null);
-                // Deliberately NOT setting e.Handled. Swallowing a UI
-                // fault leaves the app running in an undefined state and
-                // turns one diagnosable crash into a stream of downstream
-                // mysteries. We record, then let it take its course.
+                var n = Interlocked.Increment(ref _containedUiFaults);
+                WriteFatal($"Dispatcher.UnhandledException (#{n})", e.Exception, null);
+
+                if (alwaysFatal || n > MaxContainedUiFaults)
+                {
+                    Breadcrumb("crash-diag",
+                        alwaysFatal
+                            ? "WB_UI_FAULTS_FATAL set — not containing"
+                            : $"fault #{n} exceeds the containment budget of {MaxContainedUiFaults} — not containing");
+                    return; // no Handled: let it terminate, as before.
+                }
+
+                e.Handled = true;
             };
         }
         catch (Exception ex)

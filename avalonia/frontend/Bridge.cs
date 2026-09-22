@@ -380,6 +380,40 @@ public static class Bridge
     public static extern IntPtr BrowseGo(long browseHandle,
         [MarshalAs(UnmanagedType.LPStr)] string address);
 
+    // BrowseFollow takes the RAW href from the rendered markdown. Do not
+    // resolve it here: `support.md` -> page `support`, `../notes/x.md`
+    // relative to the current page's directory, `site:other` -> a
+    // different site on the same peer. Those rules are Layer-2 contract
+    // shared with entity-browser-rust and live in workbench/site_model.go.
+    // BrowseAutoPin pins the configured registry and enumerates it.
+    // Async — it does network I/O, so it must NOT be called on the
+    // constructor path synchronously. Config precedence:
+    // WB_REGISTRY_ORIGIN/PEER > ~/.entity/browser.json > built-in.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "BrowseAutoPin")]
+    public static extern IntPtr BrowseAutoPin(long browseHandle);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "BrowseFollow")]
+    public static extern IntPtr BrowseFollow(long browseHandle,
+        [MarshalAs(UnmanagedType.LPStr)] string target);
+
+    // BrowseAsset resolves one embedded figure of the page on screen and
+    // returns {ok, media_type, bytes(base64)}.
+    //
+    // Like BrowseFollow, the ref goes across UNINTERPRETED. Deciding
+    // whether `assets/figures/x.png` may be fetched — and that
+    // `https://tracker/x.png` may not — is workbench.AssetNameFromRef,
+    // which is the security gate and is Layer-2 contract shared with
+    // entity-browser-rust. A C# copy of it would be a second
+    // implementation of a rule whose failure mode is this process
+    // fetching a URL a page body chose.
+    //
+    // SYNCHRONOUS and does I/O on a cache miss. Call it from a worker,
+    // never from the UI thread — MarkdownRenderer hands the panel a
+    // callback and the panel is what puts it on a Task.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "BrowseAsset")]
+    public static extern IntPtr BrowseAsset(long browseHandle,
+        [MarshalAs(UnmanagedType.LPStr)] string reference);
+
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "BrowseBack")]
     public static extern IntPtr BrowseBack(long browseHandle);
 

@@ -74,7 +74,7 @@ export GOTOOLCHAIN ?= go1.25.1
 # includes the same file and uses the caps on every podman build/run.
 include caps.mk
 
-.PHONY: crossimpl-go workbench-test console-build console-run test test-each test-each-native test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native lint-perfreview fmt-native
+.PHONY: crossimpl-go consume-live workbench-test console-build console-run test test-each test-each-native test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native lint-perfreview fmt-native
 
 # ============================================================
 # make + podman — bare-box entry points
@@ -142,6 +142,7 @@ help:
 	@echo "    make lint        go vet across all modules (read-only)"
 	@echo "    make reachability  D23: every bridge export consumed, every model surfaced"
 	@echo "    make crossimpl-go  LIVE cross-impl: consume entity-core-go's signed root (podman)"
+	@echo "    make consume-live  LIVE public federation: walk a registry, resolve, follow (network)"
 	@echo "    make fmt         gofmt -w over the tree (writes)"
 	@echo "    make check       lint + test (the green gate)"
 	@echo
@@ -298,6 +299,28 @@ fmt:
 	$(call IN_CONTAINER,make fmt-native)
 
 check: lint test
+
+# textual — a tracked source may not carry a raw C0 control byte.
+#
+# Seventeen of them (NUL, SOH, STX) were typed literally into
+# BrowserPanel.cs as list-signature separators. The compiler does not
+# care; git does — a NUL in the first 8000 bytes makes the file BINARY,
+# so a 1513-line file reviewed as `Bin 36537 -> 64640 bytes` and had no
+# diff, no blame and no merge resolution.
+#
+# Not a grep, and that is the whole point: GNU grep cannot match a NUL in
+# a pattern at all, so `grep -P '\x00'` reports a file clean that `od -c`
+# shows the NUL sitting in. A sweep that is structurally unable to see
+# the defect it is named for is worse than no sweep. The script reads
+# bytes. Host-side and instant, like `reachability`.
+.PHONY: textual
+textual:
+	@echo "==> textual sweep (no raw control bytes in tracked sources)"
+	@git ls-files -z -- '*.go' '*.cs' '*.md' '*.toml' '*.csproj' '*.sh' '*.py' \
+	    'Makefile' '*/Makefile' \
+	  | xargs -0 python3 scripts/no-control-bytes.py \
+	  || { echo "  -> see scripts/no-control-bytes.py for why escapes are the fix."; exit 1; }
+	@echo "  ok  every tracked text source is textual"
 
 # reachability — D23's enforcement point. Three times now a
 # renderer-neutral model has been complete, tested, and green with NO
@@ -626,6 +649,18 @@ test-fetch:
 # does not.
 crossimpl-go:
 	bash scripts/crossimpl-go.sh
+
+# consume-live — drive our consumer at the LIVE public federation:
+# enumerate a registry by walking its signed root, resolve every name
+# per §6a.4, and follow one through to verified page bytes on a second
+# domain under a different key.
+#
+# Outside `test-native` for the same reason as crossimpl-go, one step
+# stronger: it reaches the public internet, so it can go red for a
+# domain's reasons. What a green run claims — and what it does not —
+# is in the script header; do not restate it looser anywhere else.
+consume-live: fetch-build
+	bash scripts/consume-live.sh
 
 # perfreview — production-readiness measurement harness. Gated by the
 # `perfreview` build tag (files use `//go:build perfreview`) so default

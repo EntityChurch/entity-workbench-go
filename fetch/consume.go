@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 
 	"entity-workbench-go/entitysdk/publishedroot"
 
@@ -82,6 +83,18 @@ var (
 	// ErrContractMismatch is a leaf whose trie-routed hash disagrees
 	// with the hash the publisher's own tree-leaf URL advertises.
 	ErrContractMismatch = errors.New("trie-routed hash disagrees with the advertised leaf pointer")
+
+	// ErrSeqRollback is a published-root whose `seq` is below one this
+	// consumer already accepted from the same publisher.
+	//
+	// It is only detectable by a consumer that OUTLIVES one read. A
+	// client rebuilt per navigation compares each root against nothing,
+	// so an origin can hand out `seq 5` for one page and `seq 3` for the
+	// next — replaying a previous publish, one page at a time, with a
+	// perfectly valid signature on every response. That is not a corner
+	// case: it is the cheapest attack available to the §6a.1a fourth
+	// actor, who may choose which signed artifact answers a read.
+	ErrSeqRollback = errors.New("published-root seq went backwards (rollback)")
 )
 
 // PinnedLayout builds a Layout from a hand-supplied endpoint block,
@@ -118,22 +131,55 @@ func PinnedLayout(origin, peerID string, ep types.TransportEndpoint) (Layout, er
 	}, nil
 }
 
+// WalkConcurrency is how many CHAMP nodes a walk fetches at once.
+//
+// A trie walk is embarrassingly parallel and was serial: 51 nodes at
+// ~90 ms is 4.6 seconds of a browser doing one thing at a time against a
+// CDN built to do thousands. Nothing about the traversal needs an order
+// — each node is fetched by hash and hash-verified independently, so
+// concurrency cannot change what is admitted, only when.
+//
+// Bounded, and the bound is the point: an unbounded fan-out over a
+// 966-key trie is a small denial-of-service pointed at someone else's
+// origin, launched by a user clicking a link.
+const WalkConcurrency = 8
+
 // Consumer is a verifying reader bound to one publisher's layout.
 //
-// It holds no state between calls beyond the HTTP client: every
-// verification starts from the manifest, because a cached root is a
-// freshness claim nobody made.
+// **It is meant to outlive one navigation.** The manifest is re-fetched
+// on every [Consumer.VerifiedRoot] because it is the mutable pointer;
+// everything under it is content-addressed and is held in [Cache]. See
+// cache.go for the measurement and for the security property a
+// per-navigation consumer silently gives up (the seq floor, below).
 type Consumer struct {
 	Layout Layout
 	Client *http.Client
+	// Cache is shared, and sharing it across publishers is correct: the
+	// key space is content hashes, so two publishers who committed the
+	// same bytes name the same entry, and neither can put anything in it
+	// that did not hash to its own key.
+	Cache *Cache
+
+	mu sync.Mutex
+	// minSeq is the highest published-root `seq` this consumer has
+	// accepted. §3-RES.4's freshness discipline is monotonic per peer,
+	// and enforcing it needs a memory that spans navigations — which is
+	// exactly what a consumer rebuilt per click does not have.
+	minSeq     uint64
+	haveMinSeq bool
 }
 
-// NewConsumer binds a consumer to a layout.
+// NewConsumer binds a consumer to a layout, with its own cache.
 func NewConsumer(layout Layout, client *http.Client) *Consumer {
+	return NewConsumerWithCache(layout, client, NewCache(0))
+}
+
+// NewConsumerWithCache binds a consumer to a layout over a shared cache.
+func NewConsumerWithCache(layout Layout, client *http.Client, cache *Cache) *Consumer {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &Consumer{Layout: layout, Client: client}
+	return &Consumer{Layout: layout, Client: client, Cache: cache}
 }
 
 // VerifiedRoot is a published-root that verified over the wire.
@@ -206,6 +252,23 @@ func (c *Consumer) VerifiedRoot(ctx context.Context) (VerifiedRoot, error) {
 		return VerifiedRoot{}, err
 	}
 
+	// The seq floor. Deliberately AFTER the signature: a rollback is a
+	// correctly-signed root being replayed, so refusing on seq before
+	// establishing the signer would refuse on an unsigned number.
+	c.mu.Lock()
+	if c.haveMinSeq && data.Seq < c.minSeq {
+		floor := c.minSeq
+		c.mu.Unlock()
+		return VerifiedRoot{}, fmt.Errorf("%w: %s served seq=%d and this session already accepted "+
+			"seq=%d from the same publisher — both roots are validly signed, which is what makes "+
+			"this a replay rather than a corruption",
+			ErrSeqRollback, manifestURL, data.Seq, floor)
+	}
+	if !c.haveMinSeq || data.Seq > c.minSeq {
+		c.minSeq, c.haveMinSeq = data.Seq, true
+	}
+	c.mu.Unlock()
+
 	return VerifiedRoot{
 		Entity:       ent,
 		Data:         data,
@@ -228,10 +291,15 @@ type WalkResult struct {
 	Root     hash.Hash
 	Bindings []Binding
 	// NodeHashes is every distinct CHAMP node the walk resolved, in
-	// visit order — the interior structure a per-leaf consumer never
-	// touches. Exposed because it is the served set §6.5.3 obliges the
-	// publisher to cover, so it is the thing an operator wants to see
-	// and the thing a test withholds one of.
+	// **breadth-first visit order** — the interior structure a per-leaf
+	// consumer never touches. Exposed because it is the served set
+	// §6.5.3 obliges the publisher to cover, so it is the thing an
+	// operator wants to see and the thing a test withholds one of.
+	//
+	// Breadth-first rather than the depth-first order this had before
+	// 2026-08-31, because a level is the unit that can be fetched
+	// concurrently. Deterministic either way: within a level, nodes
+	// appear in the order their parents declared them.
 	NodeHashes []hash.Hash
 }
 
@@ -276,49 +344,81 @@ func (w WalkResult) Lookup(key string) (hash.Hash, error) {
 // subtree a consumer sees.
 //
 // See the package note for why this is not `tree.CollectAllBindings`.
+//
+// **Memoized on `root`, and that is sound rather than a shortcut.** A
+// CHAMP trie rooted at H has exactly one key set for all time — every
+// edge in it is a content hash — so re-walking an unchanged root is
+// re-deriving a value that could not have moved. The freshness question
+// lives one level up, in [Consumer.VerifiedRoot], which re-fetches the
+// mutable manifest every time and hands us a possibly-different H. Only
+// a walk that ran to completion is memoized; see [Cache.PutWalk].
+//
+// The traversal is breadth-first and fetches each level with
+// [WalkConcurrency] in flight. It still fails closed on the first node
+// the origin does not serve — the whole reason this is not the kernel's
+// best-effort helper — and a failure anywhere in a level fails the walk,
+// with the FIRST failure in declared order reported so the error is
+// stable across runs rather than a race between goroutines.
 func (c *Consumer) Walk(ctx context.Context, root hash.Hash) (WalkResult, error) {
-	res := WalkResult{Root: root}
-	seen := map[hash.Hash]bool{}
-	out := map[string]hash.Hash{}
-
-	var visit func(h hash.Hash, depth int) error
-	visit = func(h hash.Hash, depth int) error {
-		if seen[h] {
-			return nil // CHAMP is a DAG: shared subtrees are visited once.
-		}
-		seen[h] = true
-		res.NodeHashes = append(res.NodeHashes, h)
-
-		ent, err := c.Blob(ctx, h)
-		if err != nil {
-			return fmt.Errorf("%w: the signed root commits to CHAMP node %s at depth %d, and this "+
-				"origin does not serve it (§6.5.3 makes the closure of `root_hash` a publish-side "+
-				"MUST): %w", ErrIncompleteWalk, h, depth, err)
-		}
-		if ent.Type != types.TypeTreeSnapshotNode {
-			return fmt.Errorf("%w: %s is type %q, want %s — the trie structure is not what the root "+
-				"committed to", ErrIncompleteWalk, h, ent.Type, types.TypeTreeSnapshotNode)
-		}
-		node, err := types.SnapshotNodeDataFromEntity(ent)
-		if err != nil {
-			return fmt.Errorf("%w: decode CHAMP node %s: %w", ErrIncompleteWalk, h, err)
-		}
-		for _, e := range node.Data {
-			if e.IsLink() {
-				if err := visit(*e.Link, depth+1); err != nil {
-					return err
-				}
-				continue
-			}
-			for _, t := range e.Bucket {
-				out[t.Key] = t.ValueHash
-			}
-		}
-		return nil
+	if w, ok := c.Cache.Walk(root); ok {
+		return w, nil
 	}
 
-	if err := visit(root, 0); err != nil {
-		return res, err
+	res := WalkResult{Root: root}
+	seen := map[hash.Hash]bool{root: true}
+	out := map[string]hash.Hash{}
+
+	frontier := []hash.Hash{root}
+	for depth := 0; len(frontier) > 0; depth++ {
+		res.NodeHashes = append(res.NodeHashes, frontier...)
+
+		ents := make([]entity.Entity, len(frontier))
+		errs := make([]error, len(frontier))
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, WalkConcurrency)
+		for i, h := range frontier {
+			wg.Add(1)
+			go func(i int, h hash.Hash) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				ents[i], errs[i] = c.Blob(ctx, h)
+			}(i, h)
+		}
+		wg.Wait()
+
+		var next []hash.Hash
+		for i, h := range frontier {
+			if errs[i] != nil {
+				return res, fmt.Errorf("%w: the signed root commits to CHAMP node %s at depth %d, and "+
+					"this origin does not serve it (§6.5.3 makes the closure of `root_hash` a "+
+					"publish-side MUST): %w", ErrIncompleteWalk, h, depth, errs[i])
+			}
+			ent := ents[i]
+			if ent.Type != types.TypeTreeSnapshotNode {
+				return res, fmt.Errorf("%w: %s is type %q, want %s — the trie structure is not what "+
+					"the root committed to", ErrIncompleteWalk, h, ent.Type, types.TypeTreeSnapshotNode)
+			}
+			node, err := types.SnapshotNodeDataFromEntity(ent)
+			if err != nil {
+				return res, fmt.Errorf("%w: decode CHAMP node %s: %w", ErrIncompleteWalk, h, err)
+			}
+			for _, e := range node.Data {
+				if e.IsLink() {
+					// CHAMP is a DAG: a shared subtree is visited once.
+					if seen[*e.Link] {
+						continue
+					}
+					seen[*e.Link] = true
+					next = append(next, *e.Link)
+					continue
+				}
+				for _, t := range e.Bucket {
+					out[t.Key] = t.ValueHash
+				}
+			}
+		}
+		frontier = next
 	}
 
 	res.Bindings = make([]Binding, 0, len(out))
@@ -326,13 +426,22 @@ func (c *Consumer) Walk(ctx context.Context, root hash.Hash) (WalkResult, error)
 		res.Bindings = append(res.Bindings, Binding{Key: k, Hash: h})
 	}
 	sort.Slice(res.Bindings, func(i, j int) bool { return res.Bindings[i].Key < res.Bindings[j].Key })
+	c.Cache.PutWalk(root, res)
 	return res, nil
 }
 
 // Blob fetches one content-addressed body and proves it is the bytes h
 // names. This is the only door into the content store — everything the
 // consumer reads, trie nodes included, comes through it.
+//
+// **And it is therefore the only place [Cache] is filled**, on the far
+// side of [decodeVerified]. Nothing enters the cache that has not been
+// recomputed and matched against the hash it is filed under, so a later
+// reader taking a hit stands on the same proof the first reader did.
 func (c *Consumer) Blob(ctx context.Context, h hash.Hash) (entity.Entity, error) {
+	if ent, ok := c.Cache.Blob(h); ok {
+		return ent, nil
+	}
 	url, err := c.Layout.ContentURL(h)
 	if err != nil {
 		return entity.Entity{}, err
@@ -341,7 +450,12 @@ func (c *Consumer) Blob(ctx context.Context, h hash.Hash) (entity.Entity, error)
 	if err != nil {
 		return entity.Entity{}, err
 	}
-	return decodeVerified(body, h)
+	ent, err := decodeVerified(body, h)
+	if err != nil {
+		return entity.Entity{}, err
+	}
+	c.Cache.PutBlob(h, ent)
+	return ent, nil
 }
 
 // leafAt resolves a peer-relative tree path the advertised way: the

@@ -28,6 +28,21 @@ public sealed class BridgeFixture : IDisposable
 
     public BridgeFixture()
     {
+        // No test in this assembly may reach the public internet.
+        //
+        // BrowserPanel pins a configured registry at construction so the
+        // shipped app opens on something usable. Left on here, every
+        // BrowserPanel test would race that pin against its own fixture
+        // pin — and on 2026-08-31 it did exactly that: six tests failed
+        // with the LIVE registry's peer-id where the frozen fixture's
+        // was expected, because the container had egress. A suite whose
+        // result depends on a remote host is not measuring this tree.
+        //
+        // The policy itself (precedence, defaults, the deployment-file
+        // adoption) is covered where it lives, in
+        // `workbench/browse_config_test.go`.
+        EntityAvalonia.Panels.BrowserPanel.AutoPinOnOpen = false;
+
         var config = new BridgeConfig
         {
             Identity = "",

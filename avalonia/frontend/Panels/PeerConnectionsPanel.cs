@@ -206,7 +206,7 @@ public sealed class PeerConnectionsPanel : UserControl, IDisposable
             BorderThickness = new Thickness(0),
             MaxHeight = 120,
             IsVisible = _discoveryHandle >= 0,
-            ItemTemplate = new FuncDataTemplate<NearbyVm>((vm, _) =>
+            ItemTemplate = Rows.Of<NearbyVm>((vm, _) =>
             {
                 var grid = new Grid
                 {
@@ -297,7 +297,7 @@ public sealed class PeerConnectionsPanel : UserControl, IDisposable
             BorderThickness = new Thickness(0),
             MaxHeight = 140,
             IsVisible = _livenessHandle >= 0,
-            ItemTemplate = new FuncDataTemplate<LiveVm>((vm, _) =>
+            ItemTemplate = Rows.Of<LiveVm>((vm, _) =>
             {
                 var row = new StackPanel { Orientation = Orientation.Horizontal };
                 row.Children.Add(new TextBlock
@@ -383,7 +383,7 @@ public sealed class PeerConnectionsPanel : UserControl, IDisposable
             FontSize = 13,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            ItemTemplate = new FuncDataTemplate<ConnVm>((vm, _) =>
+            ItemTemplate = Rows.Of<ConnVm>((vm, _) =>
             {
                 var grid = new Grid
                 {

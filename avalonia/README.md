@@ -179,6 +179,48 @@ Addressing a peer-id directly draws the six naming steps as `skip`, with
 the reason — a browser that simply started at "target root" would render
 a shorter, cleaner, equally-green chain for a materially weaker claim.
 
+**It opens already pinned.** Until 2026-08-31 every session began with no
+name authority, which meant an inert address bar and an empty name list
+until the operator pasted an origin *and*, usually, a peer-id obtained out
+of band. There is now a default, and the honesty obligation moves rather
+than disappears: a default pin is still a pin somebody else chose, and it
+is labelled on every render exactly like an origin-nominated one.
+
+Precedence, highest first:
+
+| | |
+|---|---|
+| `WB_REGISTRY_ORIGIN` / `WB_REGISTRY_PEER` | env — scripts and one-off runs |
+| `~/.entity/browser.json` | the operator's file |
+| built-in | `https://entitychurchregistry.org`, **no peer-id** |
+
+```json
+{
+  "registry_origin": "https://entitychurchregistry.org",
+  "registry_peer": "",
+  "auto_pin": true
+}
+```
+
+An empty `registry_peer` means *adopt whatever the origin's
+`entity-deployment.json` nominates* — **trust-on-first-use**, and the
+registry line says so. The built-in default deliberately ships no
+peer-id: baking a key into the binary would be a stronger default and a
+worse one, since no operator agreed to it and it could not be rotated
+without a release. Put a peer-id in the file to make it a real pin.
+`"auto_pin": false` (or `WB_NO_AUTOPIN=1`) starts unpinned. A
+`browser.json` that exists and does not parse is an **error**, not a
+silent fallback — a config quietly ignored is worse than none.
+
+**Links in a page are followed by the model, not the renderer.** A click
+passes the raw href — `support.md`, `site:other-site`, `../notes/x.md` —
+straight to `BrowseModel.Follow`, which classifies it with the same
+`ClassifyTarget`/`resolveInSitePage` that `entity-browser-rust` uses, so
+the slug rules stay byte-identical across the two implementations. A link
+that leaves the entity system is **not** opened: it reports through
+`Notice` and the page stays put, because every page this surface shows
+arrives with a chain beside it and an ordinary web URL has none.
+
 Its shape departures are `GUIDE-AVALONIA-PANEL-PATTERNS` §9's **P3″**:
 per-operation single flight (enumerating and navigating do not block each
 other; a second navigation is refused) and a monotonic completed-op

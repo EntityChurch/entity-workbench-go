@@ -1,0 +1,147 @@
+package workbench
+
+import (
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// Where a browser starts.
+//
+// # Why there is a built-in default at all
+//
+// A browser with no name authority pinned can do nothing: it cannot
+// resolve a name, so the address bar is inert and the name list is empty.
+// Until 2026-08-31 that was the state every session began in, and the
+// first thing an operator had to do was paste an origin and — because the
+// well-known profile features that origin's *site* peer, not its registry
+// peer (AP44) — often a peer-id as well, obtained out of band. Requiring a
+// correct 46-character key before the first useful keystroke is not a
+// security property; it is a blank screen.
+//
+// So there is a default, and the honesty obligation moves rather than
+// disappears: **a default pin is still a pin somebody else chose**, and it
+// is reported on every render exactly like an origin-nominated one. The
+// difference between "you pinned this" and "we shipped this" is the kind
+// of difference this browser exists to keep visible.
+//
+// # Precedence
+//
+//  1. WB_REGISTRY_ORIGIN / WB_REGISTRY_PEER    (env, highest — scripts, tests)
+//  2. ~/.entity/browser.json                   (the operator's file)
+//  3. the built-in default below
+//
+// Any level may set the origin and leave the peer empty, which means
+// *adopt whatever the origin's `entity-deployment.json` nominates* —
+// trust-on-first-use, labelled as such downstream.
+const (
+	// DefaultRegistryOrigin is the cohort's public registry. It is a
+	// default, not a blessing: it is here so the browser opens on
+	// something rather than nothing.
+	DefaultRegistryOrigin = "https://entitychurchregistry.org"
+
+	// DefaultRegistryPeer is deliberately EMPTY.
+	//
+	// Hard-coding the peer-id would be a stronger default and a worse
+	// one: it would bake a key into the binary that no operator agreed
+	// to and that cannot be rotated without a release. Empty means we
+	// read `{origin}/entity-deployment.json` and adopt what it
+	// nominates, which is TOFU — but it is TOFU the operator can see,
+	// labelled on every render, and it is honest about who chose the
+	// key. Put a peer-id in ~/.entity/browser.json to make it a real pin.
+	DefaultRegistryPeer = ""
+)
+
+// BrowseConfig is the browser's start-up configuration.
+type BrowseConfig struct {
+	// RegistryOrigin is the origin serving the registry's bytes.
+	RegistryOrigin string `json:"registry_origin"`
+	// RegistryPeer is the pin. Empty means adopt the origin's nomination.
+	RegistryPeer string `json:"registry_peer"`
+	// AutoPin false suppresses the start-up pin entirely, for an
+	// operator who wants the browser to begin with no name authority.
+	// Pointer so that "absent" and "false" are distinguishable.
+	AutoPin *bool `json:"auto_pin,omitempty"`
+
+	// Source names where these values came from, for display. Never
+	// read from the file.
+	Source string `json:"-"`
+}
+
+// ShouldAutoPin reports whether to pin at start-up.
+func (c BrowseConfig) ShouldAutoPin() bool {
+	if c.AutoPin != nil && !*c.AutoPin {
+		return false
+	}
+	return c.RegistryOrigin != ""
+}
+
+// BrowseConfigPath is the operator's override file.
+func BrowseConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".entity", "browser.json"), nil
+}
+
+// LoadBrowseConfig resolves the start-up configuration.
+//
+// It never fails on a missing file — absence is the normal case and
+// means "use the default". It DOES fail on a file that exists and does
+// not parse: a config file that is silently ignored because of a stray
+// comma is worse than no config file, because the operator believes a
+// setting is in effect (AP33 — refuse input that was plainly trying to be
+// structured).
+func LoadBrowseConfig() (BrowseConfig, error) {
+	cfg := BrowseConfig{
+		RegistryOrigin: DefaultRegistryOrigin,
+		RegistryPeer:   DefaultRegistryPeer,
+		Source:         "built-in default",
+	}
+
+	if path, err := BrowseConfigPath(); err == nil {
+		b, rerr := os.ReadFile(path)
+		switch {
+		case rerr == nil:
+			var fileCfg BrowseConfig
+			if jerr := json.Unmarshal(b, &fileCfg); jerr != nil {
+				return cfg, errors.New(path + ": " + jerr.Error() +
+					" — the file exists, so it is not being ignored; fix it or remove it")
+			}
+			if fileCfg.RegistryOrigin != "" {
+				cfg.RegistryOrigin = strings.TrimSpace(fileCfg.RegistryOrigin)
+			}
+			// An explicitly empty peer in the file is meaningful: it
+			// says "adopt the origin's nomination", overriding nothing
+			// but also not inheriting a peer from the default.
+			cfg.RegistryPeer = strings.TrimSpace(fileCfg.RegistryPeer)
+			cfg.AutoPin = fileCfg.AutoPin
+			cfg.Source = path
+		case errors.Is(rerr, fs.ErrNotExist):
+			// normal
+		default:
+			return cfg, rerr
+		}
+	}
+
+	// Env wins over both — it is what a test or a script sets, and it
+	// must not require writing to the operator's home directory.
+	if v := strings.TrimSpace(os.Getenv("WB_REGISTRY_ORIGIN")); v != "" {
+		cfg.RegistryOrigin = v
+		cfg.RegistryPeer = strings.TrimSpace(os.Getenv("WB_REGISTRY_PEER"))
+		cfg.Source = "WB_REGISTRY_ORIGIN"
+	} else if v := strings.TrimSpace(os.Getenv("WB_REGISTRY_PEER")); v != "" {
+		cfg.RegistryPeer = v
+		cfg.Source += " + WB_REGISTRY_PEER"
+	}
+
+	if strings.TrimSpace(os.Getenv("WB_NO_AUTOPIN")) != "" {
+		no := false
+		cfg.AutoPin = &no
+	}
+	return cfg, nil
+}

@@ -47,11 +47,14 @@ func runRegistry(a registryArgs) error {
 	} else {
 		layout, err = fetch.LoadLayout(ctx, a.origin, nil)
 		if err == nil && layout.PeerID != a.peerID {
-			// The operator pinned a key and the origin advertised a
-			// different one. Refuse rather than pick: the pin is the one
-			// thing here that did not come from the origin.
-			return fmt.Errorf("origin %s advertises peer %s; you pinned %s — refusing rather than "+
-				"choosing between them", a.origin, layout.PeerID, a.peerID)
+			// The origin's well-known profile features a different peer
+			// than the one pinned. That is NOT a conflict: one origin
+			// may host several peers and the profile names one of them.
+			// entitychurchregistry.org features its site peer while the
+			// registry peer sits beside it — refusing here made the
+			// registry unreachable. Re-base onto the pin and say so;
+			// the pinned root's signature is what checks the guess.
+			layout, err = layout.RebaseTo(a.peerID)
 		}
 	}
 	if err != nil {
@@ -78,7 +81,7 @@ func enumerateRegistry(ctx context.Context, reg *fetch.Registry, a registryArgs)
 		return emitRegistryJSON(map[string]any{
 			"registry":        reg.PeerID(),
 			"origin":          reg.Layout.Origin,
-			"layout":          pinnedOrDiscovered(!a.pinned),
+			"layout":          layoutProvenance(reg.Layout, !a.pinned),
 			"root":            set.Root.Data.RootHash.String(),
 			"published_at":    set.Root.Data.PublishedAt,
 			"nodes":           set.Walk.Nodes(),
@@ -92,7 +95,7 @@ func enumerateRegistry(ctx context.Context, reg *fetch.Registry, a registryArgs)
 
 	fmt.Printf("registry %s\n", reg.PeerID())
 	fmt.Printf("origin   %s\n", reg.Layout.Origin)
-	fmt.Printf("layout   %s\n", pinnedOrDiscovered(!a.pinned))
+	fmt.Printf("layout   %s\n", layoutProvenance(reg.Layout, !a.pinned))
 	fmt.Printf("root     %s  (%d CHAMP nodes walked)\n", set.Root.Data.RootHash, set.Walk.Nodes())
 	fmt.Println()
 	for _, e := range set.Names {
@@ -158,7 +161,7 @@ func resolveOneName(ctx context.Context, reg *fetch.Registry, a registryArgs) er
 	}
 
 	fmt.Printf("name     %s\n", a.name)
-	fmt.Printf("registry %s (%s)\n", reg.PeerID(), pinnedOrDiscovered(!a.pinned))
+	fmt.Printf("registry %s (%s)\n", reg.PeerID(), layoutProvenance(reg.Layout, !a.pinned))
 	if walkErr != nil {
 		fmt.Printf("lookup   by-name pointer — the §6a.4 floor; the registry's root could not be\n")
 		fmt.Printf("         walked (%v), so WHICH binding answers this name was the host's choice\n", walkErr)
@@ -251,11 +254,18 @@ func emitRegistryJSON(v map[string]any) error {
 	return nil
 }
 
-func pinnedOrDiscovered(discovered bool) string {
-	if discovered {
-		return "discovered from the origin's transport-profile"
+// layoutProvenance names where the URLs being used came from. Three
+// states, not two: a rebased layout is neither discovered nor pinned,
+// and collapsing it into either one misreports what was trusted.
+func layoutProvenance(l fetch.Layout, discovered bool) string {
+	if !discovered {
+		return "PINNED by you — a wrong pin and a withholding origin look the same from here"
 	}
-	return "PINNED by you — a wrong pin and a withholding origin look the same from here"
+	if l.RebasedFrom != "" {
+		return "the origin's advertised layout, RE-BASED onto your pin (it features " +
+			l.RebasedFrom + "); the pinned root's signature is what checks that"
+	}
+	return "discovered from the origin's transport-profile"
 }
 
 func contains(hay []string, needle string) bool {

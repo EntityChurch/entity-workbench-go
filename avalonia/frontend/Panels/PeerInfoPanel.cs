@@ -84,7 +84,7 @@ public sealed class PeerInfoPanel : UserControl, IDisposable
             FontSize = 12,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            ItemTemplate = new FuncDataTemplate<string>((path, _) =>
+            ItemTemplate = Rows.Of<string>((path, _) =>
                 new SelectableTextBlock
                 {
                     Text = path,

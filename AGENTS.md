@@ -37,7 +37,7 @@ D12–D24 here are ours, earned on the eight crash-hunt commits, two feedback ep
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D24, the ten review questions, the anti-pattern catalog AP1–AP43, and the promotion
+  D1–D24, the ten review questions, the anti-pattern catalog AP1–AP50, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -146,6 +146,15 @@ one — name the recurring cycle first, then let each step own one lever of it.
 - **`make lint` is `go vet` only — it does not check formatting.** Nothing gates gofmt, so
   drift accumulates silently (60 files at the 2026-08-18 audit). Run `make fmt` as its own
   commit, never folded into a feature diff.
+- **`make textual` refuses a raw C0 control byte in a tracked source** (AP51). Seventeen of them
+  — NUL, SOH, STX typed *literally* into C# string literals as separators — made
+  `BrowserPanel.cs` **binary to git**: `Bin 36537 -> 64640 bytes`, no diff, no blame, no merge,
+  on the 1513-line centre of that session's work. Nothing about the program was wrong, so every
+  test stayed green. **Do not reach for `grep` here**: GNU grep matches on NUL-terminated C
+  strings, so a NUL cannot appear in a pattern and `grep -P '\x00'` reports a file clean that
+  `od -c` shows it sitting in — a false negative shaped like a pass. The fix is always escapes
+  (`"\u0000"`), never a `.gitattributes` binary marker, which keeps the bytes and discards the
+  diff. The tell is a source file `file(1)` calls `data`.
 - `make test ARGS="-run X -v"` — single test / forwarded flags (`ARGS=` is the only
   passthrough syntax `make` accepts).
 - `make test-sdk` / `test-shell` / `test-shellcmd` / `test-workbench` — per-package suites.
@@ -160,6 +169,14 @@ one — name the recurring cycle first, then let each step own one lever of it.
   can go red for a neighbour's reasons teaches people to ignore the sweep. First green
   2026-08-20. What a green run claims (and, more importantly, what it does not) is in the
   script header; do not restate it looser anywhere else.
+- **`make consume-live` drives the naming chain at the LIVE public federation**
+  (`scripts/consume-live.sh`) — enumerate a registry by walking its signed root, resolve every
+  name through §6a.4 in full, follow one through to verified page bytes on a second domain
+  under a different key. **Outside `test-native`** for `crossimpl-go`'s reason, one step
+  stronger: it reaches the public internet. The registry pin is the one fact supplied out of
+  band and is **not** read from the origin — that is the whole point of a pin. What a green run
+  claims (and does not) is in the script header; do not restate it looser. First green
+  2026-08-30, and it is the only gate in this repo that can see AP44's shape at all.
 - **`make -C avalonia smoke-xvfb-click` is the real-input gate under the X11 platform**, and
   `make -C avalonia crash-hunt` is its unattended form (sweeps seeds, stops at the first
   crash, prints the replay command). Most drivers in this repo call the model method
@@ -182,6 +199,122 @@ one — name the recurring cycle first, then let each step own one lever of it.
   accepted, never invoked, and warns about nothing. Use `AddHandler(…, Tunnel | Bubble,
   handledEventsToo: true)`. The on-screen game controller shipped in the `+=` form on
   2026-07-27, rendered perfectly, and set no bit for three weeks.
+- **Never build a row template with `new FuncDataTemplate<T>` — use `Panels/Rows.cs::Rows.Of<T>`**
+  (AP46). Avalonia types the builder's parameter `T` and **calls it with `null`** during container
+  teardown: clearing an `ObservableCollection` a virtualizing panel has realized runs
+  `Clear → RecycleElementOnItemRemoved → ClearContainerForItemOverride → ClearValue →
+  TemplateBinding.PublishValue → ContentPresenter.ContentChanged → Build(null) → your lambda`.
+  `<Nullable>enable</Nullable>` is on and cannot see it, so **all nineteen** sites in the frontend
+  shipped the same null dereference, and the symptom was SIGABRT rather than an exception because
+  `Dispatcher.UnhandledException` declined to set `Handled`. `Rows.Of` guards once at the framework
+  boundary; `RowTemplateDisciplineTests` fails the build if a raw construction reappears, and its
+  `Raw_FuncDataTemplate_Still_Crashes` control asserts the hazard is *still real* so the guard test
+  cannot pass vacuously. **UI faults are now contained but only `MaxContainedUiFaults` (8) of them**
+  — past that the process dies as before, and `WB_UI_FAULTS_FATAL=1` restores the old behaviour,
+  which is the only way to re-measure a fault as a hard crash.
+- **A link in a rendered page is followed by the MODEL, never the renderer** (AP47). A click
+  passes the raw href to `BrowseModel.Follow`, which classifies it with `ClassifyTarget` +
+  `resolveInSitePage` — the same rules `entity-browser-rust` uses, byte-identical by obligation
+  because a slug addresses bytes in a content-addressed tree. Two traps, both live defects until
+  2026-08-31: our resolver ignored the current page's directory and **did not strip `.md`**, so
+  billslab.com's own `[Support](support.md)` asked for a key the signed root does not commit and
+  every in-page link was dead; and links rendered as a styled `Span`, which **cannot receive
+  pointer input at all** in Avalonia — use `InlineUIContainer` around a real control. When you
+  wire that control, register `RoutingStrategies.Tunnel` **only** (a `SelectableTextBlock` parent
+  handles `PointerPressed` for drag-selection, so bubble is too late; and `Tunnel | Bubble` on one
+  element fires the handler *twice*, which is two navigations and two history entries per click).
+  Gates: `workbench/site_link_crossimpl_test.go` carries the reference's own vectors verbatim —
+  **a failure there is routed, not locally corrected** — and `MarkdownLinkClickTests` dispatches
+  real `MouseDown`/`MouseUp` at hit-tested coordinates, because a test that invokes the handler
+  passes against the unclickable version.
+- **A CONTENT HASH IS AN IDENTITY, SO CACHING ONE IS NOT A FRESHNESS CLAIM** (AP48). `fetch`
+  re-fetched everything on every navigation, justified by a sentence that is true of the
+  *manifest* — the mutable pointer — and false of the whole content-addressed tree underneath it.
+  Measured on the live federation: **7.3 s / 61 requests to open a page, 6.2 s / 60 to click a
+  link in it**, 51 of every 60 the same CHAMP nodes, serial, while the publisher's profile
+  declared `freshness: "static-immutable+signed-pointer"` in a field we parse and never read.
+  `entity-browser-rust` had the answer in a doc comment — *"5 fetches for the first page, 2 for
+  the next"*. **The paranoid shape was also the weaker one**: a `Consumer` rebuilt per navigation
+  has no `seq` floor, so a correctly-signed rollback replayed page by page was undetectable.
+  Now: `fetch.Cache` (blobs by hash, walks by root hash — a trie rooted at H has one key set
+  forever), one `Consumer` per publisher per session, a real seq floor (`ErrSeqRollback`), a
+  `WalkConcurrency`-wide walk, and `fetch.NewHTTPClient`, because `http.DefaultTransport` holds
+  **two** idle connections per host and silently re-handshakes six of every eight concurrent
+  fetches. After: **2.4 s / 61, 0.36 s / 4, 0.23 s / 3.** Two rules: only a **completed** walk is
+  memoized (a partial one would manufacture a withholding origin locally, permanently), and the
+  cache is filled in exactly one place — `Consumer.Blob`, past `decodeVerified`. A test that
+  re-uses a warm consumer to measure a withholding origin is testing the cache, not the walk;
+  `publish/consume_walk_test.go` says so and uses a cold one.
+- **An undeclared DTO field is discarded in silence, and an unconditional redraw is a
+  correctness surface** (AP49). `BrowserPanel.View` did not declare `RegistryPinFromOrigin` or
+  `RegistryRebasedFrom`; the model computed both, the bridge sent both, `System.Text.Json` dropped
+  both with no warning of any kind — so **AP45's "every surface must say so" was met by the shell
+  and by nothing in the GUI**, and no test noticed because none read a value that had quietly
+  become `false`. When a field crosses this boundary, assert it *arrives*
+  (`The_Render_Envelope_Does_Not_Drop_The_Provenance_Fields`). Separately: `Refresh` rebuilt three
+  lists and the whole body on every wake, so the columns re-laid out and the page lost its scroll
+  offset on every click — the operator's *"it jumps around"*. Signatures now gate each rebuild.
+  **The rail is dimmed during a navigation, not cleared**: the page does not become fresh when a
+  navigation starts, so the old chain is exactly what describes the page still on screen, and
+  emptying it deleted a true statement. A *refused* navigation still clears the page — that
+  distinction is gated, because over-applying the correction puts unverified bytes on screen.
+- **A site has THREE nouns — `manifest`, `pages/`, `assets/` — and we had implemented two**
+  (AP50). **665 of billslab's 966 committed keys are figures** and none were reachable. Two
+  reasons, both silent: the wire grammar is a directive, `::embed[caption]{ref=assets/figures/x.png}`,
+  which every markdown parser renders as literal text (`![alt](src)` is the lightweight form and
+  is lowered up into it at ingest); and Markdig models an image as a `LinkInline` with
+  `IsImage=true`, so a figure that *did* parse would have become a clickable link to a page no
+  site commits. Now: `workbench.ParseEmbeds` + `EmbedsToMarkdownImages` lower to one grammar
+  before the renderer sees anything, `AssetResolver` is an **optional** interface (a resolver that
+  serves no assets is a real thing — widening `ContentResolver` would force every impl to grow a
+  method returning "no"), and the bridge exports `BrowseAsset` lazily. **`AssetNameFromRef` is a
+  security gate, not a path helper**: it refuses `https://`, `//`, `/`, `data:` and any `..`
+  segment, so a hostile page body cannot make the renderer fetch a tracking URL. Reference
+  vectors are in `workbench/site_asset_crossimpl_test.go` — **a failure there is routed.**
+- **`format: html` is a real value and the panel could not see it.** `SitePage.format` admits
+  `markdown` and `html` (the web-tier escape hatch for a pre-rendered document); billslab
+  publishes 23 HTML papers, the largest **8.27 MB**. The panel's DTO never declared the field, so
+  HTML went into Markdig and rendered as its own source, and the raw body crossed cgo as an 8 MB
+  JSON string on every render. `workbench.NewBodyView` now lowers HTML to text, lowers embeds,
+  caps at `MaxDisplayBytes`, and says which of those it did; `BrowseRender` blanks
+  `Content.BodyMarkdown` (the shell still reads it — a terminal has a pager). Why not a WebView,
+  and what to build instead, is `docs/architecture/HTML-PAGE-RENDERING.md` — the short version is
+  that a browser engine *executes* a document and would fetch subresources nobody in the chain
+  vouched for, which is `AssetNameFromRef`'s hole re-opened at a much larger surface.
+- **`Show()` is not a layout pass, and a headless test that skips one cannot see container
+  teardown** (AP46's transferable half). `BrowserPanelTests` mounted a `Window`, called `Show()`,
+  populated a list and cleared it — and never realized a container, so the crash path was
+  *unreachable* from the suite while it reported 74/74. If a test's assertion depends on
+  virtualization, recycling, or anything a panel does when items go away, call `UpdateLayout()`
+  between the populate and the clear (`BrowserPanel.Settle` now does this for every browser test).
+  Generalise: **constructing the world is not running it** — cf. AP36, where writing an input port
+  and calling `tickOnce()` yourself could not see the queue.
+- **`bin/` is build output, not the tree — rebuild before you measure behaviour with it.**
+  On 2026-08-31 `bin/entity-shell` was six days stale and still carried the pre-AP44 refusal,
+  so a live check "reproduced" a bug that had been fixed and was one sentence from being
+  reported as a regression in a shipped surface. `bin/entity-fetch` *had* been rebuilt, which
+  made it worse: two binaries from the same tree disagreed, which reads as a code difference
+  between `fetch` and `shellcmd`. The tell is a refusal message you cannot `grep` in the
+  source — if the string is not in the tree, you are running an old binary. `make build` first,
+  every time, before attributing anything to source.
+- **No suite in this repo may reach the public internet.** The Avalonia headless container has
+  egress, and on 2026-08-31 a start-up registry pin turned six BrowserPanel tests red against
+  the **live** registry's peer-id where the frozen fixture's was expected. A suite whose result
+  depends on a remote host is not measuring this tree, and it fails for someone else's reasons —
+  the same argument that keeps `crossimpl-go` and `consume-live` out of `test-native`. The
+  browser's start-up pin is suppressed assembly-wide in `BridgeFixture`; the policy itself is
+  covered in `workbench/browse_config_test.go`, where it lives. Note the trap that makes this
+  easy to get wrong: **`WB_NO_AUTOPIN` and friends do not work from a test.** Go captures its
+  environment once at process start, so a C# `Environment.SetEnvironmentVariable` never reaches
+  `os.Getenv` in the bridge — env vars are for launching the app, and in-process control needs an
+  in-process flag (`BrowserPanel.AutoPinOnOpen`).
+- **The browser opens pre-pinned, and the config file is `~/.entity/browser.json`.** Precedence
+  is `WB_REGISTRY_ORIGIN`/`WB_REGISTRY_PEER` > that file > the built-in
+  `https://entitychurchregistry.org` with **no peer-id** (empty peer = adopt the origin's
+  `entity-deployment.json` nomination, TOFU, labelled on every render). Shipping a peer-id in the
+  binary would be a stronger default and a worse one — no operator agreed to it and it cannot be
+  rotated without a release. A `browser.json` that exists and does not parse is an **error**
+  (AP33), never a silent fallback. `workbench.LoadBrowseConfig` is the one place this is decided.
 - `make build` — all shipped Go binaries (entity-shell + entity-console).
 - **Every build/test target now refuses early if the sibling kernel is missing** (`preflight`,
   added 2026-08-24, AP41). `doctor` had that check from the day it was written and **nothing
@@ -253,7 +386,7 @@ one — name the recurring cycle first, then let each step own one lever of it.
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
 - The project measures everything against the **24 disciplines (D1–D24)**, ten review
-  questions, and anti-pattern catalog (AP1–AP43) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+  questions, and anti-pattern catalog (AP1–AP50) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A model with no shipped surface is not shipped** (D23). Landing a renderer-neutral model
   is half a feature; the other half is a verb, panel, or menu entry a user can reach, in the
   same session. Three times now — the name arc, the handler browser, `PeerLiveness` — every
@@ -419,6 +552,15 @@ entities):
     (`entitysdk/identity_bundle.go::IdentityBundle`).
   - **identity entity** — the V7 hash-addressed public-key entity (`peer.Identity()`).
   - **identity extension** — the attestation + quorum + identity stack (`ext/identity/`).
+- **Three Avalonia panels read the same bytes and answer different questions — say which in
+  the name.** `Browser` is the journey (registry → name → site → page, remote); `Local Site` is
+  a site published by **this** peer and opens the bundled demo; `Origin Inspector`
+  (`PublisherVerifyPanel`) renders the verification **chain** and deliberately never renders a
+  page. An operator called the set incomprehensible and was right: they were named `Browser`,
+  `Site` and `Publisher Verify`. `PanelRegistry.Register` now takes a **category** and a
+  **blurb**, the picker groups by category with the blurb as a tooltip, and a new panel that
+  registers without them lands in "This peer" with no explanation — which is a bug, not a
+  default.
 - **workbench is the brain; renderers are thin I/O.** All business logic (entity
   resolution, CBOR/markdown formatting, handler discovery, tree/selection state, the
   content models — `tree_model`, `detail_model`, `shell_model`, `peer_info_model`,
@@ -548,6 +690,51 @@ entities):
   - **An origin-relative transport prefix resolves against a scheme://host:port, never against the
     path the profile was fetched under** (`fetch.OriginRoot`). A registry served at `host/registry`
     names domains at `host/docs`.
+- **ONE ORIGIN MAY HOST SEVERAL PEERS, and the well-known `transport-profile` names exactly
+  one of them** (AP44). `{origin}/transport-profile` is a **cold-start entry point**
+  (NETWORK §6.5.3, Mode A2), never an exclusivity claim. We read it as *the* peer that origin
+  serves and refused on a mismatch — in **four** places, each phrased as a security property —
+  which made the cohort's only public registry unreachable from every naming surface we ship
+  (`entity-fetch`, the shell's `registry`/`browse`/`open`, the Avalonia Browser and Publisher
+  Verify panels). The live registry origin co-hosts its site peer and its registry peer, and
+  the well-known object features the site.
+  **`fetch.Layout.RebaseTo` is the answer, and the rule it encodes is the transferable part: a
+  derivation is safe exactly when SOMEONE ELSE'S KEY CHECKS IT.** Consumers re-base (the pinned
+  peer's own root signature fails closed on a wrong substitution, one hop later);
+  **`registry issue` still refuses**, because there the derived reach goes into a binding *we*
+  sign and nothing downstream could catch a bad one. Substitution is whole-path-**segment**
+  exact, never substring — same discriminator `treeBase()` uses. Layout provenance is **three**
+  states (discovered / re-based / pinned) and a surface that collapses the middle one into
+  "discovered" claims the origin advertised something it did not.
+  Two generalisations worth more than the fix: **a fixture that models one instance of a plural
+  relationship cannot fail on the plural case** — every fixture in this tree serves one peer per
+  origin, so the whole class was untestable and green — and **a false refusal reads as rigor and
+  leaves no wrong answer to catch**, so it is always attributed to the other side. Grep your
+  refusals for messages that assert a fact about the world and ask which sentence makes each
+  one exclusive.
+- **`{origin}/entity-deployment.json` carries the two facts an operator would otherwise have to
+  be told** (AP45) — `name_registry_pin` (origin + peer-id of the registry this deployment uses)
+  and `home_site` (which site is the front door). `fetch.LoadDeployment` reads it; it is
+  **unsigned, origin-supplied, and a HINT**. Two rules: a pin taken from here is
+  **trust-on-first-use and every surface must say so** (an operator's pin is the one fact the
+  origin did not choose; this one the origin chose for you, and while it cannot forge a binding
+  for a key it does not hold, it can hand you one it does), and `home_site` may only **select
+  among sites the signed root already commits** — an origin naming a site the walk does not
+  carry is ignored, never followed.
+  **The reason this is a rule and not a footnote:** we had already found this file, written its
+  name and contents into a doc comment, and concluded from it that there was nothing to read.
+  Meanwhile we opened the wrong front page on a domain that declares one, and made an operator
+  hand-type a peer-id the origin publishes. *A dismissal recorded as a doc comment is invisible
+  to review forever* — a `TODO` invites work, a paragraph explaining why a limitation is correct
+  closes the question permanently. Treat **"there is no way to know X" about your own tree** as
+  a claim needing the same evidence as one about a sibling repo, and prefer a flag that says
+  *unknown* over prose that says *unknowable*.
+- **An empty result is a claim, and "0 names" is often a confident wrong answer.** With no pin
+  supplied we adopt whichever peer the origin features; if that is a site peer, the registry walk
+  honestly commits zero bindings and the surface reports an empty registry. `fetch.NameSet` now
+  carries `NotARegistry` + `Diagnosis` + `OtherPrefixes`, and **a surface must render the
+  diagnosis instead of an empty list.** This is AP44's shape in the form that needs no refusal to
+  go wrong, and it is the one the operator hit first.
 - **`fetch/` enters through the publisher's advertised layout and derives nothing** (2026-08-19).
   `fetch.Layout` is built from the http-poll transport profile at `{origin}/transport-profile` —
   peer-id, all three URL prefixes, content layout, both suffixes. The one convention left is that
