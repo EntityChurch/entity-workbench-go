@@ -580,6 +580,92 @@ public static class Bridge
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "LivenessClose")]
     public static extern void LivenessClose(long livenessHandle);
 
+    // Local files: one call, no handle. The model is stateless and mounts
+    // have no event source to wake on — see avalonia/bridge/local_files.go
+    // for why this surface deliberately does not follow the
+    // Open/RegisterWake/Render/Close shape the panels above use.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "LocalFilesRender")]
+    public static extern IntPtr LocalFilesRender(long peerHandle);
+
+    // Mutating local-files surface. Synchronous on purpose: the work is
+    // operator-initiated and once-per-session, and the async cgo shape
+    // carries AP31's use-after-free hazard (a *C.char belongs to the .NET
+    // marshaller and is freed when the P/Invoke returns, so an export that
+    // reads it on a goroutine reads freed memory — and does NOT crash, it
+    // reads as the empty string and surfaces as a plausible user error).
+    // Being synchronous is what makes passing these strings safe.
+    //
+    // excludeSet distinguishes "the caller named no exclude patterns" from
+    // "the caller asked for no exclusions". Collapsing them would silently
+    // ingest a .git directory on a mount that meant to take the defaults.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "LocalFilesMount", CharSet = CharSet.Ansi)]
+    public static extern IntPtr LocalFilesMount(long peerHandle, string fsDir, string treePrefix,
+        string includeCsv, string excludeCsv, long excludeSet, long force, long readOnly);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "LocalFilesUnmount", CharSet = CharSet.Ansi)]
+    public static extern IntPtr LocalFilesUnmount(long peerHandle, string rootName);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "LocalFilesSweep", CharSet = CharSet.Ansi)]
+    public static extern IntPtr LocalFilesSweep(long peerHandle, string rootName, long addMissing);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "LocalFilesDefaultExclude")]
+    public static extern IntPtr LocalFilesDefaultExclude();
+
+    // File explorer: one mount's CONTENTS, and unlike LocalFilesRender
+    // above this one IS a handle. The distinction is the event source. A
+    // mount's config is written once and does not move; a mount's
+    // contents change on every save in a watched directory and hundreds
+    // of times a second during a watcher's initial scan. The model owns
+    // two prefix subscriptions, so it needs the wake shape.
+    //
+    // Wakes reuse TreeWakeCallback — the signature is identical and a
+    // second delegate type would be two things to keep in step. The
+    // delegate MUST be held in a GCHandle for the handle's lifetime: the
+    // field reference alone is not enough, and a collected delegate makes
+    // the process abort rather than throw.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FileExplorerOpen")]
+    public static extern IntPtr FileExplorerOpen(long peerHandle);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FileExplorerRegisterWake")]
+    public static extern IntPtr FileExplorerRegisterWake(long explorerHandle, IntPtr callback);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FileExplorerSetRoot", CharSet = CharSet.Ansi)]
+    public static extern IntPtr FileExplorerSetRoot(long explorerHandle, string rootName);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FileExplorerSetDir", CharSet = CharSet.Ansi)]
+    public static extern IntPtr FileExplorerSetDir(long explorerHandle, string dir);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FileExplorerUp")]
+    public static extern IntPtr FileExplorerUp(long explorerHandle);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FileExplorerRender")]
+    public static extern IntPtr FileExplorerRender(long explorerHandle);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FileExplorerPreview", CharSet = CharSet.Ansi)]
+    public static extern IntPtr FileExplorerPreview(long explorerHandle, string relPath);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FileExplorerClose")]
+    public static extern void FileExplorerClose(long explorerHandle);
+
+    // Workspace layout. Takes an ALIAS, not a peer handle: the layout has
+    // to be readable before a peer's panels exist, and it is keyed by
+    // alias because an ephemeral peer gets a fresh peer-id every launch —
+    // a peer-id-keyed layout would never match itself twice and the
+    // feature would silently do nothing in the default configuration.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "LayoutLoad", CharSet = CharSet.Ansi)]
+    public static extern IntPtr LayoutLoad(string alias);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "LayoutSave", CharSet = CharSet.Ansi)]
+    public static extern IntPtr LayoutSave(string alias, string panelsJson, double navWidth);
+
+    // In-process redirect of the layout file. Setting WB_LAYOUT from
+    // managed code does NOT work — Go captures its environment at process
+    // start, so setenv never reaches os.Getenv in the bridge — which is
+    // why this export exists and why the headless suite uses it instead
+    // of an environment variable to stay out of the real ~/.entity.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "LayoutSetPath", CharSet = CharSet.Ansi)]
+    public static extern IntPtr LayoutSetPath(string path);
+
     // TakeString copies a C-string allocated by Go into a managed
     // string and immediately frees the Go-side allocation. Returns
     // empty string when given IntPtr.Zero (Go's NULL return).

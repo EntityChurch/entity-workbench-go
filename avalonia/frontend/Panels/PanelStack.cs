@@ -81,6 +81,28 @@ public sealed class PanelStack : UserControl, IDisposable
     private readonly TextBlock _stackLabel;
     private bool _disposed;
 
+    // PanelNames is the stack's arrangement, top to bottom — the thing
+    // that gets persisted so an operator's workspace survives a restart.
+    // A LIST and not a set: order is the layout, and restoring the same
+    // panels in different places is a different workspace.
+    public IReadOnlyList<string> PanelNames
+    {
+        get
+        {
+            var names = new List<string>(_slots.Count);
+            foreach (var s in _slots) names.Add(s.CurrentPanelName);
+            return names;
+        }
+    }
+
+    // LayoutChanged fires whenever the arrangement changes: a panel
+    // added, closed, or swapped in place. All three are equally a change
+    // to what the operator would expect back next launch — the swap is
+    // the one that is easy to forget, and forgetting it means a workspace
+    // that remembers only the panels you added and not the ones you
+    // changed your mind about.
+    public event Action? LayoutChanged;
+
     // Test/smoke surface: read-only snapshot of currently-mounted
     // panel slot count + names. Used by SmokeDriver to verify the
     // dynamic layout invariants survive ingress traffic.
@@ -186,6 +208,7 @@ public sealed class PanelStack : UserControl, IDisposable
         // (Avalonia GridSplitter converts to Star with adjusted weights).
         AppendRowsForSlot(_slots.Count - 1);
         UpdateGridHeight();
+        LayoutChanged?.Invoke();
     }
 
     private void AppendSlotInternal(string panelName)
@@ -211,6 +234,7 @@ public sealed class PanelStack : UserControl, IDisposable
         // hits constantly).
         Rebuild();
         UpdateGridHeight();
+        LayoutChanged?.Invoke();
     }
 
     // Rebuild repopulates the Grid from _slots from scratch. Called
@@ -303,6 +327,11 @@ public sealed class PanelStack : UserControl, IDisposable
             row.MinHeight = want;
             UpdateGridHeight();
         }
+        // Fires unconditionally, not inside the height guard above: a
+        // swap between two panels that happen to want the same row floor
+        // is still a change to the arrangement, and gating the layout
+        // signal on a sizing detail would drop exactly those.
+        LayoutChanged?.Invoke();
     }
 
     // UpdateGridHeight rebinds Grid.Height to max(viewport, content_min).

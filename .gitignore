@@ -44,3 +44,4 @@ publish-out/
 
 # test-each per-suite logs (make test-each)
 .test-logs/
+__pycache__/

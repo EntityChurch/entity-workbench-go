@@ -36,11 +36,12 @@ help:
 	@echo "                         drive the compute host panel: one panel, any program"
 	@echo "  make smoke-xvfb-window  collapse/restore the WINDOW while a program paints"
 	@echo "                         (MODE=resize|minimize|both) — the open-minimize-crash gate"
-	@echo "  make smoke-xvfb-click  REAL X11 clicks (xdotool) — the only input-path gate"
+	@echo "  make smoke-xvfb-click  REAL X11 clicks AND DRAGS (xdotool) — the only input-path gate"
 	@echo "                         CLICKS=200 CLICK_SEED=1 CLICK_GAP=120 WM=1"
+	@echo "                         DRAG_PCT=40 DRAG_STEPS=12 (DRAG_PCT=0 = clicks only)"
 	@echo "  make crash-hunt        run the click fuzz over HUNT_SEEDS seeds, stop at"
 	@echo "                         the first crash and print the replay command"
-	@echo "  make crash      decode the most recent coredump (Go frames + managed stack)"
+	@echo "  make crash      decode the most recent coredump (geometry + Go frames + managed stack)"
 	@echo "  make run        run the container with X11 forwarded from host"
 	@echo "  make extract    copy /app out of the image to ./dist-native/"
 	@echo "  make host-run   launch (extract if needed; does NOT rebuild)"
@@ -99,28 +100,67 @@ test:
 # configuration from a make target was the default — an ephemeral
 # in-memory peer that loses everything on exit — which is a poor default
 # to be *stuck* with even though it is a fine default to start from.
+#
+# Launches through run-with-dump.sh, same as `up`. It did NOT until
+# 2026-09-01: `host-run` (= `make gui-run` at the root, the target our
+# docs call the fast loop) exec'd the bare binary, so whether a session
+# had createdump, a JIT symbol map or any stderr capture depended on
+# which target the operator happened to type — and nothing recorded
+# which, so no crash artifact could be read for it either way. The
+# difference between the two targets is now the rebuild, and only the
+# rebuild, and the app states its own arming at startup.
+#
+# Do not over-read this. It was written up first as "every operator
+# crash was taken unarmed", which the coredump's own environment block
+# refutes: the 2026-09-01 SIGSEGV had DOTNET_DbgEnableMiniDump=1 and
+# createdump produced nothing anyway. Unarmed launches were a real hole;
+# they were not the reason that crash left no managed stack.
 host-run:
 	@if [ ! -x $(APP_DIR)/dist-native/entity-avalonia ]; then $(MAKE) extract; fi
-	cd $(APP_DIR)/dist-native && LD_LIBRARY_PATH=. ./entity-avalonia $(ARGS)
+	@cp $(APP_DIR)/run-with-dump.sh $(APP_DIR)/dist-native/
+	@chmod +x $(APP_DIR)/dist-native/run-with-dump.sh
+	@mkdir -p $(APP_DIR)/run-logs
+	@LOG=$(APP_DIR)/run-logs/run-$$(date +%Y%m%d-%H%M%S).log; \
+	  echo "==> output -> $$LOG"; \
+	  cd $(APP_DIR)/dist-native && ./run-with-dump.sh $(ARGS) 2>&1 | tee $$LOG; \
+	  exit $${PIPESTATUS[0]}
 
 # The one command you actually want during iteration: rebuild the
 # container image (podman caches unchanged stages, so this is fast
 # if nothing moved), re-extract dist-native, launch.
 #
-# stderr+stdout are tee'd to dist-native/run.log so crash output
-# is captured every time. On non-zero exit we surface the last 40
-# lines of the log AND a `make crash` hint.
+# stderr+stdout are tee'd to run-logs/ so crash output is captured
+# every time. On non-zero exit we surface the last 40 lines AND a
+# `make crash` hint.
+#
+# THE LOG LIVES OUTSIDE dist-native/, AND THAT IS THE WHOLE POINT.
+# It was `dist-native/run.log` until 2026-09-01, and `extract` — which
+# every build target runs, including `up` itself on its next invocation —
+# does `rm -rf` on that directory. So the log was reliably destroyed by
+# the next build. Measured: the 2026-09-01 SIGSEGV ran with
+# `WB_PANEL_LOG=1`, meaning its complete breadcrumb stream up to the
+# fault WAS on disk, and it was gone before anyone looked. Our own
+# crash doctrine already told us not to do this — *"write artifacts
+# outside dist-native/ or copy them immediately"* — and we had written
+# that rule about smoke-run artifacts while the most important log in
+# the repo sat in exactly the directory it names.
+#
+# Logs are timestamped rather than overwritten, for the same reason: the
+# interesting run is usually not the most recent one.
 up: build extract
 	@cp $(APP_DIR)/run-with-dump.sh $(APP_DIR)/dist-native/
 	@chmod +x $(APP_DIR)/dist-native/run-with-dump.sh
-	@echo "==> launching entity-avalonia; output -> $(APP_DIR)/dist-native/run.log"
-	@cd $(APP_DIR)/dist-native && \
-	  ./run-with-dump.sh $(ARGS) 2>&1 | tee run.log; \
+	@mkdir -p $(APP_DIR)/run-logs
+	@LOG=$(APP_DIR)/run-logs/run-$$(date +%Y%m%d-%H%M%S).log; \
+	  echo "==> launching entity-avalonia; output -> $$LOG"; \
+	  cd $(APP_DIR)/dist-native && \
+	  ./run-with-dump.sh $(ARGS) 2>&1 | tee $$LOG; \
 	  status=$${PIPESTATUS[0]}; \
 	  if [ $$status -ne 0 ]; then \
 	    echo ""; \
 	    echo "==> entity-avalonia exited non-zero ($$status). Last 40 log lines:"; \
-	    echo "----"; tail -40 run.log; echo "----"; \
+	    echo "----"; tail -40 $$LOG; echo "----"; \
+	    echo "==> log kept at $$LOG (outside dist-native, so the next build cannot delete it)"; \
 	    echo "==> If it crashed, run \`make crash\` to decode."; \
 	  fi
 
@@ -161,7 +201,39 @@ crash:
 	  echo "    NOTE si_code 128 (SI_KERNEL) with si_addr 0 means the signal was RE-RAISED:"; \
 	  echo "         the register context is NOT the fault site, and si_addr is meaningless."; \
 	  echo ""; \
+	  $(MAKE) --no-print-directory crash-stack CORE_PID=$$PID; \
 	  $(MAKE) crash-managed CORE_PID=$$PID
+
+# crash-stack — the GEOMETRY half, and the one that settles "was this a
+# stack overflow?" with a number instead of an impression.
+#
+# Added 2026-09-01 because `coredumpctl info` TRUNCATES a backtrace, and
+# a truncated run of identical return addresses reads exactly like an
+# unbounded recursion. It read that way once and was wrong: 45 frames, a
+# uniform 448-byte stride, 19.2 KB — an ordinary tree walk. The number
+# was in the core the whole time and nobody had a way to get it out.
+#
+# Extracts the core to a temp file (coredumpctl stores them zstd'd) and
+# runs crash-stack-report.py, which also symbolizes JIT frames through
+# the perf map when DOTNET_PerfMapEnabled was set at launch.
+crash-stack:
+	@if [ -z "$(CORE_PID)" ]; then echo "usage: make crash-stack CORE_PID=<pid>"; exit 2; fi
+	@echo "==> stack geometry (is this a stack overflow, or a normal-depth walk?)"
+	@TMP=$$(mktemp -d); \
+	  if coredumpctl dump $(CORE_PID) --output=$$TMP/core >/dev/null 2>&1; then \
+	    MAP=/tmp/perf-$(CORE_PID).map; \
+	    if [ -f $$MAP ]; then \
+	      python3 $(APP_DIR)/crash-stack-report.py $$TMP/core --perf-map $$MAP; \
+	    else \
+	      echo "    (no $$MAP — the process was launched without DOTNET_PerfMapEnabled,"; \
+	      echo "     so managed frames cannot be named. run-with-dump.sh sets it, and"; \
+	      echo "     every make launch target now goes through run-with-dump.sh.)"; \
+	      python3 $(APP_DIR)/crash-stack-report.py $$TMP/core; \
+	    fi; \
+	  else \
+	    echo "    could not extract the coredump for pid $(CORE_PID)"; \
+	  fi; \
+	  rm -rf $$TMP
 
 # crash-managed — the managed half of the post-mortem.
 #
@@ -182,7 +254,9 @@ crash:
 #     of printing a mystery hex code.
 CORE_PID ?=
 crash-managed:
-	@DMP=$$(ls -t $(APP_DIR)/dist-native/managed.*.dmp $(APP_DIR)/dist-native/xvfb-smoke-out*/managed.*.dmp 2>/dev/null | head -1); \
+	@DMP=$$(ls -t $${WB_CRASH_DIR:-$$HOME/.entity/crash}/managed.*.dmp \
+	           $(APP_DIR)/dist-native/managed.*.dmp \
+	           $(APP_DIR)/dist-native/xvfb-smoke-out*/managed.*.dmp 2>/dev/null | head -1); \
 	 if [ -n "$$DMP" ]; then \
 	   echo "==> analyzing managed minidump: $$DMP"; \
 	   $(MAKE) --no-print-directory crash-image; \
@@ -196,6 +270,12 @@ crash-managed:
 	   echo "==> no managed minidump (managed.*.dmp) found."; \
 	   echo "    run-with-dump.sh DOES export DOTNET_DbgEnableMiniDump=1, so this is not"; \
 	   echo "    a missing env var — the runtime did not invoke createdump for this fault."; \
+	   echo "    CONFIRM IT rather than assuming, both ways: the crashed process's whole"; \
+	   echo "    environment is inside the coredump."; \
+	   echo "      coredumpctl dump <pid> --output=/tmp/c && grep -ac DOTNET_DbgEnableMiniDump /tmp/c"; \
+	   echo "    On 2026-09-01 that check refuted a written-up conclusion that the crash"; \
+	   echo "    had been taken unarmed. It was armed. createdump simply produced nothing,"; \
+	   echo "    as on 2026-08-21 — WHY is open and has never been tested."; \
 	   echo "    A systemd coredump cannot substitute: the DAC rejects an ELF core, so"; \
 	   echo "    there is no managed stack to be had from it. What IS available from the"; \
 	   echo "    core: thread/frame layout, module list, and raw JIT disassembly via gdb."; \
@@ -203,7 +283,7 @@ crash-managed:
 
 # crash-image tags the builder stage (SDK + dotnet-dump). Cached after
 # the first build, so this is a no-op on a warm tree.
-.PHONY: crash-image crash-managed
+.PHONY: crash-image crash-managed crash-stack
 crash-image:
 	@cp $(APP_DIR)/containerignore $(CTX_DIR)/.containerignore
 	@podman image exists entity-avalonia-builder:dev || \
@@ -370,6 +450,15 @@ smoke-xvfb-site: build extract
 CLICKS      ?= 200
 CLICK_SEED  ?= 1
 CLICK_GAP   ?= 120
+# DRAG_PCT of gestures are drags rather than clicks, half of those
+# near-vertical (the scrollbar-thumb shape). Added 2026-09-01: until
+# then this harness could only press and release at one point, so it
+# could not take pointer capture, could not deliver a motion stream to a
+# captured element, and could not move a scrollbar thumb — which is what
+# the operator was doing when the process died. DRAG_PCT=0 restores the
+# click-only behaviour, which is the control arm.
+DRAG_PCT    ?= 40
+DRAG_STEPS  ?= 12
 # A window manager is ON by default here, unlike every other smoke
 # target. The desktop the operator crashes on has one, and the WM owns
 # focus transfer and pointer grabs — the very machinery a click fuzz is
@@ -396,6 +485,8 @@ smoke-xvfb-click: build extract
 	    -e WB_SMOKE_CLICK_FUZZ=$(CLICKS) \
 	    -e WB_SMOKE_CLICK_SEED=$(CLICK_SEED) \
 	    -e WB_SMOKE_CLICK_GAP_MS=$(CLICK_GAP) \
+	    -e WB_SMOKE_DRAG_PCT=$(DRAG_PCT) \
+	    -e WB_SMOKE_DRAG_STEPS=$(DRAG_STEPS) \
 	    -e WB_SMOKE_WM=$(WM) \
 	    -e WB_CRASH_TRACE=$(CRASH_TRACE) \
 	    -e WB_SMOKE_GDB=$(GDB) \
@@ -439,6 +530,8 @@ crash-hunt: build extract
 	     -e WB_SMOKE_CLICK_FUZZ=$(CLICKS) \
 	     -e WB_SMOKE_CLICK_SEED=$$seed \
 	     -e WB_SMOKE_CLICK_GAP_MS=$(CLICK_GAP) \
+	     -e WB_SMOKE_DRAG_PCT=$(DRAG_PCT) \
+	     -e WB_SMOKE_DRAG_STEPS=$(DRAG_STEPS) \
 	     -e WB_SMOKE_WM=$(WM) \
 	     -e WB_CRASH_TRACE=$(CRASH_TRACE) \
 	     -e WB_SMOKE_OUT=/app/xvfb-smoke-out-seed$$seed \

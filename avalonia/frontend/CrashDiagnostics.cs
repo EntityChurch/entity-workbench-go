@@ -31,8 +31,10 @@ namespace EntityAvalonia;
 // manually reproduce). So the app records its own last moments:
 //
 //   1. A ring of the last N breadcrumbs — ALWAYS kept in memory, even
-//      when WB_PANEL_LOG is unset. PanelLog feeds it. Printing is opt-in;
-//      RECORDING is not, because the crash decides when we needed it.
+//      when WB_PANEL_LOG is unset — AND written through, line by line,
+//      to ~/.entity/crash/entity-avalonia-<pid>.trail as each one is
+//      recorded. PanelLog feeds it. Printing is opt-in; RECORDING is
+//      not, because the crash decides when we needed it.
 //   2. Global input breadcrumbs on the TopLevel, TUNNELING so they run
 //      BEFORE the target's own handler. This is the specific blind spot
 //      that cost us the 13:16 dump: the user clicked a link, the fault
@@ -41,18 +43,38 @@ namespace EntityAvalonia;
 //      no hint that a click had ever happened.
 //   3. Managed exception handlers (AppDomain / Dispatcher / Task) that
 //      dump the exception, its stack, AND the breadcrumb ring.
-//   4. A durable file under ~/.entity/crash/ — stderr is only captured
-//      by `make up`, and `make gui-run` / `host-run` (the documented
-//      fast loop) discards it. `make extract` wipes dist-native, so the
-//      log cannot live beside the binary.
+//   4. A durable file under ~/.entity/crash/. It lives there and not
+//      beside the binary because `make extract` does `rm -rf` on
+//      dist-native, so anything written there is deleted by the next
+//      build — which is exactly what happened to the 2026-09-01 crash's
+//      `run.log`, and that log had the whole breadcrumb stream in it.
+//      (Both `make up` and `make host-run` now also tee stderr to
+//      avalonia/run-logs/, outside the same `rm -rf`.)
 //
 // LIMIT, stated plainly: a hard SIGSEGV is NOT a managed exception and
 // will not run any handler here. What this class guarantees for that
-// case is the breadcrumb ring on disk up to the last flushed line —
-// which is exactly what was missing. It converts "no information" into
+// case is the durable TRAIL — every breadcrumb, on disk, up to the last
+// one recorded before the signal. It converts "no information" into
 // "the last action before it died", and it converts every *managed*
-// fault (the NullReferenceException class, which is the leading
-// hypothesis) into a full symbolized stack with zero operator effort.
+// fault into a full symbolized stack with zero operator effort.
+//
+// That guarantee was VACUOUS until 2026-09-01. The sentence above used
+// to say "the breadcrumb ring on disk up to the last flushed line", and
+// the only thing that ever flushed the ring was WriteFatal — i.e. the
+// managed-fault handler, i.e. precisely the path the SIGSEGV case does
+// not take. Measured cost of the gap: the 2026-09-01 SIGSEGV's crash
+// log ends seventeen hours before the fault. **A forensic guarantee is
+// a claim about a code path; trace the path before writing the
+// sentence.**
+//
+// SECOND LIMIT, still open: everything here is per-thread where it
+// matters, and Install() runs on the UI thread. EnlargeAltStack
+// therefore covers the UI thread ONLY. The 2026-09-01 fault landed on a
+// background thread, which still has the PAL's stock 16 KB alternate
+// signal stack — the size measured to be insufficient for this
+// process's handler chain. Nothing in this file fixes that; the
+// external createdump path (run-with-dump.sh) is what covers it, which
+// is another reason that script is no longer optional.
 public static class CrashDiagnostics
 {
     private const int RingCapacity = 96;
@@ -62,6 +84,36 @@ public static class CrashDiagnostics
     private static bool _installed;
     private static string? _crashLogPath;
     private static bool _fatalWritten;
+
+    // ---- the durable trail ------------------------------------------
+    //
+    // The in-memory ring reaches disk only through WriteFatal, and
+    // WriteFatal only runs for a MANAGED fault. A hard SIGSEGV, a
+    // runtime FailFast and a stack overflow all run no handler at all,
+    // so for exactly the crash class this file was written for, the ring
+    // dies with the process.
+    //
+    // That was not a theoretical gap. In the 2026-09-01 SIGSEGV the
+    // crash log's breadcrumbs end at 21:52 and the process died at 14:33
+    // the next day — SEVENTEEN HOURS of user actions, including whatever
+    // one killed it, held only in memory. The class comment below
+    // promised "the breadcrumb ring on disk up to the last flushed line"
+    // and nothing flushed it; the guarantee was vacuous.
+    //
+    // So every breadcrumb is now written through to its own file as it
+    // is recorded. Line-buffered onto the fd (bufferSize 1 + AutoFlush),
+    // so the bytes are in the page cache before the call returns and
+    // only a machine crash can lose them. Cost is one small write per
+    // user action against a class of crash that otherwise leaves
+    // nothing.
+    private const long MaxTrailBytes = 8L << 20;
+
+    private static StreamWriter? _trail;
+    private static string? _trailPath;
+    private static long _trailBytes;
+    private static bool _trailStopped;
+
+    public static string? TrailPath => _trailPath;
 
     // Trace mode logs first-chance exceptions too. Off by default: a
     // healthy Avalonia session throws and catches a fair number of them
@@ -82,6 +134,9 @@ public static class CrashDiagnostics
 
         _trace = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WB_CRASH_TRACE"));
         _crashLogPath = ResolveCrashLogPath();
+        // Before the first Breadcrumb call below, so the trail carries
+        // the whole session including startup.
+        OpenTrail();
 
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             WriteFatal("AppDomain.UnhandledException" + (e.IsTerminating ? " (terminating)" : ""),
@@ -112,6 +167,19 @@ public static class CrashDiagnostics
 
         Breadcrumb("crash-diag", "installed" + (_trace ? " (trace on)" : "") +
             (_crashLogPath != null ? " log=" + _crashLogPath : " log=<none>"));
+        Breadcrumb("crash-diag", "trail=" + (_trailPath ?? "<none>"));
+        Breadcrumb("crash-diag", "external diagnostics: " + ArmingReport() +
+            " pid=" + Environment.ProcessId);
+        // Announced on stderr too, unconditionally. A reporter who
+        // launched the binary directly rather than through
+        // run-with-dump.sh needs to know the process is running blind
+        // BEFORE it crashes, not after.
+        try
+        {
+            Console.Error.WriteLine("entity-avalonia: external diagnostics: " + ArmingReport()
+                + " (all three are set by run-with-dump.sh, which `make gui` and `make gui-run` both use)");
+        }
+        catch { }
 
         // Report, then optionally replace, this thread's alternate
         // signal stack. Main() runs on the UI thread, so installing here
@@ -312,9 +380,14 @@ public static class CrashDiagnostics
         return sb.ToString();
     }
 
-    // Breadcrumb records into the ring. Cheap, allocation-light, never
-    // throws. PanelLog also calls this, so panel breadcrumbs are captured
-    // whether or not WB_PANEL_LOG is printing them.
+    // Breadcrumb records into the ring AND writes through to the trail
+    // file. Cheap, allocation-light, never throws. PanelLog also calls
+    // this, so panel breadcrumbs are captured whether or not
+    // WB_PANEL_LOG is printing them.
+    //
+    // The write-through is the part that matters for a hard signal: see
+    // the MaxTrailBytes block above for why the ring alone is not a
+    // forensic channel.
     public static void Breadcrumb(string tag, string message)
     {
         try
@@ -324,12 +397,93 @@ public static class CrashDiagnostics
             {
                 if (_ring.Count >= RingCapacity) _ring.Dequeue();
                 _ring.Enqueue(line);
+                WriteTrailLocked(line);
             }
         }
         catch
         {
             // Intentionally empty — see the comment above.
         }
+    }
+
+    // WriteTrailLocked appends one line to the durable trail. Caller
+    // holds _gate. Never throws: a diagnostic that takes the app down is
+    // worse than no diagnostic.
+    //
+    // The size cap exists because this file grows with session length,
+    // and a GUI left open for days is the normal case here (the crash
+    // that motivated this had been up ~17 hours). At the cap we stop and
+    // say so, rather than rotating: a rotation would discard the START
+    // of the session, and the startup breadcrumbs — render mode, alt
+    // stack size, which panels mounted — are the ones a crash report
+    // needs and cannot reconstruct.
+    private static void WriteTrailLocked(string line)
+    {
+        if (_trail == null || _trailStopped) return;
+        try
+        {
+            if (_trailBytes >= MaxTrailBytes)
+            {
+                _trailStopped = true;
+                _trail.WriteLine($"[trail] size cap {MaxTrailBytes} bytes reached — no further breadcrumbs recorded");
+                return;
+            }
+            _trail.WriteLine(line);
+            _trailBytes += line.Length + 1;
+        }
+        catch
+        {
+            // A full or unwritable disk must not be fatal. Stop trying.
+            _trailStopped = true;
+        }
+    }
+
+    // OpenTrail creates the write-through file. Called once from
+    // Install(), before the first breadcrumb.
+    //
+    // bufferSize 1 + AutoFlush is deliberate and is the whole mechanism:
+    // it puts each line through write(2) as it is recorded, so the bytes
+    // survive a SIGSEGV that runs no handler. A default-buffered
+    // StreamWriter would hold the last 4 KB — which is to say, exactly
+    // the breadcrumbs describing the crash — in userspace memory that
+    // dies with the process.
+    private static void OpenTrail()
+    {
+        try
+        {
+            if (_crashLogPath == null) return;
+            _trailPath = Path.ChangeExtension(_crashLogPath, ".trail");
+            var fs = new FileStream(_trailPath, FileMode.Append, FileAccess.Write,
+                FileShare.ReadWrite, bufferSize: 1, FileOptions.WriteThrough);
+            _trail = new StreamWriter(fs) { AutoFlush = true };
+        }
+        catch
+        {
+            _trail = null;
+            _trailPath = null;
+        }
+    }
+
+    // ArmingReport states which external diagnostics are actually on.
+    //
+    // This is recorded because nothing in a crash artifact said so, and
+    // a blank minidump slot reads identically whether createdump was
+    // disabled or whether it ran and failed. A crash report that cannot
+    // distinguish "we had no instrument" from "the instrument found
+    // nothing" sends the next session to the wrong question — and on
+    // 2026-09-01 it sent this one there, to a written-up conclusion that
+    // the crash had been taken unarmed. It had not; the environment
+    // block in the coredump says DOTNET_DbgEnableMiniDump=1 and
+    // createdump produced nothing regardless. One line at startup would
+    // have closed that question before it was opened. See
+    // run-with-dump.sh.
+    private static string ArmingReport()
+    {
+        string On(string name) =>
+            string.IsNullOrEmpty(Environment.GetEnvironmentVariable(name)) ? "OFF" : "on";
+        return "minidump=" + On("DOTNET_DbgEnableMiniDump")
+             + " perfmap=" + On("DOTNET_PerfMapEnabled")
+             + " panel-log=" + On("WB_PANEL_LOG");
     }
 
     // Snapshot returns the current ring, oldest first.

@@ -273,6 +273,7 @@ func BridgeInit(cConfig *C.char) *C.char {
 			cascadeLivenesses(h)
 			cascadePrograms(h)
 			cascadeHandlers(h)
+			cascadeExplorers(h)
 		})
 	}
 

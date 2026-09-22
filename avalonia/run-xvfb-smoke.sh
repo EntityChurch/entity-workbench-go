@@ -169,9 +169,31 @@ fi
 # A driver that calls the method under the click cannot reproduce a
 # bug in the click.
 #
-# Deterministic by seed, and every click is logged with its
+# Deterministic by seed, and every gesture is logged with its
 # coordinates, so a crashing run is replayable rather than a story
 # about randomness. Bash's $RANDOM is seeded from WB_SMOKE_CLICK_SEED.
+#
+# DRAGS, added 2026-09-01. Until today this loop only ever did
+# `mousemove; click` — press and release at one point — and the
+# doctrine's own capability table said so. A drag is a different code
+# path in every layer that matters: it takes pointer CAPTURE, it
+# delivers a stream of PointerMoved to a captured element rather than to
+# whatever is under the cursor, and on a ScrollBar thumb it drives
+# repeated layout and a compositor pass per move. None of that is
+# reachable by a click.
+#
+# It matters because the 2026-09-01 SIGSEGV happened while the operator
+# was dragging the tree's vertical scrollbar, and no instrument in this
+# repo could perform that gesture against a real compositor. The
+# headless harness can drag (TreeViewScrollDragTests) but has no X11
+# backend and no render thread; this harness has both and could not
+# drag. The crash lives in the intersection, which is precisely the
+# region neither one covered.
+#
+# WB_SMOKE_DRAG_PCT of gestures become drags (default 40). Of those,
+# half are near-VERTICAL — same x, large dy — because that is the shape
+# of a scrollbar-thumb gesture and a uniformly random endpoint pair
+# almost never produces one.
 CLICKS="${WB_SMOKE_CLICK_FUZZ:-0}"
 if [ "$CLICKS" -gt 0 ]; then
     if ! command -v xdotool >/dev/null 2>&1; then
@@ -181,6 +203,8 @@ if [ "$CLICKS" -gt 0 ]; then
     fi
     CLICK_SEED="${WB_SMOKE_CLICK_SEED:-1}"
     CLICK_GAP_MS="${WB_SMOKE_CLICK_GAP_MS:-120}"
+    DRAG_PCT="${WB_SMOKE_DRAG_PCT:-40}"
+    DRAG_STEPS="${WB_SMOKE_DRAG_STEPS:-12}"
     CLICK_LOG="$OUT_DIR/clicks.log"
     : > "$CLICK_LOG"
     # Screen geometry, minus a margin so we stay inside the window
@@ -188,7 +212,8 @@ if [ "$CLICKS" -gt 0 ]; then
     SCREEN_W="${SCREEN%%x*}"
     _rest="${SCREEN#*x}"
     SCREEN_H="${_rest%%x*}"
-    echo "    click fuzz: $CLICKS clicks seed=$CLICK_SEED gap=${CLICK_GAP_MS}ms -> $CLICK_LOG"
+    echo "    click fuzz: $CLICKS gestures seed=$CLICK_SEED gap=${CLICK_GAP_MS}ms" \
+         "drag=${DRAG_PCT}% steps=$DRAG_STEPS -> $CLICK_LOG"
     (
         RANDOM=$CLICK_SEED
         # Let the window map and do its first paint before poking it.
@@ -197,12 +222,42 @@ if [ "$CLICKS" -gt 0 ]; then
         while [ "$i" -lt "$CLICKS" ] && kill -0 "$APP_PID" 2>/dev/null; do
             x=$(( RANDOM % (SCREEN_W - 20) + 10 ))
             y=$(( RANDOM % (SCREEN_H - 20) + 10 ))
-            echo "$i $x $y" >> "$CLICK_LOG"
-            xdotool mousemove "$x" "$y" click 1 >/dev/null 2>&1 || true
+            roll=$(( RANDOM % 100 ))
+            if [ "$roll" -lt "$DRAG_PCT" ]; then
+                # Half the drags are near-vertical (scrollbar-thumb
+                # shape); the rest go anywhere.
+                if [ $(( RANDOM % 2 )) -eq 0 ]; then
+                    x2=$(( x + (RANDOM % 7) - 3 ))
+                    y2=$(( RANDOM % (SCREEN_H - 20) + 10 ))
+                    kind="DRAG-V"
+                else
+                    x2=$(( RANDOM % (SCREEN_W - 20) + 10 ))
+                    y2=$(( RANDOM % (SCREEN_H - 20) + 10 ))
+                    kind="DRAG"
+                fi
+                echo "$i $kind $x $y -> $x2 $y2 steps=$DRAG_STEPS" >> "$CLICK_LOG"
+                # press, walk, release. Each mousemove is a separate
+                # xdotool call so the app sees a STREAM of motion to a
+                # captured element, which is the whole point — a single
+                # jump from press-point to release-point exercises
+                # neither capture nor incremental layout.
+                xdotool mousemove "$x" "$y" mousedown 1 >/dev/null 2>&1 || true
+                s=1
+                while [ "$s" -le "$DRAG_STEPS" ]; do
+                    mx=$(( x + (x2 - x) * s / DRAG_STEPS ))
+                    my=$(( y + (y2 - y) * s / DRAG_STEPS ))
+                    xdotool mousemove "$mx" "$my" >/dev/null 2>&1 || true
+                    s=$((s + 1))
+                done
+                xdotool mouseup 1 >/dev/null 2>&1 || true
+            else
+                echo "$i CLICK $x $y" >> "$CLICK_LOG"
+                xdotool mousemove "$x" "$y" click 1 >/dev/null 2>&1 || true
+            fi
             i=$((i + 1))
             sleep "$(awk "BEGIN{print $CLICK_GAP_MS/1000}")"
         done
-        echo "click fuzz finished after $i clicks" >> "$CLICK_LOG"
+        echo "click fuzz finished after $i gestures" >> "$CLICK_LOG"
     ) &
     CLICK_PID=$!
 fi

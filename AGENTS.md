@@ -32,12 +32,12 @@ This repo runs the entity-OS methodology at the **Full** tier for the Avalonia/.
 — held where conformance alone can't reach a GUI. The framework is `METHODOLOGY.md` (maintained
 upstream, identical in every repo); the charter below carries the local grounding, and **this repo is one of
 the worked instances the framework was reconciled from** — D1–D11 there are inherited verbatim,
-D12–D24 here are ours, earned on the eight crash-hunt commits, two feedback episodes, the
+D12–D25 here are ours, earned on the eight crash-hunt commits, two feedback episodes, the
 2026-08-18 publisher/connectivity pair, the v1.13 adoption trio, the 2026-08-19 cross-impl
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D24, the ten review questions, the anti-pattern catalog AP1–AP50, and the promotion
+  D1–D25, the ten review questions, the anti-pattern catalog AP1–AP60, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -185,6 +185,12 @@ one — name the recurring cycle first, then let each step own one lever of it.
   handler that runs before a panel's own code.** That blind spot hid a fatal crash for a
   month across four "negative" repro attempts (STATUS, 2026-08-21). Clicks are seeded and
   every coordinate is logged, so a crashing run replays: `CLICK_SEED=n`.
+  **It does real DRAGS as of 2026-09-01** (`DRAG_PCT`, default 40, half of them near-vertical
+  because that is the scrollbar-thumb shape). Before that it pressed and released at one point,
+  so pointer capture, a motion stream to a captured element, and a scrollbar thumb were all
+  outside its reach — and the 2026-09-01 SIGSEGV happened on the render thread during a
+  scrollbar drag, i.e. in the one region neither this harness nor the headless drag tests
+  covered. `DRAG_PCT=0` is the control arm.
 - **For anything above the platform, the headless suite can drive real input too, and it is
   much cheaper** (added 2026-08-21). `Avalonia.Headless`'s `MouseDown` / `MouseUp` /
   `KeyPressQwerty` run the genuine route — hit test, capture, class **and** instance handlers —
@@ -315,6 +321,19 @@ one — name the recurring cycle first, then let each step own one lever of it.
   binary would be a stronger default and a worse one — no operator agreed to it and it cannot be
   rotated without a release. A `browser.json` that exists and does not parse is an **error**
   (AP33), never a silent fallback. `workbench.LoadBrowseConfig` is the one place this is decided.
+- **The GUI remembers its panel arrangement in `~/.entity/gui-layout.json`**, keyed by peer
+  **alias** (`workbench/layout_config.go`; precedence `WB_LAYOUT` > that file > the built-in
+  `site-view`/`detail`/`shell`). Alias and not peer-id **on purpose**: with no flags the GUI is an
+  ephemeral in-memory peer with a fresh keypair every launch, so a peer-id-keyed layout would never
+  match itself twice and the feature would silently do nothing in the default configuration — which
+  is also why the layout is a file and not an `app/state/…` entity. A file that exists and does not
+  parse is an **error** (AP33): the app opens on the defaults *and says why*, because a silent
+  reset is indistinguishable from "it forgot again". A panel kind the build does not register is
+  skipped and named, so a layout written by a newer build still opens.
+  **`WB_LAYOUT` does not work from a test** — same trap as `WB_NO_AUTOPIN`, Go captures its
+  environment at process start — so the headless suite redirects the file through the
+  `LayoutSetPath` export instead. Without that, these tests would write to the developer's real
+  `~/.entity`.
 - `make build` — all shipped Go binaries (entity-shell + entity-console).
 - **Every build/test target now refuses early if the sibling kernel is missing** (`preflight`,
   added 2026-08-24, AP41). `doctor` had that check from the day it was written and **nothing
@@ -333,6 +352,18 @@ one — name the recurring cycle first, then let each step own one lever of it.
   `make gui-run ARGS="--identity me --storage sqlite"` (double-dash: the .NET frontend does
   not use Go's `flag` spelling). **With no flags the GUI is an ephemeral in-memory peer and
   loses everything on exit.** `avalonia/README.md` is the full entry-path doc.
+  **Both now launch through `run-with-dump.sh`, and the rebuild is the only difference left.**
+  Until 2026-09-01 `gui-run` exec'd the bare binary, so whether a session had diagnostics
+  depended on which target you happened to type and nothing recorded which. The app now prints
+  `external diagnostics: minidump=… perfmap=…` at startup and writes it to the crash trail; **if
+  that line says OFF, relaunch armed before analysing anything.**
+- **Run logs live in `avalonia/run-logs/`, NOT in `dist-native/`** (AP54). `extract` does
+  `rm -rf dist-native`, and every build target runs `extract`, so a log written there is deleted
+  by the next build — which is what happened to the 2026-09-01 crash's stderr, and it had
+  `WB_PANEL_LOG=1`, meaning the complete breadcrumb stream up to the fault was on disk and gone
+  before anyone looked. `DOCTRINE-CRASH-FORENSICS` §1 already said *"write artifacts outside
+  `dist-native/`"*; we had written that about smoke artifacts and put the run log inside anyway.
+  Logs are timestamped, never overwritten: the interesting run is rarely the most recent one.
 - `make go ARGS="..."` — escape hatch; `ARGS` carries the subcommand (`vet ./...`,
   `mod tidy`, `env`, …).
 - **A tolerant fallback that turns malformed input into a well-formed entity is a bug, not
@@ -362,13 +393,29 @@ one — name the recurring cycle first, then let each step own one lever of it.
   and `dist-native/tools/dotnet-dump` cannot run on the host at all — it is
   framework-dependent beside a self-contained publish. `make -C avalonia crash` now does the
   managed half inside the builder image.
+- **A FIELD THAT PRINTS IS NOT A FIELD THAT ANSWERS** (D25, AP55) — the same failure as AP34, one
+  field over, and the reason D25 is ratified. `coredumpctl info` **truncates** a backtrace, so a
+  run of identical return addresses is a *lower bound* and can never say "unbounded". On
+  2026-09-01 we read 45 such frames as a runaway recursion and shipped a depth bound for it; the
+  same core says uniform 448-byte stride, exactly 45 frames, 19.2 KB, in a thread with ≥1 MB of
+  stack — **an ordinary tree walk.** Run **`make -C avalonia crash-stack`** (now inside
+  `make crash`) before believing any classification: it prints stride, uniformity, span, depth
+  below the thread descriptor, and the verdict with its numbers. Two things it will tell you that
+  nothing else does — a **uniform** stride is a single recursing call site while a mixed one is
+  not a recursion at all, and a recorded `rsp` **absent from the core** means the fault went
+  through CoreCLR's handler on an alternate signal stack systemd does not dump, so the registers
+  describe memory the core lacks. Prefer a derived measurement to a printed count, always.
 - **The UI thread's alternate signal stack is 1 MB, on purpose, and it is load-bearing.** The
   PAL default is **16 KB**, which is not enough for this process's handler chain under real
   pointer input: the click fuzz crashed **6/8 seeds** at 16 KB and **0/8** at 1 MB, same
   binary, same seeds. Installed at startup by `CrashDiagnostics.EnlargeAltStack`;
   `WB_ALTSTACK_BYTES=0` restores stock, which is the only way to re-measure the bug. Only the
   UI thread is covered — a crash on another managed thread would look identical and is not
-  fixed by this.
+  fixed by this. **That limit stopped being theoretical on 2026-09-01**: the SIGSEGV landed on a
+  background render thread, which still has the stock 16 KB. `sigaltstack` is per-thread and must
+  be called *on* that thread, and Avalonia exposes no hook onto its render thread, so this is an
+  open gap rather than an oversight — the external `createdump` path is what covers it, which is
+  a second reason `run-with-dump.sh` is no longer optional.
 - **A derived UI property is not a completion signal** (AP32). A headless test that settles on
   "the button re-enabled" returns in the window between the bridge call returning and the
   goroutine entering the operation, and then asserts against an empty view — green, measuring
@@ -385,13 +432,73 @@ one — name the recurring cycle first, then let each step own one lever of it.
   never a valid distinguishing claim** — if you reach for it to explain why something
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
-- The project measures everything against the **24 disciplines (D1–D24)**, ten review
-  questions, and anti-pattern catalog (AP1–AP50) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+- The project measures everything against the **25 disciplines (D1–D25)**, ten review
+  questions, and anti-pattern catalog (AP1–AP60) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A model with no shipped surface is not shipped** (D23). Landing a renderer-neutral model
   is half a feature; the other half is a verb, panel, or menu entry a user can reach, in the
   same session. Three times now — the name arc, the handler browser, `PeerLiveness` — every
   layer was green and no edge connected them, and two of the three were found by audit
   because no test crosses "can a user reach this". **`make reachability`** is the sweep.
+  **And a READ-ONLY surface over a READ-WRITE model is the same violation, one the sweep cannot
+  see** (AP57): it asks whether a model has *a* surface, and one `Render` export satisfies it
+  completely. The Local Files panel shipped able to list mounts and unable to make one, with
+  everything green. **The tell is a panel with no verb in it** — a bridge area whose exports are
+  all `Open`/`Render`/`RegisterWake`/`Close` while the model behind it has operations. When you
+  find one, extract the operation so the verb and the panel share it (`shellcmd/mount_op.go` is
+  the worked example) rather than reimplementing it in the renderer.
+- **`Store.List` RETURNS PEER-QUALIFIED PATHS — never `TrimPrefix` one with a relative prefix**
+  (AP58). The prefix you pass in is canonicalized by `NamespacedIndex`; the entries come back
+  carrying the `/{peer-id}/` they are stored under. `strings.TrimPrefix(e.Path, "system/config/...")`
+  therefore trims **nothing**, and the `== ""` / `Contains(root, "/")` / map-key test after it gets
+  a confidently wrong answer. This shipped: the Local Files panel filtered out every row and
+  rendered *"no filesystem mounts on this peer"* for a peer that had one, and `mounts` printed the
+  qualified path as the root NAME. Use **`workbench.TreeRelative` / `RelativeUnder`**, which are
+  idempotent and safe on a path you built yourself, so applying them is never wrong.
+  **The reason no test caught it is the part to carry:** `NewStore(memory, memory)` has no
+  `NamespacedIndex`, so the cheap scaffolding returns bare relative paths and the arithmetic works
+  — every model test in `workbench/` used it, and namespacing only appears on a `CreatePeer`
+  store, which is what every real peer has. **A fixture that omits a wrapper the production object
+  always has cannot fail on anything the wrapper changes.** Peer-backed assertions live in
+  `workbench/tree_path_test.go`; put new ones there rather than beside the model, because the store
+  being real is the whole point.
+- **NEVER CALL INTO THE STORE WHILE HOLDING A MODEL'S LOCK** (AP60). `Store.OnPrefixChange`'s
+  cancel waits for its delivery goroutine to exit, and that goroutine is inside your event handler
+  taking your mutex — so a `Close` holding the lock across the cancel deadlocks, silently. No
+  panic, no race report: `make test-each` **sat on the workbench suite for sixteen minutes**. The
+  attach side is the same hazard and is louder only by luck, because `OnPrefixChange` delivers its
+  seed *synchronously on the caller's goroutine* when the store has no watch hub. Grab the cancel
+  funcs under the lock, release, then call them. And when you gate a race, **loop it and run a
+  control arm** — the first version of that gate passed against the deadlocking code, because one
+  close under churn does not reliably catch the deliverer mid-contention.
+- **A mount has TWO layers and a single count reads the one that cannot fail** (AP59). The
+  watcher writes `local/files/{root}/{rel}` for every admitted file; the ingest chain lifts each
+  into a `doc/*` at the target prefix. The mount row's `FileCount` read the *source* layer, so a
+  directory of 400 photographs and one README displayed "401 entities in tree" with exactly one
+  openable document. Report **both sides of a lossy stage** — `FileExplorerModel` carries
+  `TotalFiles` / `Ingested` / `NotIngested` — and make a per-item absence carry its **reason**,
+  never a blank column.
+  **What a file becomes is `workbench/doc_types.go`**, an extension→type registry:
+  `doc/markdown-file` (unchanged and byte-identical to what it always was — see
+  `doc_file_data.go` for why markdown keeps its own struct), plus `doc/text-file`,
+  `doc/code-file`, `doc/image-file`, and `doc/binary-file` as the honest fallthrough. There is no
+  "unhandled" outcome any more. Classification is by **name only, never by content**: reading a
+  4 GB video's first chunk to learn what its extension already said is a cost with no answer at
+  the end of it. `ValidateMountTarget` must be passed `DocEntityTypes()` — the whole set — or a
+  remount conflicts with its own predecessor's output.
+- **The workbench half of a mount is persisted at `app/workbench/mounts/{root}`**
+  (`workbench/mount_binding.go`) and restored by `shellboot` at startup. The kernel persists the
+  RootConfig and rehydrates the watcher; the **source→target mapping the ingest handler routes on**
+  is ours, and until this landed it existed only in `NotificationIngestHandler`'s memory. After a
+  restart the watcher came back, wrote its file entities, and every delivery answered
+  `404 no_mount_for_uri` — a mount that listed as healthy and had silently stopped producing
+  documents. `Mount` writes it, `Unmount` removes it (or the unmount undoes itself at the next
+  launch), and every failure path in between unwinds it.
+- **`Files` browses a mount; `Local Files` manages mounts.** Two panels, one question each, same
+  rule as the browser trio. `FileExplorerPanel` joins the two layers above and is the only surface
+  that shows an actual file; it holds a wake handle because mount *contents* churn, unlike mount
+  *configs*. **Avalonia has no built-in file explorer** — the framework's own sample uses the
+  separate `Avalonia.Controls.TreeDataGrid` package, and we deliberately do not take it: a new
+  templating surface is AP46 re-opened where `Rows.Of`'s guard does not look.
 - **A "no change needed" claim about another layer or repo is a hypothesis until the
   operation has been run end to end** (D19, AP10). Reading the code path establishes what
   that path does, not what the operation does — the two claims we routed on the strength of
@@ -815,6 +922,19 @@ entities):
   `cv9a-map-depth-exceeded-contains`, `worked/value-error/*`) — **it catches the AP43 bug in five
   vectors**, measured by re-running it against the pre-fix engine. Our home-grown 300-case fuzz
   found three cases and no cause; this corpus names them. **Reach for it first.**
+- **Nothing in this repo starts the tree→disk direction of a `local/files` mount** (M1 finding,
+  2026-09-01). `localfiles.Handler.StartReverseWrite` has **one** non-test caller in either tree
+  and it is the kernel's own `cmd/entity-peer`. Our peers replicate through the subscription chain
+  into `local/files:write` instead, so a mount here is watcher-ingest plus dispatched writes — not
+  the kernel's reverse-write loop. Do not read the kernel's *"bidirectional"* as a statement about
+  us; it was, in a doc of ours, for a day. **A capability that exists in a dependency is not a
+  capability of your product until something in your tree calls it** — D23 aimed one layer out,
+  and the D23 sweep does not look for it because there is no unreached model of *ours* to find.
+  The reverse-write loop's own loop guard is a five-second clock with a live correctness defect;
+  the reproducer is `workbench/localfiles_reverse_window_test.go` and the finding that matters if
+  you touch this area is that **the content check the clock is standing in for already exists**,
+  and `markWritten` sits downstream of it, so the clock can only arm when it is harmful. Read the
+  file header before re-deriving any of it.
 - **Not the conformance team.** When a cross-impl wire bug surfaces during perf/feature
   work, capture `file:line` + reproducer and route it (Python encoder → Python team, spec
   ambiguity → arch, conformance test-gap → core-go) — don't extend the probe into a

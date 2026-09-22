@@ -282,6 +282,25 @@ func Bootstrap(ctx context.Context, cfg Config) (*entitysdk.AppPeer, *shellcmd.S
 		}
 	}
 
+	// The kernel's Load above restores the WATCHER half of every mount.
+	// This restores OURS: the source→target mapping the ingest handler
+	// routes on, which lived only in process memory until
+	// workbench/mount_binding.go and therefore did not survive a
+	// restart. Without it the watcher came back, wrote its file
+	// entities, and every delivery answered 404 no_mount_for_uri — a
+	// mount that listed as healthy and had quietly stopped producing
+	// documents.
+	//
+	// A binding that cannot be restored is NAMED on stderr rather than
+	// dropped. This is startup, the operator is watching, and the
+	// failure it reports is one whose only other symptom is that new
+	// files stop appearing days later.
+	if restored, problems := workbench.RestoreMountBindings(ap.Store(), ingestHandler); restored > 0 || len(problems) > 0 {
+		for _, p := range problems {
+			fmt.Fprintf(os.Stderr, "warning: mount binding not restored — %s\n", p)
+		}
+	}
+
 	ws := shellcmd.NewShellWorkspace(ap, cfg.LocalAlias, cfg.Identity)
 	ws.NotificationIngest = ingestHandler
 

@@ -624,7 +624,46 @@ public static class MarkdownRenderer
         return sb.Length == 0 ? "(link)" : sb.ToString();
     }
 
-    private static void AppendText(MdContainerInline container, System.Text.StringBuilder sb)
+    // MaxInlineDepth bounds every recursive descent over a parsed inline
+    // tree.
+    //
+    // Both walkers below recurse once per nesting level of a document we
+    // did not write: a site page arrives as remote bytes, Markdig parses
+    // it, and nesting depth is whatever the author (or an attacker) put
+    // there. Unbounded, that is a stack overflow reachable from a page
+    // body — and a stack overflow on .NET is **uncatchable**: no
+    // exception, no `Dispatcher.UnhandledException`, no crash log,
+    // because there is no stack left to run a handler on. It surfaces as
+    // a bare SIGSEGV when the guard page is hit.
+    //
+    // THIS BOUND WAS ADDED FOR THE WRONG REASON, AND THE REASON IS
+    // RETRACTED. It was written on 2026-09-01 believing it might be the
+    // 2026-09-01 SIGSEGV: the coredump's faulting thread showed 45
+    // consecutive frames returning to one address, systemd truncates a
+    // backtrace, so "a single call site recursing without end" looked
+    // like the safe reading. Measuring the stack instead of counting the
+    // printed frames refutes it — the frames are a uniform 448 bytes,
+    // there are exactly 45 of them, and the chain reaches 24 KB below
+    // the thread descriptor. That is an ordinary recursive walk, not an
+    // overflow. The faulting thread was also a BACKGROUND thread with
+    // libSkiaSharp frames on it, and this walker only ever runs on the
+    // UI thread, so it is doubly not the one. `make crash-stack` now
+    // prints that measurement automatically.
+    //
+    // The bound STAYS, on its own merits: a site page arrives as remote
+    // bytes and nesting depth is whoever wrote the page, so an unbounded
+    // recursion here is a real defect in the same hazard class as
+    // AssetNameFromRef — a hostile page body reaching something it
+    // should not. It is kept as hardening, and it is NOT a fix for any
+    // observed crash. Do not let a future session re-derive the
+    // retracted claim from the fact that the bound exists.
+    //
+    // 64 is far beyond any real document. Markdown that nests emphasis
+    // deeper than this is not prose; truncating it loses nothing a reader
+    // wanted and keeps the process alive.
+    private const int MaxInlineDepth = 64;
+
+    private static void AppendText(MdContainerInline container, System.Text.StringBuilder sb, int depth = 0)
     {
         foreach (var node in container)
         {
@@ -637,7 +676,11 @@ public static class MarkdownRenderer
                     sb.Append(ci.Content);
                     break;
                 case MdContainerInline inner:
-                    AppendText(inner, sb);
+                    // Refuse to descend past the bound rather than
+                    // truncating silently — the ellipsis is the reader's
+                    // only signal that the document said more.
+                    if (depth >= MaxInlineDepth) { sb.Append('\u2026'); break; }
+                    AppendText(inner, sb, depth + 1);
                     break;
                 case MdLeafInline leaf:
                     sb.Append(leaf.ToString());
@@ -646,7 +689,7 @@ public static class MarkdownRenderer
         }
     }
 
-    private static void EmitInline(MdContainerInline container, List<Inline> result, bool regular)
+    private static void EmitInline(MdContainerInline container, List<Inline> result, bool regular, int depth = 0)
     {
         foreach (var node in container)
         {
@@ -659,8 +702,9 @@ public static class MarkdownRenderer
                     var span = new Span();
                     if (em.DelimiterCount >= 2) span.FontWeight = FontWeight.Bold;
                     else span.FontStyle = FontStyle.Italic;
+                    if (depth >= MaxInlineDepth) { result.Add(new Run { Text = "\u2026" }); break; }
                     var nested = new List<Inline>();
-                    EmitInline(em, nested, regular: true);
+                    EmitInline(em, nested, regular: true, depth + 1);
                     foreach (var n in nested) span.Inlines.Add(n);
                     result.Add(span);
                     break;
@@ -679,7 +723,8 @@ public static class MarkdownRenderer
                     result.Add(new Run { Text = " " });
                     break;
                 case MdContainerInline ctr:
-                    EmitInline(ctr, result, regular);
+                    if (depth >= MaxInlineDepth) { result.Add(new Run { Text = "\u2026" }); break; }
+                    EmitInline(ctr, result, regular, depth + 1);
                     break;
                 default:
                     if (node is MdLeafInline leaf)

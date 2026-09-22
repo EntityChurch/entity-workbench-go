@@ -270,6 +270,12 @@ title = "Diagnostic direction"
 blurb = "The 'observe, don't theorize' inspect doctrine for diagnosing the running application."
 group = "Direction"
 
+[[doc]]
+path  = "docs/architecture/FILE-REPLICATION-LANDSCAPE.md"
+title = "File replication: the landscape and what it would take"
+blurb = "Where a content-addressed substrate already sits relative to rsync, Unison, Syncthing and git-annex; what the local-files extension provides today; and the one gap that decides whether this becomes a tool you install — what happens when two machines edit the same file, where the state of the art is still detect-and-defer-to-the-human."
+group = "Direction"
+
 # ---------------------------------------------------------------------------
 # The rolling status log — declared, and MOVED to say so.
 #

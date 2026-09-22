@@ -342,57 +342,91 @@ func (h *NotificationIngestHandler) Handle(_ context.Context, req *handler.Reque
 			"decode FileData: "+err.Error())
 	}
 
-	// Type discrimination by extension. Only markdown files become
-	// doc/markdown-file entities today; everything else is admitted
-	// into the FileData layer (the watcher already wrote it) but no
-	// typed doc/* entity is produced and no tree:put happens. The
-	// long-term direction is per-extension type registry
-	// (markdown → doc/markdown-file, code → doc/code-file, text →
-	// doc/text-file, ...) backed by a type-aware viewer; until then
-	// we declare the markdown POC explicitly here.
-	if !isMarkdownPath(file.Path) {
-		resultRaw, _ := ecf.Encode(map[string]interface{}{
-			"skipped":     true,
-			"reason":      "type_not_handled",
-			"source_path": file.Path,
-			"source_uri":  relativeURI,
-		})
-		resultEnt, _ := entity.NewEntity("workbench/ingest-from-notification/result", cbor.RawMessage(resultRaw))
-		return &handler.Response{Status: 200, Result: resultEnt}, nil
-	}
+	// Type discrimination by extension, through the registry in
+	// doc_types.go. EVERY admitted file now becomes a typed document —
+	// markdown, text, code, image, or the honest `doc/binary-file`
+	// fallthrough. Before the registry this branch was
+	// `if !isMarkdownPath { return skipped/type_not_handled }`, which
+	// meant a mount of anything but markdown wrote a full source layer
+	// and not one openable document, and said so nowhere an operator
+	// could see it.
+	//
+	// The classification is by name alone and never by content. Reading
+	// a 4 GB video's first chunk to learn what its extension already
+	// said is a cost with no answer at the end of it.
+	class := ClassifyDocPath(file.Path)
 
-	// Build the doc/markdown-file entity. Pass file.Content through as
-	// a hash ref into system/content/blob (DOMAIN-LOCAL-FILES v1.3 §2.1
-	// shape); we only peek the first chunk for title extraction, so
-	// arbitrarily large files round-trip without in-memory materialization.
-	// Missing blob is a partial-sync condition; surface 503 so the
-	// subscription chain can retry on the next sync event.
-	firstChunk, blobPresent, err := LoadMarkdownFirstChunk(hctx.Store, file.Content)
-	if err != nil {
-		return handler.NewErrorResponse(500, "first_chunk_failed",
-			"load first chunk for "+file.Content.String()+": "+err.Error())
-	}
-	if !blobPresent {
-		// L12 canonical name (Amendment 2 of v1.3). See parallel comment
-		// in workbench/ingest_transform.go.
+	// Build the document entity. file.Content is passed through as a
+	// hash ref into system/content/blob (DOMAIN-LOCAL-FILES v1.3 §2.1
+	// shape) for every kind, so arbitrarily large files round-trip
+	// without in-memory materialization.
+	//
+	// A missing blob is a partial-sync condition; surface 503 so the
+	// subscription chain retries on the next sync event. The two
+	// branches below differ ONLY in how much they have to read to
+	// establish that: a textual kind needs the first chunk anyway (for
+	// the title), a non-textual kind needs nothing but presence, and
+	// paying the chunk decode to answer a question `Has` answers is how
+	// an image mount becomes slower than the video it is ingesting.
+	var title string
+	if class.Textual {
+		firstChunk, blobPresent, err := LoadMarkdownFirstChunk(hctx.Store, file.Content)
+		if err != nil {
+			return handler.NewErrorResponse(500, "first_chunk_failed",
+				"load first chunk for "+file.Content.String()+": "+err.Error())
+		}
+		if !blobPresent {
+			// L12 canonical name (Amendment 2 of v1.3). See parallel comment
+			// in workbench/ingest_transform.go.
+			return handler.NewErrorResponse(503, "blob_pending_sync",
+				"blob "+file.Content.String()+" not yet in local content store")
+		}
+		// Only markdown carries a heading worth reading a title out of.
+		// Doing the heading scan on a .go or a .csv would produce a
+		// title from a comment line, which is a plausible-looking wrong
+		// answer — the worst kind for a label nobody re-checks.
+		if class.IsMarkdown() {
+			title = extractFirstHeading(string(firstChunk))
+		}
+	} else if !hctx.Store.Has(file.Content) {
 		return handler.NewErrorResponse(503, "blob_pending_sync",
 			"blob "+file.Content.String()+" not yet in local content store")
 	}
-
-	title := extractFirstHeading(string(firstChunk))
 	if title == "" {
 		title = strings.TrimSuffix(filepath.Base(file.Path), filepath.Ext(file.Path))
 	}
-	md := MarkdownFileData{
-		Path:    file.Path,
-		Title:   title,
-		Content: file.Content,
-		Size:    int64(file.Size),
+
+	// Markdown keeps MarkdownFileData verbatim so its entity bytes — and
+	// therefore its hash, its tree binding and its revision history —
+	// are untouched by the registry existing. See doc_file_data.go.
+	var mdEnt entity.Entity
+	if class.IsMarkdown() {
+		mdEnt, err = MarkdownFileData{
+			Path:    file.Path,
+			Title:   title,
+			Content: file.Content,
+			Size:    int64(file.Size),
+		}.ToEntity()
+	} else {
+		mediaType := class.MediaType
+		// The watcher saw the file; we saw its name. Where it recorded a
+		// media type, that is the better evidence and it wins.
+		if file.MediaType != nil && *file.MediaType != "" {
+			mediaType = *file.MediaType
+		}
+		mdEnt, err = DocFileData{
+			Path:      file.Path,
+			Title:     title,
+			Content:   file.Content,
+			Size:      int64(file.Size),
+			MediaType: mediaType,
+			Language:  class.Language,
+			Kind:      string(class.Kind),
+		}.ToEntityOfType(class.EntityType)
 	}
-	mdEnt, err := md.ToEntity()
 	if err != nil {
 		return handler.NewErrorResponse(500, "build_entity",
-			"build doc/markdown-file: "+err.Error())
+			"build "+class.EntityType+": "+err.Error())
 	}
 
 	// Compute the target tree path and bind. targetPath was already
@@ -405,22 +439,29 @@ func (h *NotificationIngestHandler) Handle(_ context.Context, req *handler.Reque
 	hctx.TreeSet(targetPath, mdHash, "receive")
 
 	// Result entity is just an acknowledgement — the subscription
-	// engine doesn't consume it, but it shows up in traces.
+	// engine doesn't consume it, but it shows up in traces. entity_type
+	// is carried because a trace over a mixed mount is otherwise a list
+	// of paths with no indication of what each one became, and "what did
+	// this file turn into" is the first question asked of it.
 	resultRaw, _ := ecf.Encode(map[string]interface{}{
 		"target_path":  targetPath,
 		"content_hash": mdHash.Bytes(),
+		"entity_type":  class.EntityType,
 	})
 	resultEnt, _ := entity.NewEntity("workbench/ingest-from-notification/result", cbor.RawMessage(resultRaw))
 	return &handler.Response{Status: 200, Result: resultEnt}, nil
 }
 
-// isMarkdownPath returns true when the path's extension marks it as
-// markdown. Kept narrow and explicit so the v1 POC has zero ambiguity
-// about what gets a typed entity; future generic-ingest work
-// generalizes this into a type-registry lookup.
+// isMarkdownPath returns true when the path classifies as markdown.
+//
+// It used to own the extension list; the registry owns it now, and this
+// is a one-line delegation kept because markdown is the one kind with
+// behavior of its own at three call sites (heading-derived title, the
+// MarkdownFileData shape, MarkdownFilesModel's type filter) and reading
+// `ClassifyDocPath(p).IsMarkdown()` at each of them says less. The test
+// that pins its answers now pins the registry's.
 func isMarkdownPath(path string) bool {
-	ext := strings.ToLower(filepath.Ext(path))
-	return ext == ".md" || ext == ".markdown"
+	return ClassifyDocPath(path).IsMarkdown()
 }
 
 // passesMountFilter applies the runtime include/exclude filter (§7.3)

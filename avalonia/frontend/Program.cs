@@ -262,6 +262,28 @@ public class App : Application
         PanelRegistry.Register("shell", "Shell",
             (handle, host) => new ShellPanel(handle, host),
             PanelRegistry.Category.ThisPeer, "The entity-shell REPL against this peer.");
+        // The filesystem side of this peer. Registered next to the other
+        // "this peer" surfaces because a mount is a fact about THIS
+        // machine's disk, not about the network.
+        // The explorer is registered BEFORE the mount manager, because it
+        // is the one an operator wants first: "show me my files" is the
+        // question, and "which directories are wired to which prefixes"
+        // is the administration behind it. The two are separate panels
+        // for the reason the browser trio is — each answers ONE question,
+        // and the last time three panels read the same bytes without
+        // saying which question they answered, an operator called the set
+        // incomprehensible and was right.
+        PanelRegistry.Register("file-explorer", "Files (browse a mounted folder)",
+            (handle, host) => new FileExplorerPanel(handle, host),
+            PanelRegistry.Category.ThisPeer,
+            "The contents of a mounted directory, folder by folder, with a preview. Every "
+            + "file says whether it became a document you can open — and if not, why not.");
+        PanelRegistry.Register("local-files", "Local Files (manage mounts)",
+            (handle, _) => new LocalFilesPanel(handle),
+            PanelRegistry.Category.ThisPeer,
+            "Directories on this machine wired into the tree by `mount` — where each one "
+            + "ingests to, its filters, and how many entities it holds. Watcher liveness is "
+            + "not knowable from the tree, so it is reported as unknown rather than assumed.");
         PanelRegistry.Register("peer-connections", "Peer Connections",
             (handle, _) => new PeerConnectionsPanel(handle),
             PanelRegistry.Category.Network, "Who this peer is connected to, from the tree's liveness record.");

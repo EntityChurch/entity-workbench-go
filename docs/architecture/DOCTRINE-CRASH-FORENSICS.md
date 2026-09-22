@@ -47,7 +47,7 @@ Concretely, this repo's instruments and what each **cannot** do:
 | `make -C avalonia test` (headless) | models, panel mount, envelope decode, real Skia raster | X11 backend at all; input dispatch; the window manager |
 | `smoke-xvfb-{driver,site,handlers,connections,program}` | real X11 paint, real dispatcher, model-driven churn | **input dispatch, hit-testing, focus transfer** — every one of these calls the model method *under* the control |
 | `smoke-xvfb-window` | window geometry, iconify with a WM | input; also compositing WMs (openbox is not mutter/kwin) |
-| **`smoke-xvfb-click`** | **real pointer input via xdotool → hit-test → handlers** | keyboard-only paths; multi-touch; drag gestures (press+release at one point) |
+| **`smoke-xvfb-click`** | **real pointer input via xdotool → hit-test → handlers**, and since 2026-09-01 real **drags** (press → motion stream → release, `DRAG_PCT`), so pointer capture and scrollbar thumbs are in reach | keyboard-only paths; multi-touch; gestures needing modifier keys held |
 | `make crash-hunt` | the above, swept over seeds, unattended | same limits, more samples |
 
 **If no row reaches the region, building the missing instrument is the
@@ -125,6 +125,23 @@ main `[stack]`, it is the **alternate signal stack**, and the overflow is
 in signal handling. That is a different bug from a managed recursion, and
 the runtime will not tell you: it prints no `Stack overflow.` and
 `createdump` never fires, because there is no stack left to report on.
+
+**And do not classify a recursion from a frame COUNT — measure the
+stack.** `coredumpctl info` truncates a backtrace, so a run of identical
+return addresses ending at systemd's limit says *"at least N"* and never
+*"unbounded"*. On 2026-09-01 that distinction was the whole diagnosis:
+45 printed frames read as a runaway recursion, and the same core says
+uniform 448-byte stride, exactly 45 frames, 19.2 KB, in a thread with
+≥1 MB of stack — an ordinary tree walk. **`make -C avalonia crash-stack`
+prints this and now runs inside `make crash`.** It is AP55, and it is why
+D25 exists.
+
+| Observation | Means |
+|---|---|
+| repeated return address, **uniform** stride | a single call site recursing — the stride is the frame size |
+| repeated return address, **mixed** stride | one call site reached by several paths; usually not a recursion |
+| chain depth ≪ 1 MB | **not** a stack overflow, whatever the frame count looked like |
+| recorded `rsp` absent from the core | the fault went through CoreCLR's handler, which runs on an alternate signal stack systemd does not dump. The recorded registers describe the handler. Use `fs_base` to find the real stack |
 
 Three forensic channels that look productive and are dead ends here —
 know them so you do not spend a day each:
@@ -225,10 +242,36 @@ protected** — every other managed thread still runs the stock size.
 2. Reproduce. Seed it, log every event, sweep seeds, report the **rate**.
 3. Catch the **first** signal under gdb with `nopass`.
 4. `si_code` before `si_addr`. Identify **which stack** `rsp` is in.
+   Then run `make -C avalonia crash-stack` and read the GEOMETRY before
+   believing any classification — a frame count from `coredumpctl info`
+   is a lower bound, not a depth (D25/AP55).
 5. Bisect by experiment, one variable, same seeds. Record the exclusions.
 6. A/B the mitigation. Keep a switch that restores the bug.
 7. Gate it, and state what remains unexplained.
 
+**Step 0, added 2026-09-01 and it comes before all of them: establish
+what the artifacts actually are, by measurement.** All launch targets now
+share one wrapper and the app records its own arming
+(`external diagnostics: minidump=… perfmap=… panel-log=…`, on stderr and
+in the crash trail). **If that line says OFF, relaunch armed rather than
+analysing harder.** If there is no such line — an older build — the
+crashed process's **entire environment is inside the coredump**:
+
+```bash
+coredumpctl dump <pid> --output=/tmp/c
+grep -ac DOTNET_DbgEnableMiniDump /tmp/c    # was createdump even on?
+```
+
+Run it before concluding anything about a missing dump. On 2026-09-01
+that one command refuted a written-up finding that the crash had been
+taken unarmed — it was armed, and **createdump produced nothing anyway**,
+as on 2026-08-21. "The variable was unset" and "the runtime declined to
+dump" are different bugs with different owners, and they are
+indistinguishable from the outside. See AP54.
+
 **Anti-order** (what this doctrine exists to stop): read the dump →
 theorise → run a harness that cannot reach the region → record a negative
-→ conclude the bug is rare → repeat next month.
+→ conclude the bug is rare → repeat next month. **A second anti-order,
+earned 2026-09-01:** read a number off the dump → find it plausible →
+ship a fix for it → write it into STATUS, the charter and a source
+comment → have the same dump refute it an hour later.

@@ -18,8 +18,8 @@ type MountValidationResult struct {
 	TargetTotal int
 
 	// TargetExpected is the count of bindings whose type matches one
-	// of the expected types (doc/markdown-file today; extensible as
-	// the per-type viewer registry grows).
+	// of the expected types — since the ingest registry landed, the
+	// whole workbench-owned document set (DocEntityTypes).
 	TargetExpected int
 
 	// TargetForeign maps each unexpected entity type to its
@@ -55,9 +55,10 @@ func (r MountValidationResult) ForeignTypeOrder() []string {
 // pure read-only inspection on the local peer's Level 0 store.
 //
 // `expectedTypes` is the set of entity types the workbench owns at
-// the target prefix. Today that's just doc/markdown-file; when the
-// ingest layer generalizes to a per-extension type registry (item
-// 16 of the roadmap), the caller passes the expanded set.
+// the target prefix. Callers pass [DocEntityTypes] — the whole set the
+// ingest registry can produce. Passing a narrower set than ingest can
+// WRITE is the bug to avoid here: the validator would then refuse a
+// remount on the evidence of the previous mount's own output.
 func ValidateMountTarget(ap *entitysdk.AppPeer, sourcePrefix, targetPrefix string, expectedTypes []string) MountValidationResult {
 	res := MountValidationResult{
 		SourcePrefix:  sourcePrefix,

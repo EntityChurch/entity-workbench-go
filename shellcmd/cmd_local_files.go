@@ -1,16 +1,9 @@
 package shellcmd
 
 import (
-	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
-	"go.entitychurch.org/entity-core-go/core/types"
-	"go.entitychurch.org/entity-core-go/ext/localfiles"
-
-	"entity-workbench-go/entitysdk"
 	"entity-workbench-go/workbench"
 )
 
@@ -126,7 +119,7 @@ func cmdMount(sh *Shell, args []string) (Result, error) {
 		}
 	}
 	if len(args) < 2 {
-		return Result{}, fmt.Errorf("usage: mount <fs-dir> <tree-prefix> [-include PATTERNS] [-exclude PATTERNS] [-force]\n   or: mount sweep <root> [-add]\n   or: mount include|exclude <root> PATTERNS\n   or: mount filter <root>")
+		return Result{}, fmt.Errorf("usage: mount <fs-dir> <tree-prefix> [-include PATTERNS] [-exclude PATTERNS] [-force] [-readonly]\n   or: mount sweep <root> [-add]\n   or: mount include|exclude <root> PATTERNS\n   or: mount filter <root>")
 	}
 
 	// Strip flags out of args so the positional parse below stays
@@ -134,6 +127,7 @@ func cmdMount(sh *Shell, args []string) (Result, error) {
 	var includePatterns, excludePatterns []string
 	excludeSet := false
 	force := false
+	readOnly := false
 	positional := args[:0:0]
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -153,6 +147,15 @@ func cmdMount(sh *Shell, args []string) (Result, error) {
 			i++
 		case "-force":
 			force = true
+		case "-readonly", "-read-only":
+			// Send-only, in Syncthing's vocabulary: disk changes flow into
+			// the tree and nothing flows back out. The kernel's
+			// RootConfigData has carried this field from the start and
+			// nothing in this repo could set it, so the mode was
+			// expressible in the substrate and unreachable from every
+			// surface we ship. Both spellings, because an operator who
+			// guesses one should not have to guess again.
+			readOnly = true
 		default:
 			positional = append(positional, a)
 		}
@@ -165,7 +168,7 @@ func cmdMount(sh *Shell, args []string) (Result, error) {
 			return Result{}, fmt.Errorf("-auto is not a mount flag; run `revision config put <name> <prefix> -auto` after the mount to enable auto-versioning")
 		}
 		if strings.HasPrefix(p, "-") {
-			return Result{}, fmt.Errorf("unknown flag: %s (mount accepts -include, -exclude, -force)", p)
+			return Result{}, fmt.Errorf("unknown flag: %s (mount accepts -include, -exclude, -force, -readonly)", p)
 		}
 	}
 	if len(positional) < 2 {
@@ -176,158 +179,57 @@ func cmdMount(sh *Shell, args []string) (Result, error) {
 	}
 	fsDir, targetPrefix := positional[0], positional[1]
 
-	// Normalize.
-	absDir, err := filepath.Abs(fsDir)
+	// Everything above this line is argv. Everything below it is the
+	// operation, and the operation lives in mount_op.go so the GUI can
+	// perform it without composing a command line. See that file's header
+	// for why the seam is here.
+	out, err := sh.Mount(MountRequest{
+		FilesystemDir: fsDir,
+		TargetPrefix:  targetPrefix,
+		Include:       includePatterns,
+		Exclude:       excludePatterns,
+		ExcludeSet:    true, // resolved above: explicit flag, or the default list
+		Force:         force,
+		ReadOnly:      readOnly,
+	})
 	if err != nil {
-		return Result{}, fmt.Errorf("resolve fs dir: %w", err)
+		return Result{}, err
 	}
-	info, err := os.Stat(absDir)
-	if err != nil {
-		return Result{}, fmt.Errorf("stat %s: %w", absDir, err)
-	}
-	if !info.IsDir() {
-		return Result{}, fmt.Errorf("%s is not a directory", absDir)
-	}
-	if !strings.HasSuffix(targetPrefix, "/") {
-		targetPrefix += "/"
-	}
-
-	// Derive a stable root name from the dir basename. Multiple mounts
-	// of different dirs with the same basename would collide; that's
-	// a future-flag (v1 errors at AddRoot's overlap check below).
-	rootName := sanitizeRootName(filepath.Base(absDir))
-	if rootName == "" {
-		return Result{}, fmt.Errorf("could not derive a usable root name from %s", absDir)
-	}
-
-	local := sh.Local.Peer
-	lfHandler := local.LocalFilesHandler()
-	if lfHandler == nil {
-		return Result{}, fmt.Errorf("local/files extension is disabled on this peer")
-	}
-	ingestHandler := sh.NotificationIngest
-	if ingestHandler == nil {
-		return Result{}, fmt.Errorf("workbench notification-ingest handler not wired on this shell (Phase E Q2 dependency)")
-	}
-
-	localID := local.PeerID()
-	sourcePrefix := "local/files/" + rootName + "/"
-
-	// Phase E v2 §7.4 — pre-mount validation. Walk the target prefix
-	// and warn if any binding has an unexpected type. Workbench owns
-	// doc/markdown-file at the target today; other types (hand-put
-	// markdown content, leftovers from a different extension, stale
-	// state from a different mount shape) signal a conflict that the
-	// operator should consciously override.
-	expectedTypes := []string{workbench.MarkdownFileType}
-	vr := workbench.ValidateMountTarget(local, sourcePrefix, targetPrefix, expectedTypes)
-	if vr.HasConflict() && !force {
-		var b strings.Builder
-		fmt.Fprintf(&b, "mount aborted: %d existing binding(s) at %s with unexpected type(s):\n", vr.TargetTotal, targetPrefix)
-		for _, t := range vr.ForeignTypeOrder() {
-			fmt.Fprintf(&b, "  %d  %s\n", vr.TargetForeign[t], t)
-		}
-		fmt.Fprintf(&b, "  (%d matching %s already present)\n", vr.TargetExpected, workbench.MarkdownFileType)
-		if vr.SourceTotal > 0 {
-			fmt.Fprintf(&b, "  also: %d binding(s) under %s from a prior mount\n", vr.SourceTotal, sourcePrefix)
-		}
-		fmt.Fprintf(&b, "re-run with -force to mount anyway")
-		return Result{}, fmt.Errorf("%s", b.String())
-	}
-
-	// Mint a scoped chain capability authorizing only the single op
-	// the subscription dispatches: workbench/ingest-from-notification
-	// receive. Narrowest possible cap — the handler's internal scope
-	// does the tree:get/put work under its own grant.
-	//
-	// Why a single-handler shape here (not a 3-step chain): the
-	// notification's URI is qualified (`/{peerID}/local/files/...`)
-	// while system/tree:get wants an unqualified path. Chain
-	// `resource_extract` is dotted-path navigation, not string
-	// transformation — it can't strip the peer-id prefix. Plus
-	// step 3's target path is `{target_prefix}+{relpath}` which
-	// requires either threading both prefixes through Params or
-	// a string-transform step. The single-handler shape solves
-	// URI normalization and path mapping in one place. See
-	// `workbench/notification_ingest.go` docstring for the full
-	// reckoning.
-	grants := []types.GrantEntry{
-		{
-			Handlers:   types.CapabilityScope{Include: []string{workbench.NotificationIngestPattern}},
-			Operations: types.CapabilityScope{Include: []string{"receive"}},
-		},
-	}
-	capPath := "system/capability/grants/chain/local-files/" + rootName
-	if _, err := local.MintChainCapabilityBound(grants, capPath); err != nil {
-		return Result{}, fmt.Errorf("mint chain cap: %w", err)
-	}
-
-	// Register the source→target mapping with the workbench ingest
-	// handler. The handler holds this in-memory; the
-	// system/config/local/files/{rootName} entity (written by
-	// AddRoot below) is the durable record that drives reload at
-	// peer startup.
-	ingestHandler.RegisterMount(sourcePrefix, targetPrefix)
-
-	ctx := context.Background()
-	rootCfg := localfiles.RootConfigData{
-		Prefix:         sourcePrefix,
-		FilesystemRoot: absDir,
-		ReadOnly:       false,
-		Exclude:        excludePatterns,
-		Include:        includePatterns,
-	}
-	if err := lfHandler.AddRoot(rootName, rootCfg, local.RawContentStore(), local.RawLocationIndex()); err != nil {
-		ingestHandler.UnregisterMount(sourcePrefix)
-		return Result{}, fmt.Errorf("add localfiles root: %w", err)
-	}
-
-	// Subscribe BEFORE starting the watcher. The watcher's initial
-	// scan writes entities to sourcePrefix synchronously; if the
-	// subscription isn't live by then, those writes are missed and
-	// pre-existing files at mount time never reach the target prefix.
-	// Single hop, no continuation chain.
-	deliverURI := fmt.Sprintf("entity://%s/%s", localID, workbench.NotificationIngestPattern)
-	// "deleted" included so fs-unlink cascades through to the
-	// notification-ingest delete branch (workbench application logic
-	// — removes the workbench-owned doc/markdown-file at the target
-	// prefix when its source FileData goes away).
-	sub, err := local.SubscribeRawAt(localID, sourcePrefix+"*", deliverURI, "receive",
-		entitysdk.SubscribeOpts{Events: []string{"created", "updated", "deleted"}})
-	if err != nil {
-		ingestHandler.UnregisterMount(sourcePrefix)
-		return Result{}, fmt.Errorf("subscribe to source prefix: %w", err)
-	}
-
-	if err := lfHandler.StartWatching(ctx, rootName, local.RawContentStore(),
-		local.RawLocationIndex(), local.IdentityHash()); err != nil {
-		_ = sub.Close()
-		ingestHandler.UnregisterMount(sourcePrefix)
-		return Result{}, fmt.Errorf("start watcher: %w", err)
-	}
-
-	// Record the subscription so unmount can cancel it.
-	sh.registerMountSub(rootName, sub)
 
 	includeDisplay := "(all)"
-	if len(includePatterns) > 0 {
-		includeDisplay = strings.Join(includePatterns, ", ")
+	if len(out.Include) > 0 {
+		includeDisplay = strings.Join(out.Include, ", ")
 	}
-	excludeDisplay := strings.Join(excludePatterns, ", ")
+	excludeDisplay := strings.Join(out.Exclude, ", ")
 	if excludeDisplay == "" {
 		excludeDisplay = "(none)"
 	}
 
 	return LinesResult([]string{
-		fmt.Sprintf("mounted %s → %s (root=%s)", absDir, targetPrefix, rootName),
-		fmt.Sprintf("  source:    %s", sourcePrefix),
-		fmt.Sprintf("  target:    %s", targetPrefix),
+		fmt.Sprintf("mounted %s → %s (root=%s)", out.FilesystemRoot, out.TargetPrefix, out.RootName),
+		fmt.Sprintf("  source:    %s", out.SourcePrefix),
+		fmt.Sprintf("  target:    %s", out.TargetPrefix),
 		fmt.Sprintf("  include:   %s", includeDisplay),
 		fmt.Sprintf("  exclude:   %s", excludeDisplay),
-		fmt.Sprintf("  chain cap: %s", capPath),
-		fmt.Sprintf("  handler:   %s", workbench.NotificationIngestPattern),
-		fmt.Sprintf("  sub:       %s", sub.ID()),
+		// Stated on every mount, not only the read-only ones. "read-write"
+		// is the consequential default and a surface that mentions a write
+		// policy only when it is unusual leaves the usual case to be
+		// inferred from silence.
+		fmt.Sprintf("  writes:    %s", writePolicy(out.ReadOnly)),
+		fmt.Sprintf("  chain cap: %s", out.CapabilityPath),
+		fmt.Sprintf("  handler:   %s", out.HandlerPattern),
+		fmt.Sprintf("  sub:       %s", out.SubscriptionID),
 	}), nil
+}
+
+// writePolicy phrases the mount's write direction for an operator.
+// Named rather than inlined because the shell and the panel must not
+// describe the same field with different words.
+func writePolicy(readOnly bool) string {
+	if readOnly {
+		return "read-only (disk → tree only; nothing is written back to disk)"
+	}
+	return "read-write (disk → tree, and tree → disk)"
 }
 
 // splitFilterPatterns parses a comma-separated glob list, trimming
@@ -356,27 +258,21 @@ func cmdUnmount(sh *Shell, args []string) (Result, error) {
 	if len(args) < 1 {
 		return Result{}, fmt.Errorf("usage: unmount <root-name>")
 	}
-	rootName := args[0]
-	sourcePrefix := "local/files/" + rootName + "/"
-	if sh.NotificationIngest != nil {
-		sh.NotificationIngest.UnregisterMount(sourcePrefix)
+	// The operation is in mount_op.go; this is the argv and the phrasing.
+	// The watcher-still-running limitation it reports is not incidental —
+	// core-go's localfiles.Handler exposes StartWatching and no
+	// StopWatching / RemoveRoot, so it is bounded (one live watcher per
+	// distinct root name, because StartWatching replaces its own) rather
+	// than leaking, and every surface has to say so rather than imply a
+	// clean teardown.
+	out, err := sh.Unmount(args[0])
+	if err != nil {
+		return Result{}, err
 	}
-	subErr := sh.closeMountSub(rootName)
-	// The fsnotify watcher is still not stopped: core-go's
-	// localfiles.Handler exposes StartWatching but no StopWatching /
-	// RemoveRoot. Stopping it needs an additive core-go affordance —
-	// trivial there (handler.go already holds h.watchers[rootName] and
-	// watcher.Stop()); tracked as an upstream candidate alongside the
-	// other localfiles items.
-	// Note this is bounded, not unbounded: StartWatching stops and
-	// replaces any existing watcher for the same root
-	// (../entity-core-go/ext/localfiles/handler.go:75-78), so a
-	// remount does not leak a second watcher — the bound is one live
-	// watcher per distinct root name, not one per unmount.
-	if subErr != nil {
-		return MessageResult(fmt.Sprintf("unmounted %s (ingest + subscription cleared; subscription close reported: %v; watcher stop pending core-go StopWatching)", rootName, subErr)), nil
+	if out.SubscriptionCloseErr != nil {
+		return MessageResult(fmt.Sprintf("unmounted %s (ingest + subscription cleared; subscription close reported: %v; watcher stop pending core-go StopWatching)", out.RootName, out.SubscriptionCloseErr)), nil
 	}
-	return MessageResult(fmt.Sprintf("unmounted %s (ingest registration + subscription cleared; watcher stop pending core-go StopWatching affordance)", rootName)), nil
+	return MessageResult(fmt.Sprintf("unmounted %s (ingest registration + subscription cleared; watcher stop pending core-go StopWatching affordance)", out.RootName)), nil
 }
 
 // cmdMountSweep reconciles a mount's tree state against its
@@ -546,8 +442,15 @@ func cmdMounts(sh *Shell, args []string) (Result, error) {
 	lines := make([]string, 0, len(entries)+1)
 	lines = append(lines, fmt.Sprintf("mounted roots: %d", len(entries)))
 	for _, e := range entries {
-		// Path shape: system/config/local/files/{root}
-		root := strings.TrimPrefix(e.Path, "system/config/local/files/")
+		// Path shape: /{peer-id}/system/config/local/files/{root}. The
+		// peer-id segment is NOT optional here — Store.List returns
+		// qualified paths — and trimming the relative prefix alone left
+		// the whole path as the "root", which is not a name `unmount`
+		// accepts. See workbench/tree_path.go.
+		root, under := workbench.RelativeUnder(e.Path, "system/config/local/files/")
+		if !under || root == "" || strings.Contains(root, "/") {
+			continue
+		}
 		lines = append(lines, fmt.Sprintf("  %-30s @ %s", root, e.Path))
 	}
 	return LinesResult(lines), nil
