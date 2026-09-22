@@ -37,7 +37,7 @@ import (
 // yet.
 //
 // The receiver→owner channel is still owed, and conflict propagation still
-// needs it (`reviews/CONFLICT-PROPAGATION-OPTIONS-2026-09-08.md` §8).
+// needs it (`docs/outbox/CONFLICT-PROPAGATION-OPTIONS-2026-09-08.md` §8).
 // Nothing here closes that.
 //
 // # The control arm is the load-bearing half

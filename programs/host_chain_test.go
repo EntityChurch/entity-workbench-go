@@ -2,7 +2,7 @@ package programs
 
 // TIER: integration (TESTING-STRATEGY) — real peer, store, evaluator.
 //
-// THE TIME-AXIS NEGATIVE (reviews/COMPUTE-SHARDING-INTO-HOST-2026-07-18.md §6
+// THE TIME-AXIS NEGATIVE (docs/outbox/COMPUTE-SHARDING-INTO-HOST-2026-07-18.md §6
 // item 1). §5/§5a proved the SPACE axis: a wide `map` shards into k independent
 // pieces that parallelize, and the speedup climbs toward k× as op-cost rises.
 // This is the mirror: a `fold` (a strict accumulator dependency chain) that does

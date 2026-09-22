@@ -8,6 +8,14 @@ the four static domains those names point at. It is the fixture for the hop the
 site fixture cannot reach — **hop 1, the name** — and for the journey that joins
 the two hops into something a user does.
 
+> ⏳ **THIS FIXTURE EXPIRED ON 2026-09-20.** Its bindings carry a real 30-day TTL and the copy
+> below was cut on 2026-08-21, so the four `shellcmd` browse tests now fail at
+> `binding freshness` — correctly, and for a reason that has nothing to do with the code under
+> test. **It does not heal and re-running proves nothing**; it needs a fresh emission
+> (requested, `docs/outbox/ROUTING-2026-09-20-a-…`). When you re-cut it, update the copy date
+> below **and this expiry date**: the date that was missing from this file is the one that
+> matters, because the other one is just arithmetic somebody has to do.
+
 Copied verbatim on **2026-08-21** from `entity-browser-rust`'s working tree,
 which reported `dev` @ **`e26651c`** at the time of the copy. Their
 `dist-federation/` is a **build artifact and is gitignored there**

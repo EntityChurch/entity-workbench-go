@@ -651,7 +651,7 @@ func Bootstrap(ctx context.Context, cfg Config) (*entitysdk.AppPeer, *shellcmd.S
 // speed (~3 s for 2000 files) instead of waiting on a catch-up pass, and
 // the supervisor covers the rest. Raising it further trades memory for a
 // cliff nobody reaches by hand; the honest fix is upstream and is routed
-// (reviews/SUBSCRIPTION-SATURATION-AND-THE-LAYER-BOUNDARY-2026-09-07.md).
+// (docs/outbox/SUBSCRIPTION-SATURATION-AND-THE-LAYER-BOUNDARY-2026-09-07.md).
 const DefaultDeliveryQueueSize = 65536
 
 // DefaultIdentityName is the identity a persistent peer uses when the

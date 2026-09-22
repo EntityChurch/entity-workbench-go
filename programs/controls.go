@@ -29,7 +29,7 @@ package programs
 // `{bit → control role}`. It is the REFERENCE parser — a generic host (browser,
 // native, Godot, Avalonia) mirrors ParseKeymap's semantics, so keep them
 // byte/behaviour-identical across impls the same way the direction enum is. See
-// docs/architecture/reviews/RESPONSE-GENERIC-HOST-INPUT-DEVICE-MODEL-2026-07-24.md.
+// docs/archive/outbox/RESPONSE-GENERIC-HOST-INPUT-DEVICE-MODEL-2026-07-24.md.
 
 import (
 	"fmt"

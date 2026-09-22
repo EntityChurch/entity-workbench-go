@@ -561,7 +561,7 @@ func diffNames(listed, committed []string) (advertisedOnly, committedOnly []stri
 // failure surfaces as a decode error rather than as anything an operator
 // could route. Filed to arch (the spec sentence admits both readings)
 // with core-go and browser-rust cc'd, in
-// `reviews/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`.
+// `docs/outbox/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`.
 //
 // **Our posture until it is ruled: read both.** A consumer being liberal
 // about a field the spec itself calls an opaque endpoint descriptor is

@@ -55,7 +55,7 @@ import (
 // core-go cannot decode a binding emitted by entity-core-rust
 // (`transports`, §3), so a Go peer pinning the cohort's only live
 // federation gets a CBOR error for every name. Routed as
-// `reviews/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`.
+// `docs/outbox/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`.
 
 // PinnedRegistry describes a registry this peer will consult.
 type PinnedRegistry struct {

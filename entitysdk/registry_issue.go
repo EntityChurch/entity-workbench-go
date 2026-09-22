@@ -39,7 +39,7 @@ import (
 // §6.5>]`, and the cohort reads that two incompatible ways —
 // `entity-core-rust` as an inline endpoint object, `entity-core-go` as a
 // bare `system/hash`. **Neither is a misreading and the ruling is open**
-// (`reviews/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`).
+// (`docs/outbox/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`).
 //
 // An emitter cannot abstain — the field holds one shape — so this one
 // writes **inline** and says so on every result
@@ -195,7 +195,7 @@ func (a *AppPeer) IssueBinding(opts IssueOpts) (IssuedBinding, error) {
 		// is AP20's shape exactly: a constant whose referent exists in
 		// no document. So this emitter does not cast that vote. The
 		// question is §2 of
-		// `reviews/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`,
+		// `docs/outbox/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`,
 		// and one added sentence in §3 unblocks it.
 		return IssuedBinding{}, NewError(501, "transports_by_hash_unspecified",
 			"the by-hash `transports` shape is not emitted here: §3 does not say where a registry "+

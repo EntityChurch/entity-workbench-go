@@ -11,7 +11,7 @@
 //   - entity-system-architecture: EXPLORATION-COMPUTE-PROGRAM-RUNTIME-CONTRACT.md
 //     §13 (the concrete design), §12 (the ladder and why Axis-1 first).
 //   - HANDOFF-2026-07-16-compute-axis1-interpreter-prototype.md (the ask).
-//   - docs/architecture/reviews/COMPUTE-PROGRAM-POC-FINDINGS-2026-07-15.md §2
+//   - docs/archive/outbox/COMPUTE-PROGRAM-POC-FINDINGS-2026-07-15.md §2
 //     (the profile that motivates it), COMPUTE-AXIS1-ORACLE-GAPS-2026-07-16.md
 //     (why the oracle here is differential rather than vector-based).
 //

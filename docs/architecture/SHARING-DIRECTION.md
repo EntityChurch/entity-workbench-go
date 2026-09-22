@@ -123,7 +123,7 @@ any one of them alone would have changed nothing observable.
    disabled entirely without a listener. The default configuration could not be
    reached, could not be found, and could not share.
 3. **`localfiles.Handler.Load` restored no mounts** (AP58, in the kernel — routed
-   in `reviews/LOCALFILES-LOAD-RESTORES-NOTHING-2026-09-03.md`, worked around in
+   in `docs/outbox/LOCALFILES-LOAD-RESTORES-NOTHING-2026-09-03.md`, worked around in
    `workbench/localfiles_root_restore.go`).
 4. **Nothing re-established a peer relationship at startup**, per §2.1 — and even
    with `MaintainPeer` called, the kernel's session map is in-memory with no
@@ -789,7 +789,7 @@ The consequence for this document's model is worth stating plainly: **sharing is
 a mutual relationship expressed as two independent unidirectional dials**, and
 the reconciler's per-process outbound dial exists precisely to arrange the second
 one. That is a workaround for a gate, not a property of the design. Routed as
-`reviews/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md`; if the ask
+`docs/outbox/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md`; if the ask
 lands, `ensureOutboundRoute` becomes unnecessary rather than merely cheaper.
 
 ### 11.3 Direction belongs on the reading

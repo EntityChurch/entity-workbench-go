@@ -21,8 +21,12 @@ import (
 // as a v1.2+ substrate blob — chunks + blob entity in the content
 // store, returning the blob hash to embed in FileData.Content. This
 // is the minimum dance every consumer test now has to perform; the
-// shape is itself a v1.3-consumer-experience finding (see
-// reviews/FEEDBACK-LOCAL-FILES-V1.3-CONSUMER-INTEGRATION §3).
+// shape is itself a v1.3-consumer-experience finding. [unverified: the
+// packet stem `FEEDBACK-LOCAL-FILES-V1.3-CONSUMER-INTEGRATION` this
+// cited resolves to no file in the outbox or its archive, and to
+// nothing in git history — checked 2026-09-17. The finding stands on
+// the code below; the citation did not, and is removed rather than
+// re-pointed on a guess.]
 func ingestSubstrate(t *testing.T, body string) (store.ContentStore, hash.Hash) {
 	t.Helper()
 	cs := store.NewMemoryContentStore()

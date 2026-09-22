@@ -43,7 +43,7 @@ package programs
 //	if p.Source != "" { put(p.Path, eval(p.Source)) } ; then read p.Path
 //
 // Reported to arch as a phase-1 descriptor finding. It is additive and does not
-// disturb any other field. See docs/architecture/reviews/.
+// disturb any other field. See docs/outbox/.
 //
 // ─── The second deviation: step/initial_state are PATHS here, not hashes ───
 //
@@ -212,7 +212,7 @@ type ProgramTick struct {
 //	FragmentBase — where the host writes fragment j before the stitch reads it
 //	Stitch       — the stitch expression path (reads k fragments → state entity)
 //
-// Reported to arch as a descriptor finding (see docs/architecture/reviews/). It
+// Reported to arch as a descriptor finding (see docs/outbox/). It
 // is additive; the policy fields are unchanged.
 //
 // ─── Why the shard expressions self-wrap into fragment entities ─────────────

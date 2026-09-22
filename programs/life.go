@@ -24,7 +24,7 @@ package programs
 // record, which also carries the blinker/glider oracle checks, the
 // arith-vs-table equivalence proof, and the budget-cliff map; lowering
 // rule F-D1 is annotated there and in
-// docs/architecture/reviews/COMPUTE-PROGRAM-POC-FINDINGS-2026-07-15.md).
+// docs/archive/outbox/COMPUTE-PROGRAM-POC-FINDINGS-2026-07-15.md).
 // Change them together.
 //
 // Sizing (Exp-D measured, i5-11400, no -race): arith runs 36 gens/s at

@@ -1,7 +1,11 @@
-# .release-removals — files this release removes from the published tree.
+# .release-removals — documents this project no longer publishes, and where they went.
 #
 # One path per line; `#` comments allowed. Where something moved rather than went away,
-# the entry says where to.
+# the entry says where to, so a reader following an old link can follow it.
+#
+# 0.10.0 removes nothing. Every document published by 0.9.0 is still published, under the
+# same path; this release adds documents and changes the content of others. The entry below
+# stands from 0.9.0 and is kept because the old path is still the one an old link names.
 
 # Moved, not withdrawn: the rolling status log is now `docs/STATUS.md`, one level up.
 # Same document, still published. `docs/status/` holds dated working notes and is not

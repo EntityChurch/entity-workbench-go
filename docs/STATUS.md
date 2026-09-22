@@ -1,8 +1,22 @@
 # entity-workbench-go — status
 
-_Updated: 2026-09-17 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
+_Updated: 2026-09-20 · public: 0.9.0 (master, untagged) · next cut: 0.10.0, prepped · working branch: `dev` (ahead of `master`)_
 
-> **STARTING WORK? Read
+> **STARTING WORK? Read §60 first** — the cut is **prepped end to end** against all eight steps of
+> the release-prep guide. The public surface is written down for the first time (in `AGENTS.md`,
+> under the Overview) and everything about "breaking" is measured against it; the number is
+> `0.10.0`, free on both oracles; the changelog carries a date and a fresh `[Unreleased]`; the cut
+> withdraws nothing; the tag decision is **yes, `v0.10.0`**, and creating it is the maintainers'
+> act. **The sweep moved: 8 failures in 2 suites, not 4** — a frozen cross-impl fixture's 30-day
+> bindings expired on 2026-09-20 and take four `shellcmd` browse tests with them. It is the
+> fixture's clock, not a regression, it does **not** heal on a re-run, and repairing it needs a
+> fresh emission from the counterpart (routed, `B-15`). Disclosed in the changelog. Then §59 — the doc-standard adoption (where knowledge now lives, and the routing scan that
+> found a live packet on its first run).
+> §58 is the earlier release prep — the number and the breaking verdict, whose
+> reasoning is there: the Go API is purely additive, three behaviours are not; and
+> **`## Deferred to after the 0.10.0 cut`** below is the complete list of what is waiting and
+> why, including the two things that go out as one packet the day the counterpart freezes lift.
+> Then
 > `docs/status/HANDOFF-2026-09-17-c-the-substrate-closed-thirteen-rows-and-the-test-that-should-have-caught-the-rest-read-the-wrong-peer.md`**
 > — the newest: the Go kernel under us closed 13 tracker rows in one session, our sweep went 20
 > failures to 4, the three that were our own tripwires are replaced with the property, and the test
@@ -191,6 +205,287 @@ _Updated: 2026-09-17 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > project's own state lives in `docs/status/`, which publishes nothing: dated snapshots,
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
+
+## §60 NEW (2026-09-20) — the cut is prepped end to end: the surface is named, the number is measured against both oracles, and the changelog says a date
+
+The release-prep guide's eight steps, run in its order. §58 had done the number and the breaking
+verdict; this closes the other six and corrects one thing §58 left standing.
+
+**Step 1 — the public surface, which had never been written.** This is the one nobody else can
+do, and until it existed every version argument about this repo was an opinion, including the
+well-reasoned one in §58. It is now a subsection of `AGENTS.md` under the Overview, and it says
+what is **out** as loudly as what is in:
+
+- **In:** the shipped binaries' command surface — verbs, flags, exit codes, `-json` output shape
+  — across `entity-shell`, `entity-console`, `entity-publish`, `entity-vcs`, `entity-fetch`; the
+  **exported Go API of `entitysdk/`**; and the shapes we *author* that something else reads back
+  (tree paths and prefixes, the static publish directory layout, persisted application state).
+- **Out:** `workbench/`, `shellcmd/`, `shellboot/`, `programs/`, `fetch/`, `inspect/`, `console/`
+  internals and the whole C# frontend — internal, refactored freely. Console prose is not a
+  format. Panel layout is not a promise. `perfreview/`, the harness scripts and every `make`
+  target past the standard verbs are instruments. Published documents are addressed to a reader,
+  not pinned by a caller — correcting one is never breaking.
+- The **protocol wire format is not ours** to break or to promise.
+
+Read against that line, §58's verdict holds unchanged: the Go API is purely additive, and the
+three behaviours it named (a filtered publish now refused, the SDK's site path a segment
+shallower, the delivery-queue default 16×) are all inside the declared surface, which is why they
+are breaking rather than merely notable.
+
+**Step 2 — the clone test, re-run against the public tree, not ours.** `git clone` of published
+`master` plus the sibling kernel into `/tmp/cleanbuild`: `make doctor` reports **ready** with the
+sibling resolved, and `make build` produces all five binaries, exit 0. The three confidently-wrong
+front-door lines §59 found are fixed and stay fixed. A stranger can get this running.
+
+**Step 3 — declarations.** Every root document and every file under `docs/` is declared; nothing
+at a doc root is undeclared, so the keep-list withdraws nothing. One thing was worth fixing:
+`avalonia/README.md` sits inside a source tree, so it is **never dropped and therefore publishes
+silently** — and its own sibling `README-SHARING.md` was already declared. The pair reading two
+different ways was the tell. It is declared now, so what publishes is stated rather than
+incidental. The prose under `*/testdata/` is fixture data, published as source, and is
+deliberately not declared: declaring it would be defending against a drop that cannot happen.
+
+**Step 4 — what the cut withdraws: nothing.** Measured, not assumed — every prose file on public
+`master` is still in this tree and still declared. `.release-removals` says so, and keeps the one
+standing entry from 0.9.0 (`docs/status/STATUS.md` → `docs/STATUS.md`) because the old path is
+still the one an old link names.
+
+**Step 6 — the number, checked against both oracles, which disagree.** The public changelog says
+**0.9.0** shipped; the published tag list tops out at **`v0.8.0`**. 0.9.0 was cut and never
+tagged — that disagreement is not new and is not ours to resolve retroactively, but it is the
+reason step 8 below is a real decision rather than a formality. **`0.10.0` is unpublished by
+both**, so the number moves and is free.
+
+And a cut is owed, measured rather than inferred from the changelog: **35 declared documents
+differ from public `master`** (14 of them new, including the whole memory directory), alongside
+357 changed code files. This is not a "nothing yet" release.
+
+**Version-bearing files now agree.** One disagreed and would have been the one we forgot:
+`avalonia/frontend/frontend.csproj` still carried `<Version>0.9.0</Version>`. Bumped. There is no
+`VERSION` file, no `Cargo.toml`/`pyproject.toml`/`package.json`, and the `go.mod` module paths are
+unversioned local paths — so the csproj, the changelog heading and the README were the three, and
+they match.
+
+**Step 7 — the changelog surgery.** `## [0.10.0] — unreleased` is now `## [0.10.0] — 2026-09-20`,
+with a fresh empty `## [Unreleased]` above it. `[0.9.0]` gained the date it was actually cut
+(2026-08-25, derived from public `master`'s own history) so that no released section reads as
+unreleased. **The date is the prep date.** If the cut slips materially, that heading is the line
+to correct — it is the only date in the file that is a claim rather than a record.
+
+**The pin disclosure was re-measured rather than carried forward.** 0.9.0 published "117
+citations do not resolve"; today the tool reports **54 declared docs, 177 short-SHA citations, 173
+unreachable** — 116 of them in this file, 57 in the framework documents. The number grew because
+the declared set grew (the memory directory), not because anything regressed, and the changelog
+says exactly that rather than letting a reader infer a slide. §58's decision not to sweep them the
+day before a cut still stands; the framework 57 are the half that costs a stranger something and
+they go first.
+
+**Step 8 — the tag: yes, `v0.10.0`.** Recorded because an undecided tag defaults to no tag
+silently, and this repo has already done that once — which is precisely why the two oracles
+disagree today. Creating it is the maintainers' act at the cut, not this seat's. Nothing published
+in this tree names a tag that does not exist: the only `v0.8.0` references are in unpublished
+working notes and one line of this file, and `v0.8.0` exists. The README deliberately does **not**
+name `v0.10.0` — it describes the scheme instead, so no published file can be left pointing at a
+tag that was never created.
+
+### The sweep is 8 failures in 2 suites, not 4 — and the four new ones went off today
+
+`make test-each`, full run, 9/11 suites green. The reading is **worse than the documented
+baseline and completely explained**, which is a different thing from being fine:
+
+| | |
+|---|---|
+| `entitysdk` ×3 + `shellcmd` `TestInstallRevisionMirrorChain_…` | **the documented 4** — core-go row 23, cross-peer continuation refused below us. Unchanged. (Row 23's own caveat still stands: the fourth presents as a silent nothing-delivered, not a refusal, and its cause is **unknown**, not assumed.) |
+| `shellcmd` browse ×4 (`Open…`, `Where…`, `Sites…`, `Back…`) | **NEW on 2026-09-20 — a fixture expired on a wall clock** |
+
+**`fetch/testdata/crossimpl-rust-federation/` is another implementation's frozen emission whose
+bindings carry a real 30-day TTL. We cut it 2026-08-21. It lapsed thirty days later, to the day,
+which is today.** All four fail at `binding freshness`, one root cause, and the other three cascade
+from the first because the browse session never opens.
+
+**Nothing here is a code regression and nothing is untested.** The guard
+(`requireFixtureUnexpired`) turns the rot into a message naming the repair, and the expiry check
+itself is measured on a clock we control in `fetch`'s `TestFedExpiredBindingIsRefused`. But **it
+does not heal, and re-running proves nothing** — their `dist-federation/` is gitignored, so no
+commit anywhere holds those bytes and we cannot re-cut it from here. Routed today as `B-15`
+(`ROUTING-2026-09-20-a-…`), with the structural ask — *commit or tag an emission* — ranked above
+the immediate one, because a hand-over from a working tree puts us back here in thirty days.
+
+**It is disclosed in the changelog**, in a stranger's terms: eight tests fail on a clean
+checkout, here is which four are the fixture's clock and which four are the layer below.
+
+**The finding worth keeping, now in `docs/agents/memory/TESTING-AND-SWEEPS.md`:** *a fixture with
+a TTL is a test that passes today and fails on a date nobody wrote down.* Ours was well-built and
+still went off unannounced during release prep, three days after a sweep that read clean against
+its baseline — because the expiry date existed only as arithmetic over a copy date buried in a
+fixture README. That date is now written in the fixture README itself, at the top, as a date.
+**A stranger cloning the release would have hit this before we did.**
+
+**Not done, and named rather than left implicit:** the promotion question over the 169 moved
+memory entries (*which of these could be a check instead of prose?*) is still the next pass, as
+§59 said. It is not a release blocker.
+
+## §59 NEW (2026-09-17) — the doc standard: `AGENTS.md` was 279 KB doing three jobs, and the routing scan found a packet on its first run
+
+Adopting the ecosystem doc + memory + routing standard. **Nothing was deleted.** The whole of this
+is *move*, *declare*, and *fix what a clone test found*.
+
+**`AGENTS.md`: 279,322 → 16,734 bytes**, against a 30 KiB budget that exists because a common agent
+runtime truncates a project doc above 32 KiB **silently**. So the file every agent is supposed to
+read had, for some readers, been ending somewhere in the middle for months. The 169 accumulated
+findings moved **verbatim and byte-identical** into `docs/agents/memory/`, thirteen topic files plus
+an index, each declared in `CANONICAL-DOCS.toml`. A script checked every moved block was present in
+its destination byte-for-byte before the original was rewritten; the count is 169 of 169.
+
+**Why the file grew is the part worth keeping.** It was not carelessness — it was that `AGENTS.md`
+is the only file whose *name* invites a session to put something there, so every finding landed in
+the one place regardless of whether a newcomer needed it before their first change. That is now an
+explicit question at the top of the file, with three homes and one rule that bounds the whole
+directory: **an entry that could become a check should become one, and is then deleted from
+memory.** The promotion question has deliberately **not** been asked of the 169 entries yet —
+mixing a move with a rewrite arrives unreviewable — and that is the next pass, not a gap.
+
+**The packet corpus is one directory now.** 79 live packets in `docs/outbox/`, 14 in
+`docs/archive/outbox/`, from `docs/architecture/reviews/` and `docs/status/ROUTING-*`. All moved
+with `git mv`, so history follows. **Packet bodies were not edited** — only the pointers *into* them
+from living documents and source comments, because a dated packet is a record of what was true when
+it was sent. `AGENTS.md` used to say those packets stay exactly where they are; that rule was
+written to stop churn and re-filing to flush a backlog, and it is superseded here for a reason it
+did not anticipate — a recipient could not find a packet addressed to them.
+
+⭐ **THE WATERMARK SCAN FOUND A LIVE PACKET ON ITS FIRST RUN, WHICH IS THE ENTIRE ARGUMENT FOR IT.**
+`entity-browser-rust`'s `ROUTING-2026-09-17-c-…-OUR-HALF-OF-FEED-12-IS-CUT-…` is addressed to us,
+was in no form in this tree, and our own tracker said — correctly, the day before — that nothing
+inbound was missing. **A reconcile done when you happen to be writing to someone is a statement
+about that moment; a scan on a schedule is a statement about a period.** Its central ask is
+answered and it is a **match**: our `revision.PrefixHash("/{peer}/app/feed/index")` produces
+`004245e92d8954b390b78dab80277cfb1220185f74d35935413235f0196ea2be51` for the `crossimpl-feed`
+author, byte-identical to the key they bound their mirror at, so `FEED §6.0.1`'s `[derive-to-meet]`
+half is met across both implementations. Filed as `B-14`; **not yet routed back**, which is our own
+*delivery is a fact* rule pointed at us and is one sentence of work.
+
+Also found, and it generalises: arch's `ROUTING-2026-09-17-c-…` has a `To:` naming only
+`entity-browser-rust` while its **filename** names both seats. A recipient-by-filename grep finds
+it; a recipient-by-header grep does not. **Scanning a directory by date is the only method that is
+not defeated by how the sender happened to spell your name.**
+
+**The clone test found three things reading could not**, and one of them was a confidently wrong
+line, which is the failure this repo already has a rule about:
+
+- `README.md`'s quickstart opened with `git clone <this repo>` — a placeholder, not a command, and
+  it did not mention the sibling clone that the build cannot work without. Both URLs are there now.
+- **`make doctor` names the missing sibling and did not name the fix.** `make build`'s preflight
+  prints the exact `git clone` — doctor, which the quickstart tells you to run *first*, printed the
+  diagnosis and no remedy. It prints the command now.
+- `README.md` said the version was **0.9.0**; `CHANGELOG.md` says `[0.10.0] — unreleased` and the
+  newest tag is `v0.8.0`. Three numbers, three files. The README now states all three relationships
+  rather than asserting one of them.
+
+**Two dangling citations were found and neither could be repaired honestly.**
+`FEEDBACK-CORE-GO-DECODE-ENDPOINT-HINT-IPV4-*` and
+`FEEDBACK-LOCAL-FILES-V1.3-CONSUMER-INTEGRATION` resolve to no file in the outbox, the archive, or
+git history. Both are marked `[unverified]` in place with what was checked, rather than re-pointed
+at a plausible neighbour — **a citation the reader cannot resolve is worse than none, and a wrong
+one is worse than both.** A third, in a `t.Skip` message, *was* repairable: the comment four lines
+above it named the packet that actually exists.
+
+⚠ **One self-inflicted defect, caught by measurement and worth recording because the method was the
+problem.** The path rewrite was a blanket `perl -pi` across living docs and source, and it hit
+`shell/e2e_test.go`, where `"reviews/"` is a **directory name in a test fixture tree**, not a
+reference to our doc layout. It was found by grepping for code that *opens* a docs path rather than
+merely naming one — not by review, which had already passed over it. **A mechanical rewrite needs a
+mechanical check, and the check has to ask a different question than the rewrite did.**
+
+`CANONICAL-DOCS.toml` now declares its areas and living files: `docs/outbox` and
+`docs/archive/outbox` as never-published, the trackers as `internal = true` (durable **and** never
+published — the case that previously had no honest answer, where the only way to silence a
+staleness check was to publish internal material), and the memory directory as published.
+**`docs/outbox/` is deliberately not declared as a doc**; publishing the routing corpus is the
+expensive mistake.
+
+## §58 NEW (2026-09-17) — release prep: the version is 0.10.0, and two gates were passing on our own inaction
+
+**Tree state, measured by one `make test-each` at this commit** — not read off a prior handoff:
+
+```
+9 of 11 suites green · 4 failures in 2 suites · go vet clean · gofmt clean
+sdk       FAIL 3   shellcmd  FAIL 1
+inspect · shell · shellboot · shellpanel · workbench · programs · publish · fetch · bridge  PASS
+Avalonia headless: 231 / 231
+```
+
+Identical before and after this session's changes, so neither adoption regressed anything, and
+`shellboot` was green under full load both times. **All four reds are external** — see below.
+
+### The version: `0.10.0`
+
+Not a guess and not a patch. The exported Go API across `entitysdk`, `workbench`, `fetch` and
+`publish` is **purely additive** — 1615 exported declarations before, 2375 now, with **zero
+removed, renamed, or re-signatured**. But three behaviours changed in ways an existing caller can
+notice, and they are now their own CHANGELOG section rather than buried in *Changed*:
+
+1. **A filtered publish is refused** where it used to be honoured. A signed root commits to the
+   closure of what it names, so filtering either uploads the withheld bytes anyway or serves a
+   root whose walk ends early — which a reader cannot distinguish from a withholding origin.
+2. **The SDK's site path moved one segment shallower** (`content/sites/` → `sites/`). A site
+   written by 0.9.0's SDK is not found by 0.10's readers — and was not found by 0.9.0's own
+   browser either, which is how the discrepancy surfaced.
+3. **The delivery queue default is 16× larger**, ~20 MB/peer, which is what stops a burst being
+   dropped before it reaches the network.
+
+Under 0.x a minor bump is where breaking changes go, so `0.10.0`. **None of it reaches another
+repo**: every break is in this tier, and an additive Go API means nothing that links us breaks.
+The CHANGELOG heading reads `[0.10.0] — unreleased`; making it a release is one word and is not
+this seat's act.
+
+### Two gates were green while measuring nothing, and both were passing on our own inaction
+
+The theme of the session, and the reason it is written up rather than just fixed. The Go kernel
+under us closed thirteen defects the day before; **two of the things it closed were being held
+open here by gates that could not tell the difference between "still blocked" and "we never
+adopted the fix".**
+
+**Watcher liveness.** A mount whose watcher has stopped looks healthy in every other respect and
+silently produces no more documents — the one thing no surface could report. The substrate now
+writes it to the tree on every start/stop/error path. Our test asserted the field stays `false`
+and explained, in its own failure message, that the data *"is never written to a tree path"*. The
+field stayed `false` because nothing taught the model to read the record, so the test kept passing
+and its message propagated into a model comment, a bridge header, a C# comment and a **published**
+CHANGELOG limitation. ⭐ **Pin a fact the other side controls, never a field you control** — a
+refusal stops arriving when somebody fixes it; a boolean you set yourself is invariant under the
+fix. Catalogued as `AP116`.
+
+**Connection direction.** *"We dialled this peer"* had been standing in for *"we hold a connection
+to this peer"* since the kernel could not tell us the difference. They diverge at a mid-session
+drop, and in the reassuring direction: the field whose entire job is to stop a surface claiming a
+route it does not have went on claiming one for the rest of the process. **The workaround
+reproduced the defect it was built to fix, one layer in.** The tell is a set named after something
+*we did* standing in for something that *is*. Catalogued as `AP117`. A dropped connection is now
+re-established by the next pass instead of waiting for someone to reconnect by hand.
+
+Also fixed, and caused by the substrate's new records landing inside the mount config namespace:
+`mounts` counted every entity there while its per-row loop correctly skipped nested paths, so two
+mounts reported *"mounted roots: 4"* beside a list of two. It goes through the shared model now.
+
+### The remaining four reds are one external defect, and our own filing of it was the risk
+
+Three `entitysdk` failures are one cause: a continuation step whose target is a remote peer is
+refused at the sender. The fourth is consistent with it and **not established** as the same thing.
+
+⛔ **What is worth recording is that this repo had it filed as a design question.** The row asked
+another seat to *decide how* such a step is authorized — and the landed protocol text already
+rules it, naming *"a continuation advancing"* among the originations in scope and stating what
+relaxes the dimension that is failing. Measured here over a real credential in the failing
+topology, **all six of the authorization gate's predicates pass**, and the executing handler's
+default grant covers the rest; the specified outcome is *allow*. So it is a defect in one
+implementation, not a question for anybody, and filing it the other way would have asked a seat in
+a release freeze to re-rule something already ruled. **A row's KIND is a claim, and it needs
+evidence like any other.**
+
+One hypothesis of ours died on the way and is recorded so nobody re-runs it: a capability lookup
+that ranges a connection pool holding both directions, with no filter, picks the correct one — by
+accident of slice ordering, and now by construction. The probe was shown to reach the mechanism
+rather than miss it, which is what makes it a refutation instead of a shrug.
 
 ## §57 NEW (2026-09-17) — the substrate fixed thirteen defects under us, and the test that should have caught the last one was reading the wrong peer
 
@@ -1944,7 +2239,7 @@ written the row makes our own missing sync-leg floor *conformant* (A-31).
 **Four of our asks closed in our favour** — the third authority value is adopted as `shared`, D6 lands
 with the feed correction as `D6a`, the submit path is in scope after all (only multi-peer *atomic*
 commit is out), and A-13's placement question is answered by their four-document layer map. Packet:
-`docs/status/ROUTING-2026-09-11-d-…-the-closure-path-holds-…`. **Nothing blocks us; `W2`/`W3`
+`docs/outbox/ROUTING-2026-09-11-d-…-the-closure-path-holds-…`. **Nothing blocks us; `W2`/`W3`
 continues, and their §15.6 confirms the rung work and this mechanism are one arc rather than two.**
 
 ## §33 (2026-09-11) — seven requests over fifty thousand entries, and an axis with a missing value
@@ -2003,7 +2298,7 @@ And their generalization of our *every field is MINE, THEIRS or OURS* rule into 
 axis is **not faithful**: our actual defect was a THEIRS field inside a subject their axis classifies
 correctly as owned, so the two are orthogonal and both are needed.
 
-Packet: `docs/status/ROUTING-2026-09-11-c-entity-system-architecture-seven-requests-over-fifty-thousand-entries-and-the-owner-axis-has-a-third-value-we-ship.md`.
+Packet: `docs/outbox/ROUTING-2026-09-11-c-entity-system-architecture-seven-requests-over-fifty-thousand-entries-and-the-owner-axis-has-a-third-value-we-ship.md`.
 **Nothing in it blocks us and nothing in it changes what we are building** — `W2`/`W3`, the
 live-peer consume chain, continues.
 
@@ -2394,7 +2689,7 @@ computers the operator walks over to. And a discovery candidate's content hash e
 the Nearby panel re-rendered **~2.6 times a second, continuously**, against tree-view's 0.51.
 *Nothing changed* and *everything changed* are byte-identical to any consumer, so no downstream
 dedup can fix it. Both in
-`docs/status/ROUTING-2026-09-10-b-entity-core-go-marker-peer-and-candidate-churn.md`.
+`docs/outbox/ROUTING-2026-09-10-b-entity-core-go-marker-peer-and-candidate-churn.md`.
 
 **The Nearby row is a dead end in the one state that needs a verb.** A discovered peer already
 in the address book renders as `known` with no control — correct labelling, and hard-won, since
@@ -2405,7 +2700,7 @@ and offers no verb is AP57 at row granularity, and it bites hardest in the failu
 fixed — it is a UI decision and the notification surface is being designed as a whole.
 
 **The leverage question, answered with numbers.**
-`docs/architecture/reviews/DESIGN-REVIEW-SYNC-LEVERAGE-AND-PORTABILITY-2026-09-10.md` measures
+`docs/outbox/DESIGN-REVIEW-SYNC-LEVERAGE-AND-PORTABILITY-2026-09-10.md` measures
 how much of file sync is ours: **656 of 4,633 non-comment lines (14.2%) are the data path**, and
 neither of those two files moves a byte — they dispatch `system/content:get` (the kernel's
 §6.5.3 closure walk) and `local/files:write`. **The kernel moves the files; we decide which
@@ -3003,7 +3298,7 @@ exactly the operator's 45 minutes. The reciprocal grant is sent only on a rendez
 establishment, and two laptops dial by address, so it is never sent in either direction and each
 peer must independently dial the other.
 
-Routed as `reviews/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md` with three asks, the
+Routed as `docs/outbox/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md` with three asks, the
 smallest and most useful being an accessor for a connection's **direction** — core-go's
 `Connections()` concatenates inbound and outbound and tags neither, which is why our SDK's
 `PeerInfo.Direction` has been a permanently-empty field since it was written, and why our
@@ -3057,7 +3352,7 @@ one process measures zero.
 `HistoryConfigData.MaxDepth` looks identical and prunes nothing; a second no-op knob would have
 inverted the conclusion from "noisy" to "disk-filling".
 
-Routed as `reviews/CORE-GO-MAINTAIN-SESSION-DIES-AND-THE-GRAPH-DOES-NOT-2026-09-09.md`. **No local
+Routed as `docs/outbox/CORE-GO-MAINTAIN-SESSION-DIES-AND-THE-GRAPH-DOES-NOT-2026-09-09.md`. **No local
 mitigation shipped, on purpose**: a retention override would discard real chain forensics to mask
 someone else's bug, and the trigger is a peer we cannot reach — which §22.2's dial ladder is the
 actual fix for.
@@ -3513,7 +3808,7 @@ mechanism that works.
 
 ### What went to architecture
 
-`reviews/SUBSCRIPTION-SATURATION-AND-THE-LAYER-BOUNDARY-2026-09-07.md`, with the layering
+`docs/outbox/SUBSCRIPTION-SATURATION-AND-THE-LAYER-BOUNDARY-2026-09-07.md`, with the layering
 question the operator asked and we cannot answer from here: *how much of flow control belongs in
 the extension?* Our position, held with varying confidence — the policy (ring size, backoff,
 whether to run a supervisor at all) is correctly ours; the **one** thing we would argue for is
@@ -3948,7 +4243,7 @@ the local name and found nothing.
 retrieval is a term of the cross-impl contract *"has a real answer and this document does not know
 it"*, to be resolved by the implementing peers. We had built the retrieval leg and never answered.
 
-`reviews/APP-TIER-FILE-SHARING-PATTERN-2026-09-06.md` answers it: **retrieval is follower-local**
+`docs/outbox/APP-TIER-FILE-SHARING-PATTERN-2026-09-06.md` answers it: **retrieval is follower-local**
 — a publisher does nothing differently for a closure-pull follower than for a diff follower, which
 the fan-out and the chain both demonstrate — **but our form has a precondition the convention's own
 floor permits a peer to lack**: a subscription engine, and file entities at a pattern-matchable
@@ -4334,7 +4629,7 @@ vocabulary is ring 2; one mechanism for both is correct and we are not splitting
 `Mode: both` is a ring-1 gesture wearing a ring-2 label.
 
 The findings went back to the specification authors as an internal review packet (not published;
-`docs/architecture/reviews/`, dated today). **Nothing here is built.** The embed declination gap is
+`docs/outbox/`, dated today). **Nothing here is built.** The embed declination gap is
 the one that is a live defect in a shipped surface, and it is not fixed.
 
 ## §0Y (2026-09-04) — the two-peer flow found four defects, and the manual step may not need to exist
@@ -4524,7 +4819,7 @@ and only a pull recovers it. Two hypotheses were tested and both refuted by meas
 second fix was **reverted rather than kept**, because a disconnect on every startup justified by
 a dead hypothesis is a cost with no benefit. Routed with the full reproduction, the counted
 runs, and the questions that remain, in
-`docs/architecture/reviews/FIRST-CHANGE-AFTER-RESTART-IS-LOST-2026-09-03.md`. The product states
+`docs/outbox/FIRST-CHANGE-AFTER-RESTART-IS-LOST-2026-09-03.md`. The product states
 the limitation and the workaround rather than hiding it — a flow that looks reliable and is not
 is the same failure as a surface reporting `settled` while nothing works.
 
@@ -4698,7 +4993,7 @@ produced nothing.
    without a listener. The default configuration could not be reached, found, or shared with.
 3. **`localfiles.Handler.Load` restored no mounts** — the kernel AP58 instance found last
    session, worked around in `workbench/localfiles_root_restore.go`, routed in
-   `reviews/LOCALFILES-LOAD-RESTORES-NOTHING-2026-09-03.md`.
+   `docs/outbox/LOCALFILES-LOAD-RESTORES-NOTHING-2026-09-03.md`.
 4. **Nothing re-established a peer relationship at startup**, because nothing called
    `maintain-peer` (§2).
 
@@ -6144,7 +6439,7 @@ reaches the public internet, and a sweep that can go red for a domain's reasons 
 people to ignore the sweep. The offline half is `fetch/rebase_test.go`, pins transcribed from
 the live wire, so the mechanism stays covered by `make test-fetch` with no network.
 
-Routed as `reviews/COHOSTED-PEER-DISCOVERY-2026-08-30.md`: one ask (is the well-known profile
+Routed as `docs/outbox/COHOSTED-PEER-DISCOVERY-2026-08-30.md`: one ask (is the well-known profile
 singular per origin, and if not, how is a co-hosted peer cold-started?) plus the finding that
 the live registry publishes at `system/`, which is what makes §6a.3a's corrected MUST
 implementable — the narrow prefix we argued against on 2026-08-21 would have broken this
@@ -6487,7 +6782,7 @@ a pure-only subset or the scope fence moves.
 - **PR-E — decode `compute/error` as a value leaf.** Measured above: 12 vectors, 0 divergences.
 - **PR-C is now sized** — 11 corpus vectors, named.
 - **Ask arch:** how does an engine with a declared scope fence satisfy AE-6? (§0c, routed in
-  `reviews/AXIS1-ADMISSION-LAPSED-2026-08-25.md`.)
+  `docs/outbox/AXIS1-ADMISSION-LAPSED-2026-08-25.md`.)
 
 ### Operator ruling, 2026-08-25 — the engine's home is the compute extension
 
@@ -6510,7 +6805,7 @@ Structural evidence, measured: `axis1` is **3,028 lines with zero dependencies o
 (`go list -deps ./axis1` is core-go only), implements core-go's `handler.Handler`, and is consumed
 by `programs/` through a **handler-path string** rather than an import. It is not integrated here;
 it is parked here, because that is where the prototype was typed. Routed as
-`reviews/PROPOSAL-AXIS1-HOME-IS-THE-COMPUTE-EXTENSION-2026-08-25.md`.
+`docs/outbox/PROPOSAL-AXIS1-HOME-IS-THE-COMPUTE-EXTENSION-2026-08-25.md`.
 
 *And the honest frame: this was a prototype built fast to prove entity-compute could carry a real
 interactive workload. It did. The placement was a deliberate corner cut, and both halves of that
@@ -6695,14 +6990,14 @@ an assumption.**
 
 - **Arch: nothing new addressed to us.** The newest packet naming this repo is still
   `ROUTING-2026-08-21-k` (read and answered last session; pin replied in
-  `reviews/COMMIT-PIN-REGISTRY-1.21-PROVENANCE-2026-08-21.md`). Arch has three commits since —
+  `docs/outbox/COMMIT-PIN-REGISTRY-1.21-PROVENANCE-2026-08-21.md`). Arch has three commits since —
   a `METHODOLOGY.md` overlay re-sync and two on their own publication/crawl-path track — and
   **the diff of `COHORT-OPEN-ITEMS.md` and `WORKSTREAMS.md` since then adds no line naming
   workbench-go.** Checked by subject and by diff, not by filename (AP28).
 - **`METHODOLOGY.md` overlay is in sync** — byte-identical to arch's, and tracked/committed here.
 - **`entity-browser-rust`: nothing routed to us.** They have moved to connectivity, rendezvous
   and acquisition; no commit since 2026-08-21 names this repo. Our
-  `reviews/GENERIC-HOST-SUBTICK-INPUT-2026-08-21.md` is committed and pushed (`7729cb5`), which
+  `docs/outbox/GENERIC-HOST-SUBTICK-INPUT-2026-08-21.md` is committed and pushed (`7729cb5`), which
   is what delivery means; **no reply is owed to us** — it was routed as a design result.
 - **Nothing is blocked on us.** Every row in "Waiting on" below carries an explicit
   *blocked on us: nothing*, and the one row that used to read "blocked on arch" while never
@@ -6794,7 +7089,7 @@ session and both runs are reported, because the difference between them is the p
 
 **The one failure is `TestE2E_Bidirectional_BurstWrites_NoFS`, and it is the known one** — the
 terminal last-burst-write loss documented below and routed as
-`reviews/CORE-GO-LAST-BURST-WRITE-LOSS-2026-08-20.md`. Our own classifier named it at the moment of
+`docs/outbox/CORE-GO-LAST-BURST-WRITE-LOSS-2026-08-20.md`. Our own classifier named it at the moment of
 failure: **VERDICT (B1) — NEVER CAPTURED**, `archives/notes/a-4.md` still held by the writer and in
 no version. It is the documented load-dependent failure, it is the only failing test in the suite,
 and **nothing in this session's diff is in its path** (the reproducer builds its peers straight
@@ -6832,7 +7127,7 @@ give-up path in `fire()` recovers via "the next sync-hook event will fire() agai
 write of a burst has no next event** — which is exactly why it is always the last write and never
 an interior one, and why it is the write under maximum contention.
 
-Routed: `docs/architecture/reviews/CORE-GO-LAST-BURST-WRITE-LOSS-2026-08-20.md`. **Not fixed here**
+Routed: `docs/outbox/CORE-GO-LAST-BURST-WRITE-LOSS-2026-08-20.md`. **Not fixed here**
 — the reproducer builds its peers straight through `entitysdk` with no filesystem, no localfiles
 and no workbench model layer, so the workbench is not in the failing path.
 
@@ -6856,7 +7151,7 @@ marker and none had been opened (D21). What they move:
 
 | packet | disposition |
 |---|---|
-| **`-k`** §1/§3 — *arch folded `EXTENSION-REGISTRY` 1.21 on a document that exists in no commit*: our whole registry session was untracked, so the provenance chain for a normative spec revision terminated in a working tree | **Closed, first action of this session.** Three commits, `dev` at **`a6b5e9d`**, pushed. The packet arch folded on is `reviews/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md` at `a6b5e9d`; the code that produced it is `64dcc81`. Replied with the pin: `reviews/COMMIT-PIN-REGISTRY-1.21-PROVENANCE-2026-08-21.md`. Our own fixture README had stated this exact rule about **someone else's** gitignored artifact hours before we left our own packet uncommitted — folded into AGENTS.md as *a packet that is not committed has not been routed*. |
+| **`-k`** §1/§3 — *arch folded `EXTENSION-REGISTRY` 1.21 on a document that exists in no commit*: our whole registry session was untracked, so the provenance chain for a normative spec revision terminated in a working tree | **Closed, first action of this session.** Three commits, `dev` at **`a6b5e9d`**, pushed. The packet arch folded on is `docs/outbox/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md` at `a6b5e9d`; the code that produced it is `64dcc81`. Replied with the pin: `docs/outbox/COMMIT-PIN-REGISTRY-1.21-PROVENANCE-2026-08-21.md`. Our own fixture README had stated this exact rule about **someone else's** gitignored artifact hours before we left our own packet uncommitted — folded into AGENTS.md as *a packet that is not committed has not been routed*. |
 | **`-f`** / **`-c`** — `transports` is **RULED our way and folded**, REGISTRY 1.20 → **1.21**: `[<system/hash, BARE>]` at all five declaration sites, plus D8a (a publishing registry MUST serve what its bindings reference) and D8b (**our finding #3**, the unimplementable §6a.3a prefix, corrected) | **Closed in our favour, three of four findings folded.** No code change owed yet; the consequences are the re-cut below. Arch records our posture — liberal decode, forms kept distinguishable, *"did not make our SDK succeed where the reference implementation fails"* — as the reference one. |
 | **`-i`** §2 — **re-cut `fetch/testdata/crossimpl-rust-federation/`** from `entity-browser-rust`'s now-**committed** `tests/fixtures/registry-federation/` at `54f31a7` | **OPEN, unblocked, and the next item on this track.** `TestKernelCannotDecodeARustBinding` should flip (honour its own in-file guard rather than deleting it), the inline branch of `fetch.NameBinding`'s decoder goes, `TransportRef.Kind` **stays** (a decoder that can name the rejected shape is the better diagnostic), and the README's provenance caveat is discharged. Also: their `.list` files are now `system/tree/listing` ECF entities with a **canonical-CBOR** `entries` map — length-first then lexicographic — so **sort in the reader**. |
 | **`-i`** §2.1 | Arch had our step and core-go's in series; they are parallel. **Nothing is waiting on us.** |
@@ -6935,7 +7230,7 @@ end-to-end. **Everything on the workbench side is built, measured, and green; ev
 remaining lever is gated on arch or core-go.**
 
 The one doc to read is
-**`docs/architecture/reviews/COMPUTE-SHARDING-INTO-HOST-2026-07-18.md`** — §10 is the ledger
+**`docs/outbox/COMPUTE-SHARDING-INTO-HOST-2026-07-18.md`** — §10 is the ledger
 of all five routed levers and who owns each; §11 is the latest result. Not duplicated here.
 
 Headlines, so this doc stands alone:
@@ -6966,14 +7261,14 @@ Headlines, so this doc stands alone:
 > real on 2026-07-23 and lapsed when the v3.24/v3.25 primitives landed. **Nothing told us, because
 > the harness skips unless `AXIS1_ADMISSION_CORPUS` is set and no target sets it** — so it has been
 > reported as a passing suite ever since. §0c has the full measurement and the resulting rows; the
-> withdrawal is routed in `reviews/AXIS1-ADMISSION-LAPSED-2026-08-25.md`. Kept below verbatim as
+> withdrawal is routed in `docs/outbox/AXIS1-ADMISSION-LAPSED-2026-08-25.md`. Kept below verbatim as
 > the record of what was true then.
 
-Core-go's AE-5 packet (`entity-core-go/docs/status/ROUTING-2026-07-23-ae5-axis1-inproc-admission.md`)
+Core-go's AE-5 packet (`entity-core-go/docs/outbox/ROUTING-2026-07-23-ae5-axis1-inproc-admission.md`)
 asked workbench to run the frozen 330-vector inproc compute corpus in-process through **Axis-1** (the
 only alternate engine, and it lives here) and hand back the alternate-engine emission; a green run
 folds EXTENSION-COMPUTE §11. **Done and green.** Full write-up:
-`docs/architecture/reviews/COMPUTE-AE5-AXIS1-ADMISSION-RESULT-2026-07-23.md`.
+`docs/outbox/COMPUTE-AE5-AXIS1-ADMISSION-RESULT-2026-07-23.md`.
 
 - Harness `entitysdk/axis1_admission_test.go` mirrors core-go's reference emit loop, swapping in
   Axis-1; corpus + reference emission reproduce byte-exact (`9131a93d` / `419ca55d`); the emission is
@@ -7016,7 +7311,7 @@ verified pixel-for-pixel via `make smoke-xvfb-program PROGRAM={life,snake,astero
   `program-life-edit` in `Program.cs` (+ `SmokeDriver`'s program-cycle map).
 
 Nothing here touches the still-open pointer/click gap
-(`docs/architecture/reviews/PROPOSAL-GENERIC-HOST-POINTER-INPUT-DEVICE-2026-07-27.md`) —
+(`docs/outbox/PROPOSAL-GENERIC-HOST-POINTER-INPUT-DEVICE-2026-07-27.md`) —
 that stays blocked on arch, as before.
 
 ### 1c. Full-repo health sweep (2026-08-13) — CLOSED
@@ -7078,9 +7373,9 @@ Structural cleanup so the next arch ask lands on solid ground:
 ### 3. The share / multi-peer arc (the live thread) — steps 3a and 3 DONE
 
 The one doc to read is
-**`docs/architecture/reviews/REVIEW-SHARE-AND-CONNECTIVITY-ALIGNMENT-2026-08-17.md`** —
+**`docs/outbox/REVIEW-SHARE-AND-CONNECTIVITY-ALIGNMENT-2026-08-17.md`** —
 §5.1 is the ordered plan, §7 is the N1 ruling, §8 is what landed 2026-08-18 and the
-correction it forced. Companion packet: `reviews/CORE-GO-ASKS-2026-08-17.md`.
+correction it forced. Companion packet: `docs/outbox/CORE-GO-ASKS-2026-08-17.md`.
 
 Where the six steps stand:
 
@@ -7092,7 +7387,7 @@ Where the six steps stand:
 | **3** | **Target prefix on the sync surface (source ≠ target)** | **done** — `MirrorSinceLastSeen` + `InstallRevisionMirrorChain` + `revision mirror` |
 | 4 | Follow vocabulary settled with browser-rust | **open — needs browser-rust.** Arch confirms the two pieces (one follow verb with a `strategy` field; a per-follow minted capability) need no arch ruling |
 | 5 | The first `app/share/*` record | **arch half DELIVERED, our half STARTED (`146f9a4`).** `APP-CONVENTION-SHARE` v0.1 authored (`bb86cd1`, `ROUTING-i` §4); `entitysdk/share.go` ships the `app/share/*` type vocabulary, the tagged target union, `ShareGrants` (with `peers` omitted), `ValidateShareGrants` (the §1.1 MUST as a refusal), `AuthorShare` and `ShareWithdrawalNotice`. Vectors **SHARE-4** and **SHARE-6** pass, plus three shape pins. The authoring/validation layer is pure, so it is green **through** the kernel block; persisting the record + delivering tokens is the half that waits. `strategy` still open on browser-rust (step 4) |
-| 6 | `APP-CONVENTION-CHAT` review as a consumer | **DONE 2026-08-20** — `reviews/APP-CONVENTION-CHAT-CONSUMER-REVIEW-2026-08-20.md`. Three findings, each grounded in something this tree already hit: §4's `.list`/subscribe over `/{P}/…` needs a **mirror capability the proposal never names** (AP11 + the §PR-8 403 we shipped wrong first); the per-author `prev` chain has **no gap rule** and it is the same construction browser-rust already flagged in our follow; `attachments` is a **Layer-2 chunking contract** wearing a Layer-1 spelling. Plus one unlisted substrate dependency (content-store GC — a conversation is the purest unbounded-append workload there is) and a measured datum for `[ASK-ARCH-CHAT-2]` (the 20.3 MB/peer delivery ring). **Not building it** — the proposal is DRAFT, not `RULED` |
+| 6 | `APP-CONVENTION-CHAT` review as a consumer | **DONE 2026-08-20** — `docs/outbox/APP-CONVENTION-CHAT-CONSUMER-REVIEW-2026-08-20.md`. Three findings, each grounded in something this tree already hit: §4's `.list`/subscribe over `/{P}/…` needs a **mirror capability the proposal never names** (AP11 + the §PR-8 403 we shipped wrong first); the per-author `prev` chain has **no gap rule** and it is the same construction browser-rust already flagged in our follow; `attachments` is a **Layer-2 chunking contract** wearing a Layer-1 spelling. Plus one unlisted substrate dependency (content-store GC — a conversation is the purest unbounded-append workload there is) and a measured datum for `[ASK-ARCH-CHAT-2]` (the 20.3 MB/peer delivery ring). **Not building it** — the proposal is DRAFT, not `RULED` |
 
 **What 3a/3 mean in practice.** A peer can now read another peer's signed
 `system/peer/published-root` (full verification: content-hash recompute, signature against
@@ -7117,7 +7412,7 @@ config and do not invent a credential shape — hitting that wall and routing it
 function.
 
 **Scoped with browser-rust 2026-08-18** —
-`docs/architecture/reviews/CONNECTIVITY-CONVERGENCE-2026-08-18.md`. They named the four app-tier
+`docs/outbox/CONNECTIVITY-CONVERGENCE-2026-08-18.md`. They named the four app-tier
 pieces our arm is missing and we verified all four against our own tree: no `ext/signaling`
 consumer, no `system/peer/status` read-model (`ConnectedPeers()` is a pool snapshot), no
 `maintain-peer`, no connector/`meet`. **The transport is not the gap** — `AppPeer`
@@ -7204,7 +7499,7 @@ and the TOFU + successor requirements live, so the backend's whole normative con
 the proposal, and `AGENTS-STANDARD` says implement against the **landed spec**. Defining the token
 locally is AP20's exact shape one step earlier. `entity-core-go` matches the spec, not the proposal
 (`DiscoveryBackendMDNS` and nothing else) — the gap is upstream of them. Ask routed:
-`docs/architecture/reviews/DISCOVERY-RENDEZVOUS-FOLD-ASK-2026-08-19.md`. **A RULED stamp is a
+`docs/outbox/DISCOVERY-RENDEZVOUS-FOLD-ASK-2026-08-19.md`. **A RULED stamp is a
 decision, not a normative surface** — we read it as landed and had to grep to find out otherwise.
 
 **HOLD LIFTED by operator ruling, 2026-08-19. Piece 4 is READY TO BUILD — build it against the
@@ -7240,7 +7535,7 @@ not against landed `EXTENSION-DISCOVERY`, so the coupling is greppable when the 
 anything the implementation surfaces goes back to arch as feedback on the proposal, which is the
 point of doing it in this order.
 
-The routed ask (`docs/architecture/reviews/DISCOVERY-RENDEZVOUS-FOLD-ASK-2026-08-19.md`) stands as
+The routed ask (`docs/outbox/DISCOVERY-RENDEZVOUS-FOLD-ASK-2026-08-19.md`) stands as
 a fold request, **not** as a blocker on us; it should be re-framed as "here is what we learned
 building it" when piece 4 lands.
 
@@ -7282,7 +7577,7 @@ here: a rendezvous peer stands at a mailbox *because* it has no reachable listen
 excluded precisely the peers the backend serves. Default unchanged; a control arm asserts that.
 
 **Routed, which is the other half of building ahead of a fold:**
-`docs/architecture/reviews/RENDEZVOUS-BACKEND-BUILD-RESULT-2026-08-19.md` — four things §5.5
+`docs/outbox/RENDEZVOUS-BACKEND-BUILD-RESULT-2026-08-19.md` — four things §5.5
 should carry (the TOFU rule's reason **and its cost**: §2.2.1's fail-closed IDENTIFY comparison is
 structurally unavailable to every rendezvous candidate, so TOFU is the ceiling and not a fallback;
 deposit granularity; the mode-dependent locator; a reap rule for a non-mDNS departure signal).
@@ -7342,7 +7637,7 @@ from the Base58 peer-id, walk the CHAMP trie from `root_hash` over the emitted s
 404 (`TestPublish_SignedRootVerifiesFromTheEmittedFiles`).
 
 **Three things fell out of building it**, all in
-`docs/architecture/reviews/archive/PUBLISHER-CONFORMANCE-RESULT-2026-08-18.md`:
+`docs/archive/outbox/PUBLISHER-CONFORMANCE-RESULT-2026-08-18.md`:
 
 1. **A signed root and a filtered publish are incompatible — we refuse at the emitter.** The
    closure obligation would upload the `IncludeType`/`IncludePath`-excluded entities' bytes under
@@ -7465,7 +7760,7 @@ path** — shows the handler running at status 200 and seeing `Resource == nil`.
 verbatim, as the test core-go is missing.
 
 Full packet, including the one-line fix, the reproducer, and the coverage gap that let it through:
-`docs/architecture/reviews/archive/CORE-GO-LOCAL-DISPATCH-RESOURCE-2026-08-18.md`.
+`docs/archive/outbox/CORE-GO-LOCAL-DISPATCH-RESOURCE-2026-08-18.md`.
 **Re-run `make test` once it lands.** Do not work around it here — the call sites are correct.
 
 **Historical note, corrected 2026-08-20:** this section once ended *"the packet is still unsent —
@@ -7522,7 +7817,7 @@ Corrected fixture facts (core-go `7593618`): `peer_id 2KLv2nhwtPrL…`, trie
 **Still not run end to end:** executing their reader against our fixture needs a test in *their*
 tree. Per D19/AP10 everything above except the emitted bytes ships as a prediction with a
 reproducer attached.
-Packet: `docs/architecture/reviews/CROSSIMPL-PUBLISH-CONSUME-2026-08-18.md` (UPDATE 2 carries the
+Packet: `docs/outbox/CROSSIMPL-PUBLISH-CONSUME-2026-08-18.md` (UPDATE 2 carries the
 ruling and the corrected hashes).
 
 ### 6a. CORRECTED — R3 shipped against a spec sentence arch withdrew 78 minutes later (2026-08-18)
@@ -7545,7 +7840,7 @@ documented as presentational), and **§4.1 step 2's catch-all local-only MUST, s
 write as a refusal**. 1.7 makes that the load-bearing rule explicitly — the same conclusion resting
 on the right sentence.
 
-Routed: `docs/architecture/reviews/archive/RESOLVER-CONFIG-FILTER-CORRECTION-2026-08-18.md`, which also
+Routed: `docs/archive/outbox/RESOLVER-CONFIG-FILTER-CORRECTION-2026-08-18.md`, which also
 carries the two cohort observations (`did-key` vs `self-certifying`; `pinned` has no constant) and
 the `ROUTING-2026-08-18-i` acknowledgement.
 
@@ -7601,7 +7896,7 @@ byte is a literal, so **no pattern is invalid** and a registry MUST NOT reject o
 We author patterns and never match them, so that is our whole exposure — pinned rather than assumed,
 because "closed grammar" has meant "reject at write" everywhere else in this corpus.
 
-Packet: `docs/architecture/reviews/REGISTRY-V113-ADOPTION-2026-08-18.md`.
+Packet: `docs/outbox/REGISTRY-V113-ADOPTION-2026-08-18.md`.
 **D21 earned** (AP12 promoted): a *cc'd* packet is a packet. Session start now greps the arch repo
 for every document naming this repo, and STATUS carries the last letter read.
 
@@ -7640,7 +7935,7 @@ an exotic config costs an error message while admitting one costs every name a u
 row is needed; everything in §4.1a is grammar-identical under both readings, which is the same shape
 that let `*.lab` survive review in the `name_constraints` case.
 
-Packet: `docs/architecture/reviews/REGISTRY-V114-VALIDATOR-2026-08-19.md`.
+Packet: `docs/outbox/REGISTRY-V114-VALIDATOR-2026-08-19.md`.
 
 ### 6d. The CDN corridor runs in both directions — and ours was broken at our own end (2026-08-19)
 
@@ -7689,7 +7984,7 @@ it; per-side tests are evidence about each side.* Second shape of AP17 (core-go'
 `DispatchLocalExecute` equivalence claim, asserted on return values) — different repo, different
 layer, one lesson. Charter is now D1–D22 / AP1–AP22.
 
-Packet: `docs/architecture/reviews/CROSSIMPL-CONSUME-RESULT-2026-08-19.md` (to browser-rust, cc arch
+Packet: `docs/outbox/CROSSIMPL-CONSUME-RESULT-2026-08-19.md` (to browser-rust, cc arch
 + core-go).
 
 ### 6e. REGISTRY 1.16 read — both rulings land outside our code (2026-08-19)
@@ -7914,7 +8209,7 @@ proposals sit downstream of it.
 which is upstream of retiring the legacy panels → which is why `dev` cannot cleanly release (see the
 guardrail). Routed with the cost measured, and with the uncertainty stated — the HUD may be
 expressible on today's `map`/`fold`/arith vocabulary without the parked primitives, and we have not
-run that spike: `reviews/COMPUTE-HOLD-IMPACT-2026-08-20.md`.
+run that spike: `docs/outbox/COMPUTE-HOLD-IMPACT-2026-08-20.md`.
 
 **2. R-10 is arch's next item, and their board lists us as blocked behind it. We are not.**
 `STATUS-2026-08-20-b` §3 and their handoff both name `entity-workbench-go` as *"blocked on it
@@ -7927,7 +8222,7 @@ need rather than on a seat that is not actually waiting.
 holding only a `peer_id` cannot learn where that peer is*). Not ruled, no work assigned; arch wants
 implementation evidence before ruling. We are the seat shipping **both ends** of the profile path,
 so we answered with measurements rather than opinion:
-`reviews/TRANSPORT-SET-IMPLEMENTATION-EVIDENCE-2026-08-20.md`. The three findings worth repeating
+`docs/outbox/TRANSPORT-SET-IMPLEMENTATION-EVIDENCE-2026-08-20.md`. The three findings worth repeating
 here: `transport.set|transport_set|TransportSet` is **zero occurrences** in our tree (nothing to
 collide with); our three self-published profiles are **coexisting singletons, not a set**, and our
 one signed aggregate (the published root) is not over profiles; and on R7's confirm-before-publish
@@ -8039,7 +8334,7 @@ delivery is owed and costs nothing — the packet is already written. **AP28**, 
 sweep as its enforcement point (`AGENTS.md`, beside the inbound one).
 
 **And the sweep's own first run corrected how it should be written.** Grepping siblings for our
-packet *filenames* flags **twelve of the packets in `reviews/`** — and **eleven of the twelve had
+packet *filenames* flags **twelve of the packets in `docs/outbox/`** — and **eleven of the twelve had
 plainly landed**: AE-5 is folded into `EXTENSION-COMPUTE` §11, `EXTENSION-DISCOVERY` §-mDNS names
 this repo, four `WORKSTREAMS` rows carry our transport findings, and R-10's fold carries all four of
 our rendezvous items. **Siblings cite our commits and our claims, never our file paths**, so the
@@ -8060,7 +8355,7 @@ third session that runs it.
 emitter**, over a live host boundary. `make crossimpl-go` is green.
 
 Result packet, with everything below in full:
-**`docs/architecture/reviews/CROSSIMPL-CONSUME-LEG-RESULT-2026-08-20.md`**.
+**`docs/outbox/CROSSIMPL-CONSUME-LEG-RESULT-2026-08-20.md`**.
 
 **The operation that was missing, stated once so nobody re-derives it.** We had both halves and
 neither walked the trie: `entitysdk.ReadPublishedRoot` verified a signature but over the **local
@@ -8164,7 +8459,7 @@ implements no spec logic. What the kernel lacks is the §6a.3a **enumeration**, 
 (`ROUTING-2026-08-21-b` §3) records as *the one registry surface in the corpus with a producer
 and zero consumers*; ours is the first.
 
-**Routed:** `reviews/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md` — four findings.
+**Routed:** `docs/outbox/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md` — four findings.
 
 | § | finding | who |
 |---|---|---|
@@ -8325,6 +8620,78 @@ signal: four headless tests green while measuring nothing), and **AP33** — two
   checked and is correct; suspected to be the GPU crash hit while interacting. A headless
   key-injection repro is still owed.
 
+## Deferred to after the 0.10.0 cut — decided, not forgotten
+
+Everything here is a **recorded decision to wait**, with the reason. Nothing on this list blocks
+the cut, and nothing on it is blocked on us by somebody else.
+
+**Two things go out as ONE packet the day the counterpart freezes lift**, and they go together
+because the second unblocks work the first depends on:
+
+1. **The cross-peer continuation refusal**, as a falsifier with its control arm — the shape that
+   got the last one fixed in hours rather than as a bug report. Measured; filed here; deliberately
+   unsent, because the affected capability is the revision-mirror / tree-follow chain and sharing,
+   two-peer sync and the publish/consume corridor are all green. Its KIND was corrected first: the
+   landed text rules it, so it is an implementation defect and not a question.
+2. **Our own ask about where the content namespace for file bytes is derived.** Filed 2026-09-10,
+   never routed — and a counterpart's related question cannot be ruled without it, so their work
+   is sitting behind an ask of ours that never left this tree. That is our own *delivery is a fact,
+   addressing something is an intention* rule failing outbound, and it is the one item on this list
+   where the cost lands on somebody else.
+
+**One cohort-level finding, not ours to file:** two kernels admit different candidate sets for one
+authorization relaxation, so an operation one allows the other refuses. It belongs to the seats
+that own those kernels; it travels with (1) rather than as its own packet.
+
+**Work we own, in the order it is worth doing:**
+
+- **The joint feed run with the other application tier.** The one item neither application seat can
+  schedule alone; the requirements are written and the recommended shape is a static corridor cut,
+  reproducible with no scheduling. ⛔ Its anti-vacuity arm is the part not to skip — a single-page
+  fixture passes against a flat list and measures nothing, so assert the view spans more than one
+  page *first*.
+- **Republishing somebody else's feed has no operator surface.** The capability is complete and
+  verified end to end — a stranger to an author can verify every mirrored entry out of the
+  republisher's tree — and a person cannot reach it. This is the largest honest gap in the tier and
+  it is named in the CHANGELOG's known limitations rather than left to be found.
+- **A feed entry posted since the last publish is invisible to readers**, indistinguishably from
+  never having posted. The listing says when a published root has fallen behind; making the post
+  itself say so, or publishing on post, is a design call.
+- **Two remaining feed gaps**: the pointer-body blob closure (an oversized embed republishes with
+  its body unreachable — named at plan time), and the seventh declared type. Six of seven are
+  implemented here; the other application tier has all seven.
+- **A registry gate whose success condition cannot occur.** It pins a pre-ruling wire form against
+  a frozen fixture, so its own stated retirement condition is unreachable by construction. Re-cut
+  the fixture from a current emission and restore the full agreement assertions. A gate that cannot
+  succeed is not a gate.
+- **Post-release flags already filed and deliberately not proposed for this cut**: file
+  classification invented twice across two application tiers with no convention covering it, and one
+  noun living under two authorities. Both are real and neither blocks anything.
+- **The compute / programs track** resumes after the release by standing decision, and the
+  differential corpus is the gate to run first — it is not wired into any target, and a green
+  suite says nothing about it.
+- **Module-path cutover**, below: one line per module once the kernel's vanity path is published
+  and tagged, then the clone-fresh build that proves it.
+
+⚠ **One release-prep item is deliberately NOT done, and it is the largest:** most short commit
+citations in the canonical documents cannot be resolved by a public reader. Published history is
+authored fresh at the release boundary, so an internal commit id resolves to nothing on the public
+branch — the standing rule is to cite by content, a release tag, or a content digest. Measured
+across the 39 declared documents: **176 short-SHA citations, 172 of them unreachable**, and
+**116 of those are in this file** — a rolling log whose entire job is to record what happened,
+where a commit id is the natural reference and rewriting it would be rewriting the record.
+
+**It is a standing condition, not a regression**: the currently published branch carries the same
+116, so it shipped with the last release, nothing in this session added one, and the checker is not
+a gate today. Recorded rather than fixed because rewriting 172 citations the day before a cut is
+exactly the kind of sweep that goes wrong quietly, and each one needs a judgment about what the
+surrounding claim should cite *instead*.
+
+**The recommendation, for whoever picks it up:** treat the ~56 citations in the *reference*
+documents as the real work — those are what a stranger opens to learn something, so a dead
+reference there costs a reader — and treat this file's as a separate question about whether a
+published rolling log should carry commit ids at all. Do not do them as one sweep.
+
 ## Backlog
 
 **Release / dependency cutover**
@@ -8460,7 +8827,7 @@ predicted:
    projected in the tree so every renderer shows the byte-identical line, and it needed no `concat`.
    We spent an hour on 2026-08-20 pricing this against the July review instead of against the tree —
    **D20 failing in its usual direction** — and the correction is in
-   `reviews/COMPUTE-HOLD-IMPACT-2026-08-20.md` §2 plus an annotation on the July packet itself, so
+   `docs/outbox/COMPUTE-HOLD-IMPACT-2026-08-20.md` §2 plus an annotation on the July packet itself, so
    the next reader does not pay it again.
 
 **The legacy trio is retired** (2026-08-20): three Avalonia panels, three bridge surfaces (23 of the
@@ -8603,7 +8970,7 @@ in 8 runs"** rather than "74/74".
 5. **PR-E. Decode `compute/error` as a value leaf** (§0c). One `case` arm in `axis1/decode.go`;
    measured at 12 recovered vectors, 28 → 16 deopts, 0 divergences. Wants its own diff.
 6. **Waiting on arch — AE-6 vs a declared scope fence.** Routed as
-   `reviews/AXIS1-ADMISSION-LAPSED-2026-08-25.md` §3, with the "should this engine live here at
+   `docs/outbox/AXIS1-ADMISSION-LAPSED-2026-08-25.md` §3, with the "should this engine live here at
    all" question in §4. Not blocking: Axis-1 ships in no binary.
 
 ### Coordination with `entity-browser-rust` — where we left it
@@ -8614,7 +8981,7 @@ in 8 runs"** rather than "74/74".
   interactive program to a renderer that cannot deliver the input is half a feature (D23).
   The AP38 fix does not change this — a translated soup and a good one are equally unreachable
   without a controller.
-- **The sub-tick input finding is routed and mutual.** `reviews/GENERIC-HOST-SUBTICK-INPUT-2026-08-21.md`
+- **The sub-tick input finding is routed and mutual.** `docs/outbox/GENERIC-HOST-SUBTICK-INPUT-2026-08-21.md`
   (committed at `7729cb5`, pushed) — they found AP36 independently, in a different language, and
   fixed it at a **different layer** (`MomentaryGuard`: delay the release by one tick period)
   where we fixed it in the host (an input queue). Routed as a **design result, not a defect

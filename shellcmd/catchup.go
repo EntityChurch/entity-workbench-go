@@ -55,7 +55,7 @@ import (
 // one that chain will ever carry and no successor arrives to mismatch.
 // Of the 2327 drops above, the number `previous_hash` could have caught
 // is zero. Routed as
-// reviews/SUBSCRIPTION-SATURATION-AND-THE-LAYER-BOUNDARY-2026-09-07.md.
+// docs/outbox/SUBSCRIPTION-SATURATION-AND-THE-LAYER-BOUNDARY-2026-09-07.md.
 //
 // # Why this is affordable
 //

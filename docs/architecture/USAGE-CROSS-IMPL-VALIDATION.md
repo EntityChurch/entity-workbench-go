@@ -151,7 +151,7 @@ a logical group separator that lets readers scan the output.
 
 ## Where the results get written
 
-Each validation pass produces a memo in `docs/architecture/reviews/`:
+Each validation pass produces a memo in `docs/outbox/`:
 
 ```
 CROSS-IMPL-VALIDATION-<FEATURE>-<YYYY-MM-DD>.md
@@ -189,7 +189,7 @@ on `result_merge` or `collect_keys`, the next probe run catches it.
 ## Validation history
 
 Cross-impl validation runs are recorded as dated memos under
-`docs/architecture/reviews/` (named `CROSS-IMPL-VALIDATION-<FEATURE>-<DATE>.md`).
+`docs/outbox/` (named `CROSS-IMPL-VALIDATION-<FEATURE>-<DATE>.md`).
 The established baseline covers ratified features (9/9), fetch-diff +
 `result_merge`, and revision-pull, each validated against the Rust and Python
 implementations.

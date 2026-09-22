@@ -17,7 +17,7 @@ import "testing"
 // `in_site_links_resolve_dir_relative_from_nested_page`). They are not
 // re-derived here and must not be "corrected" locally — if this test
 // fails, either our resolver drifted or theirs did, and the next step is
-// a `reviews/` packet, not an edit to the expectations.
+// a `docs/outbox/` packet, not an edit to the expectations.
 //
 // # What this caught
 //

@@ -3,7 +3,7 @@ package programs
 // CARRY CHAIN — a dependency-CHAIN program, the experimental control for the
 // TIME axis (the mirror of program_heavyfield.go, which was the SPACE axis).
 //
-// §5/§5a of reviews/COMPUTE-SHARDING-INTO-HOST-2026-07-18.md measured the space
+// §5/§5a of docs/outbox/COMPUTE-SHARDING-INTO-HOST-2026-07-18.md measured the space
 // axis: a wide `map` (independent per cell) shards into k pieces that run in
 // parallel, and the speedup climbs toward k× as the per-cell op-cost rises. The
 // serial residue there was reads + the O(N·k) stitch. That axis is the POSITIVE:

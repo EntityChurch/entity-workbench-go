@@ -5,7 +5,7 @@ package entitysdk_test
 // gate consumes.
 //
 // WHAT THIS IS. Per core-go's routing packet
-// (entity-core-go/docs/status/ROUTING-2026-07-23-ae5-axis1-inproc-admission.md),
+// (entity-core-go/docs/outbox/ROUTING-2026-07-23-ae5-axis1-inproc-admission.md),
 // the EXTENSION-COMPUTE §11 appendix folds on the first green inproc admission
 // run (AE-5) with an actual alternate engine. Axis-1 is the only alternate
 // compute engine that exists, and it lives here (entitysdk/axis1), importing

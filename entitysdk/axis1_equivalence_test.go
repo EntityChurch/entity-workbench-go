@@ -19,7 +19,7 @@ package entitysdk_test
 // Handoff §5 asks for "the existing compute conformance vectors" run through
 // both engines. Those do not exist — no portable compute corpus exists anywhere
 // in the cohort, and compute's only tests are per-impl and in-package (see
-// docs/architecture/reviews/COMPUTE-AXIS1-ORACLE-GAPS-2026-07-16.md §1). So the
+// docs/archive/outbox/COMPUTE-AXIS1-ORACLE-GAPS-2026-07-16.md §1). So the
 // substitution is a generator.
 //
 // It is stronger than a fixed corpus for THIS job. Axis-1 re-derives ~1,200

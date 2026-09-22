@@ -6,7 +6,7 @@
 // It is NOT a shipped binary. It exists so the Rust arm — or any other
 // consumer — can be pointed at a real Go emission instead of at a
 // fixture the consumer's own publisher built. Every claim in
-// reviews/CROSSIMPL-PUBLISH-CONSUME-2026-08-18.md is reproduced by
+// docs/outbox/CROSSIMPL-PUBLISH-CONSUME-2026-08-18.md is reproduced by
 // running this and reading the tree it writes.
 //
 // Determinism: the keypair is seeded from a fixed 32-byte constant and

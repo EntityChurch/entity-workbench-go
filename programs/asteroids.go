@@ -11,7 +11,7 @@ package programs
 //     §10.3 the non-determinism boundary — RNG enters as INPUT
 //   docs/status/HANDOFF-2026-07-16-compute-heterogeneous-actor-probe.md — the ask
 // Our findings + the port measurement:
-//   docs/architecture/reviews/COMPUTE-ASTEROIDS-PORT-TAXONOMY-2026-07-16.md
+//   docs/archive/outbox/COMPUTE-ASTEROIDS-PORT-TAXONOMY-2026-07-16.md
 //
 // Three-layer split, descriptor-faithful (same as Snake/Life):
 //   - the PROGRAM is a pure compute step expression living in the tree, plus

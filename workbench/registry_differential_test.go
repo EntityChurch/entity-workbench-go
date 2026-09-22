@@ -63,7 +63,7 @@ import (
 // rather than a resolution — for every name, on the only live federation
 // in this cohort.
 //
-// Routed as `reviews/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`.
+// Routed as `docs/outbox/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`.
 // The tests below pin the divergence as *measured state*: they fail if
 // it widens AND they fail if it silently closes, because the day
 // core-go can decode these bindings is the day this file goes back to
@@ -221,7 +221,7 @@ func TestOurResolverResolvesEveryRustName(t *testing.T) {
 // other, and it says which.** If core-go starts resolving these
 // bindings, the packet is answered: delete this test, restore full
 // agreement assertions, and close
-// `reviews/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`. If it
+// `docs/outbox/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md`. If it
 // starts failing for a *different* reason, the divergence moved and the
 // packet is stale.
 //
@@ -261,7 +261,7 @@ func TestKernelCannotDecodeARustBinding(t *testing.T) {
 		if v.resolved {
 			t.Fatalf("core-go RESOLVED %s → %s. The transports divergence has closed: restore the "+
 				"full agreement assertions in this file, delete this test, and close "+
-				"reviews/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md", name, v.peerID)
+				"docs/outbox/REGISTRY-BINDING-TRANSPORTS-DIVERGENCE-2026-08-21.md", name, v.peerID)
 		}
 		if v.err == nil {
 			t.Fatalf("%s: core-go returned a clean not_found rather than a decode failure — the "+

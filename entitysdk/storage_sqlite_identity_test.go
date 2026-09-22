@@ -236,7 +236,7 @@ func TestStorage_SqliteIdentityBundle_RebootstrapGrowsBoundedly(t *testing.T) {
 	// silently become false. It is still linear and still unbounded, so
 	// the waiver stands on substance; what does not stand is quoting a
 	// stale measurement to justify it. Routed to core-go in
-	// reviews/RELEASE-READINESS-REPLY-2026-08-24.md §7. The root
+	// docs/outbox/RELEASE-READINESS-REPLY-2026-08-24.md §7. The root
 	// cause is in the identity *ceremony's* determinism, which lives
 	// in the core-go sibling (ext/identity) — re-running
 	// ApplyIdentityBundle against an already-populated store re-issues
@@ -254,7 +254,7 @@ func TestStorage_SqliteIdentityBundle_RebootstrapGrowsBoundedly(t *testing.T) {
 	// it is a conscious waiver, not a blocker.
 	t.Skip("WAIVED (0.9.0 preview): real linear leak rooted in core-go ext/identity " +
 		"ceremony re-apply — re-measured 2026-08-24 at ΔentityCount=2/reload (was 4, and " +
-		"the ΔpathCount=1 is now 0); see reviews/FEEDBACK-CORE-GO-IDENTITY-REBOOTSTRAP-LEAK.md")
+		"the ΔpathCount=1 is now 0); see docs/outbox/RELEASE-READINESS-REPLY-2026-08-24.md §7")
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)

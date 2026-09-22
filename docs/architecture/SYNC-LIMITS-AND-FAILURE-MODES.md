@@ -124,7 +124,7 @@ neither holds, and there is no garbage collector in the cohort at all.
 Setting `MaxDepth` today is a **pure cost**: an O(max_depth) content-store walk after every
 recorded write, achieving nothing.
 
-Routed as `reviews/CORE-GO-HISTORY-MAXDEPTH-PRUNES-NOTHING-2026-09-07.md`. **The consequence
+Routed as `docs/outbox/CORE-GO-HISTORY-MAXDEPTH-PRUNES-NOTHING-2026-09-07.md`. **The consequence
 for planning is that the cheapest fix is not available**, so a workbench-tier guard is real work
 rather than a config change — probably a per-folder budget that disables recording and *says
 so*, since a silent disk-fill is the worse failure. The probe test is kept, and inverts: if
@@ -223,7 +223,7 @@ rather than a loss.
 4. **`catchup` is a verb**, so an operator can force a pass and see what had been lost.
 
 Routed to architecture as
-`reviews/SUBSCRIPTION-SATURATION-AND-THE-LAYER-BOUNDARY-2026-09-07.md`, because the parts we
+`docs/outbox/SUBSCRIPTION-SATURATION-AND-THE-LAYER-BOUNDARY-2026-09-07.md`, because the parts we
 cannot fix here are the parts that matter most: a subscriber cannot discover a publisher's ring
 size or observe its drop counter, so our adaptive rate is a blind timer standing in for a
 feedback loop.
@@ -348,7 +348,7 @@ unattended.
 with how long the peer has been idle (up to the 10-minute ceiling). `resync` / **Pull now** forces
 it immediately and is the answer if you do not want to wait.
 
-Background: `reviews/FIRST-CHANGE-AFTER-RESTART-IS-LOST-2026-09-03.md`, whose title is now wrong
+Background: `docs/outbox/FIRST-CHANGE-AFTER-RESTART-IS-LOST-2026-09-03.md`, whose title is now wrong
 and which carries a correction banner; two hypotheses are refuted there and remain refuted.
 
 ---

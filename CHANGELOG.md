@@ -7,6 +7,39 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.10.0] — 2026-09-20
+
+The largest span since the project started, and the theme is **two machines**: sharing a
+folder, publishing a site or a feed, and reading somebody else's — each of them end to end,
+with a surface a person can reach.
+
+The version is a minor bump rather than a patch because three behaviours changed in ways an
+existing caller can notice; the exported Go API itself is additive, with nothing removed,
+renamed or re-signatured. *Breaking* is measured against the surface this project promises to
+keep — the shipped binaries' verbs, flags, exit codes and `-json` output, the exported Go API of
+`entitysdk`, and the on-disk and in-tree shapes we author for something else to read back. The
+README states it in full; internal packages, console prose and panel layout are outside it.
+
+### Changed in ways that can break an existing caller
+
+- **Publishing with a path or type filter is now refused rather than honoured.** A signed
+  root commits to the closure of everything it names, so a filtered publish would either
+  upload the filtered-out bytes anyway — disclosing what the operator asked to withhold —
+  or serve a root whose walk ends early, which a reader cannot tell from an origin
+  withholding data. Narrowing what you publish is what the publish prefix is for.
+- **A site authored through the SDK is stored one path segment shallower.** Sites live under
+  the `sites/` prefix, which is where the site convention reserves them and where every
+  reader in this ecosystem already looked; the SDK had been writing them one level deeper,
+  under a namespace belonging to a different extension. A site written by 0.9.0's SDK is not
+  found by 0.10's readers — and was not found by 0.9.0's own browser either, which is how
+  the discrepancy surfaced.
+- **A peer's delivery queue is sixteen times larger by default**, which costs roughly 20 MB
+  of memory per peer and is what stops a burst of files being dropped before it reaches the
+  network. One mounted file costs about eight queue slots, not one — the old default was
+  sized as though it were one.
+
 ### Added
 
 - **Figures.** A site's `assets/` subgraph is read, and the site convention's embed
@@ -80,6 +113,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **The documentation is reorganised, and the quickstart now works from a clean clone.**
+  `README.md`'s first command was a placeholder rather than a real one and did not mention
+  the sibling checkout the build cannot work without; both clone URLs are now there, and
+  `make doctor` — which the quickstart tells you to run first — prints the command that
+  fixes a missing sibling instead of only naming the problem. The version section stated
+  one number where the tree has three (a working version, an unreleased changelog entry,
+  and the newest tag) and now states the relationship between them. Found by cloning the
+  repository into an empty directory and following it, which is the only way these surface.
+- **What this codebase cost to learn is now published, as `docs/agents/memory/`.** Thirteen
+  topic files and an index, covering the build, the test harness, the GUI toolkit, crash
+  forensics, folder sync, capabilities, the SDK, publishing, the social conventions, and
+  cross-repository work. Every entry leads with the symptom you would actually observe,
+  states the mechanism before the fix, and points at code. They were previously a single
+  279 KB `AGENTS.md`, which is nine times the size an agent context budget assumes and past
+  the point where some tooling truncates a project document without saying so; the content
+  moved unchanged.
+
 - **The browser is roughly an order of magnitude faster to navigate.** Measured against
   the live federation: opening a page 7.3 s → 2.4 s, following a link 6.2 s → 0.36 s,
   going back 5.9 s → 0.23 s. The verification is unchanged; what changed is that a
@@ -105,7 +155,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   saved layout could not be read rather than quietly opening on the defaults.
 - **A peer is only shown as connected when we can actually reach it.** A session the far
   peer opened to us is no longer reported as a working connection, because that is exactly
-  the state in which sharing is half-broken.
+  the state in which sharing is half-broken. The direction now comes from the connection
+  itself rather than from our memory of having dialled, so a connection that drops mid-session
+  stops being reported as a route — and is re-established by the next pass instead of waiting
+  for someone to reconnect by hand.
+- **A mount says whether its watcher is actually running**, in the shell and in the desktop
+  app, with the reason when it has failed. A mount whose watcher has stopped looks healthy in
+  every other respect and silently produces no more documents, which was previously the one
+  thing no surface could tell you. Three states are kept apart rather than two: running,
+  stopped, and *no watcher has ever reported for this folder* — they send you to different
+  places.
+- **`mounts` counts mounts.** It had been counting every entity in the configuration
+  namespace, so a peer with two mounts could report four while listing two.
 
 ### Fixed
 
@@ -159,14 +220,36 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - The incoming leg of a sync carries no rollback witness, so an out-of-order delivery is
   followed rather than refused. The statically published road does refuse one. Every
   folder reading says which of the two it is.
-- A folder's conflict rule can be set from the shell and from no control in the desktop app.
-- Reading feeds is one implementation against one publisher; there is no mirror, and no
-  verb removes an entry once posted.
+- Reading feeds is one implementation reading one publisher, and no verb removes an entry
+  once posted. Republishing somebody else's entries — so a reader who cannot reach the author
+  can still verify who wrote them — works and is reachable from nothing: there is no command
+  and no control for it.
+- A feed entry posted since the last publish is invisible to readers, with no warning, in a
+  way that looks identical to never having posted. Publishing again makes it visible; the
+  feed listing says when your published root has fallen behind what you have written.
 - Version history is recorded and never pruned. A file rewritten continuously will grow it
   until a per-path budget stops recording for that path, which keeps the oldest versions
   and loses the newest — the folder reading says when this has happened and what to do.
+- **Eight tests fail on a clean checkout, in two suites, and the causes are known.** Four are
+  in the shell's browse surface and are not about this code at all: they read a frozen copy of
+  another implementation's federation, whose signed name bindings carry a real 30-day lifetime
+  and lapsed on 2026-09-20. They fail at the freshness step, correctly, and the test says so in
+  those words rather than leaving you to find it. Repairing it needs a fresh emission from that
+  implementation, which has been requested. The other four — three in the SDK and one in the
+  shell — are a cross-peer continuation being refused by the layer below this one, reported
+  upstream and not yet fixed there; the fourth of them presents differently and its cause is
+  honestly still unknown. Everything else passes.
+- **173 of the 177 short-SHA citations in the published documents do not resolve for a
+  reader of the public history**, which is authored fresh at the release boundary — so they
+  are provenance notes, not links you can follow. 0.9.0 disclosed 117 of them; the count is
+  larger here because the documents grew, not because anything regressed. **116 are in
+  `docs/STATUS.md`**, the rolling engineering log, which is published deliberately: it is
+  written for the next working session first, and it cites the commits that session would
+  look up. The remaining 57 sit in the framework documents, where each pins the defect that
+  earned a rule, and those are the ones being converted to content-addressed citations
+  first — a dead reference costs a stranger something there.
 
-## [0.9.0]
+## [0.9.0] — 2026-08-25
 
 The first release since `v0.8.0`. The theme is **reach**: several arcs that were
 complete at the model layer but had no surface a person could touch now have one,
@@ -275,6 +358,6 @@ Stated because they are real and reproducible, not because they are comfortable:
 
 ---
 
-## [0.8.0]
+## [0.8.0] — 2026-06-21
 
 - Initial public research-preview release.

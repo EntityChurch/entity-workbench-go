@@ -43,7 +43,7 @@ const (
 // `Direction` was declared and left **empty** from the day this file was
 // written, with a note saying core-go's `Connections()` concatenates both
 // directions without tagging them. That was true, it was routed
-// (`reviews/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md`), and
+// (`docs/outbox/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md`), and
 // core-go answered it with `Connection.IsOutbound()` / `Direction()`,
 // recorded once in `PerformConnect` and therefore dialer-only (their tracker
 // row 13). It is populated now.

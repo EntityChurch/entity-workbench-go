@@ -20,7 +20,7 @@ package programs
 // (entitysdk/exp_compute_snake_test.go — the frozen experiment record
 // that also carries the oracle-equivalence + replay-determinism proofs;
 // lowering rules F-D1/F-E2 are annotated there and in
-// docs/architecture/reviews/COMPUTE-PROGRAM-POC-FINDINGS-2026-07-15.md).
+// docs/archive/outbox/COMPUTE-PROGRAM-POC-FINDINGS-2026-07-15.md).
 //
 // Tick loop = host-clocked explicit eval + tree put (NEVER a reactive
 // install on the state path — the §4 cascade rule).

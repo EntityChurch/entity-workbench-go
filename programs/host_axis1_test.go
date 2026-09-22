@@ -2,7 +2,7 @@ package programs
 
 // TIER: integration (TESTING-STRATEGY) — real peer, store, evaluator.
 //
-// THE AXIS-1-ENGINE HOST (reviews/COMPUTE-SHARDING-INTO-HOST-2026-07-18.md §6
+// THE AXIS-1-ENGINE HOST (docs/outbox/COMPUTE-SHARDING-INTO-HOST-2026-07-18.md §6
 // item 2). Every sharded wall-time number so far (§5 Life 64×64, §5a the heavy
 // field, §7 the chain) was taken with the host evaling through Stage-1
 // `system/compute`. The review flagged this as the interpreter floor, not the

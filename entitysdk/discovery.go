@@ -37,9 +37,13 @@ var DiscoveryCandidateMaxAge = 15 * time.Second
 // the IPv4/IPv6 lists from its return signature, and we need them to
 // dial cross-LAN peers whose announced HostName (e.g.
 // `peer-host.lan.local.`) only resolves under nss-mdns / avahi-
-// daemon. When core-go expands its decoder to surface IPs (routed to
-// upstream in reviews/FEEDBACK-CORE-GO-DECODE-ENDPOINT-HINT-IPV4-*),
-// this mirror goes away.
+// daemon. When core-go expands its decoder to surface IPs, this mirror
+// goes away. [unverified: this comment used to cite a packet stem
+// `FEEDBACK-CORE-GO-DECODE-ENDPOINT-HINT-IPV4-*` that resolves to no
+// file in this repo's outbox or archive, and to nothing in git history
+// — checked 2026-09-17. The ask may have been routed under another
+// name or never sent; a citation the reader cannot resolve is worse
+// than none, so it is removed rather than re-pointed on a guess.]
 //
 // CBOR field tags MUST match the upstream struct verbatim or decoding
 // silently drops fields.

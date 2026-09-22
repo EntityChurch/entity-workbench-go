@@ -229,6 +229,8 @@ doctor:
 		echo "FAIL  $(PARENT)/entity-core-go missing (needs core/ and ext/)"; \
 		echo "  $(shell printf '%22s' '')     every go.mod replaces the kernel to ../../entity-core-go;"; \
 		echo "  $(shell printf '%22s' '')     without it the build dies at module resolution."; \
+		echo "  $(shell printf '%22s' '')     fix:  git clone https://github.com/EntityChurch/entity-core-go \\"; \
+		echo "  $(shell printf '%22s' '')                 $(PARENT)/entity-core-go"; \
 		fail=1; \
 	fi; \
 	printf '  %-22s ' "avalonia image"; \

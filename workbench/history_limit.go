@@ -39,7 +39,7 @@ import (
 // reclaim them: a transition is not in the location index at all — only
 // the head pointer is — so there is nothing to remove and no garbage
 // collector in the cohort to remove it. Routed as
-// `reviews/CORE-GO-HISTORY-MAXDEPTH-PRUNES-NOTHING-2026-09-07.md`.
+// `docs/outbox/CORE-GO-HISTORY-MAXDEPTH-PRUNES-NOTHING-2026-09-07.md`.
 //
 // So the only lever that actually bounds disk is to stop adding, and the
 // honest way to say that is: **this guard trades the RECENT history of

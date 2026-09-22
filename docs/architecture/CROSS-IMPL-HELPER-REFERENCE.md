@@ -30,7 +30,7 @@ For each helper:
 When porting: read the Go source + tests against this doc. If
 behavior diverges from this doc, treat *this doc* as the convergence
 target (or raise a divergence as a cross-impl coordination item per
-D8 cadence — file in your repo's `reviews/` as a feedback memo to
+D8 cadence — file in your repo's `docs/outbox/` as a feedback memo to
 this file).
 
 ---

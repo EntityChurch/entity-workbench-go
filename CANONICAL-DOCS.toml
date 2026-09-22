@@ -1,11 +1,14 @@
 # Canonical docs manifest for entity-workbench-go.
 #
 # Declares the *publishable* canonical doc surface so the content leaf can
-# ingest these instead of hand-authoring prose about them. Absence is the
-# honest default: only docs ready for public eyes are listed here. Everything
-# else under docs/architecture/ (status snapshots, reviews, EXPLORATION-*,
-# PROPOSAL-*, design notes, phase plans) is ephemeral and is scrubbed by the
-# release builder's path/name patterns — intentionally not listed.
+# ingest these instead of hand-authoring prose about them.
+#
+# READ THIS BEFORE REMOVING A LINE: this file is a KEEP-LIST, so an omission is
+# an act of DELETION against anything already public. "Absence is the honest
+# default" is true only of a document that has never published. Everything else
+# under docs/ that is not named here (dated status snapshots, handoffs,
+# outbound packets, design notes) is ephemeral and is scrubbed by the release
+# builder's path/name patterns — intentionally not listed.
 #
 # Schema mirrors docs/release-readiness/CANONICAL-DOCS-FORMAT.md (meta).
 # Paths are repo-relative (resolved against this manifest's location).
@@ -29,6 +32,57 @@ of these shapes; the workbench is an opinionated demonstration, and the
 documents below are the disciplines and patterns that demonstration holds
 itself to — offered as a worked example, not a standard to conform to.
 """
+
+# ---------------------------------------------------------------------------
+# AREAS — what each directory IS, so a check does not have to guess.
+#
+# Declared 2026-09-17 on the ecosystem doc standard. The default rules carry
+# one idea of where docs live — dated docs belong under a path segment named
+# `status` — and this repo keeps two directories that are dated BY DESIGN and
+# are not status: the outbound packet corpus and its archive. Declaring them is
+# how a correct layout stops reading as a few hundred violations.
+# ---------------------------------------------------------------------------
+
+[[area]]
+path      = "docs/status"
+kind      = "status"          # dated, episodic, ages out
+publishes = false
+
+[[area]]
+path      = "docs/outbox"
+kind      = "outbox"          # routing — packets we have SENT. NEVER published.
+publishes = false
+
+[[area]]
+path      = "docs/archive/outbox"
+kind      = "archive"         # dated BY DESIGN; does not age out
+publishes = false
+
+[[area]]
+path      = "docs/agents/memory"
+kind      = "memory"          # the accumulated findings, by topic
+publishes = true
+
+[[area]]
+path      = "docs/architecture"
+kind      = "reference"       # undated / living — edited in place
+publishes = true
+
+# ---------------------------------------------------------------------------
+# LIVING — durable files, edited in place, that would otherwise read as stale
+# dated docs. `internal = true` is the case that had no honest answer before:
+# a counterpart tracker is durable AND must never publish, and the only way to
+# silence the staleness check used to be to declare it canonical — which
+# publishes it.
+# ---------------------------------------------------------------------------
+
+[[living]]
+glob     = "docs/status/TRACKER-*.md"
+internal = true               # durable, edited in place, and NOT published
+
+[[living]]
+path = "docs/STATUS.md"       # declared canonical below; this says it is not a dated snapshot
+
 
 # ---------------------------------------------------------------------------
 # Root documents — the standard eight, declared 2026-08-24.
@@ -82,7 +136,7 @@ group = "Project"
 [[doc]]
 path  = "AGENTS.md"
 title = "Agent guidance — this repo"
-blurb = "The repo-specific working guidance: build/test entry points, boundaries, and the gotchas that were each paid for once."
+blurb = "The repo-specific working guidance: how the build and test entry points are driven, where each kind of knowledge lives, the project layout, and the boundaries. Deliberately bounded — the accumulated findings live in the Memory group below."
 group = "Agent guidance"
 
 [[doc]]
@@ -100,7 +154,7 @@ group = "Agent guidance"
 [[doc]]
 path  = "CLAUDE.md"
 title = "CLAUDE.md"
-blurb = "The Claude-specific entry point; it imports the two AGENTS files and adds nothing of its own."
+blurb = "The Claude-specific entry point — a one-line shim importing AGENTS.md, and nothing else."
 group = "Agent guidance"
 
 # ---------------------------------------------------------------------------
@@ -200,6 +254,17 @@ group = "Usage guides"
 # part of declaring it). It is also the one document in this repo written by
 # transcription from a real two-peer session rather than from the code, which
 # is what makes its limitations section trustworthy.
+# Declared 2026-09-20. This one is NOT at a doc root, so the keep-list would never have
+# dropped it — it publishes either way. That is exactly why it is listed: prose nested
+# inside a source tree reaches a reader with nothing in the manifest saying it was meant
+# to. Declared so that what publishes is stated rather than incidental. (Its sibling
+# README-SHARING.md below was already declared; the pair reading differently was the tell.)
+[[doc]]
+path  = "avalonia/README.md"
+title = "The Avalonia desktop frontend"
+blurb = "What the desktop renderer is and how to start it: the thin-I/O-layer rule that keeps business logic renderer-neutral, the panel and bridge inventory, the run routes from the repo root, and why the tview renderer is kept frozen rather than held to parity."
+group = "Usage guides"
+
 [[doc]]
 path  = "avalonia/README-SHARING.md"
 title = "Sharing a Folder — Run It, Test It, Validate It"
@@ -336,3 +401,100 @@ path  = "docs/STATUS.md"
 title = "Status"
 blurb = "The rolling engineering log: what the tree measures at today, what is open, and what is waiting on whom."
 group = "Project"
+
+# ---------------------------------------------------------------------------
+# Memory — the accumulated findings, split out of AGENTS.md on 2026-09-17.
+#
+# Declared because the doc standard requires every memory file to be declared,
+# and because AGENTS.md publishes and points at each of these by name: an
+# undeclared target of a published instruction is a link that ships broken.
+#
+# These publish deliberately. They are the honest record of what this codebase
+# cost to learn — every entry was paid for by a defect that shipped or by a
+# measurement that contradicted what we believed — and that is worth more to
+# someone evaluating the project than any amount of polished overview prose.
+# ---------------------------------------------------------------------------
+
+[[doc]]
+path  = "docs/agents/memory/INDEX.md"
+title = "Memory — index"
+blurb = "The map of what this codebase cost to learn: which topic answers which symptom, how an entry is written, and the rule that bounds the whole directory — an entry that could become a check should become one, and is then deleted from here."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/BUILD-AND-ENVIRONMENT.md"
+title = "Memory — build & environment"
+blurb = "Toolchain pins, the sibling-checkout requirement, what each entry-point target does, and the build-output traps that make you measure the wrong binary."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/TESTING-AND-SWEEPS.md"
+title = "Memory — testing & sweeps"
+blurb = "How to get a true reading of the tree's state: which targets report a lower bound rather than a count, the container collider that makes a healthy tree look catastrophically broken, the load-dependent failures and how to tell one from a regression, and what each harness gate can and cannot reach."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/AVALONIA-GUI.md"
+title = "Memory — Avalonia GUI"
+blurb = "Panel construction and the framework behaviours that shipped defects while every test stayed green: handlers that are accepted and never invoked, templates called with null during teardown, fields dropped in silence at the serialization boundary, and the layout floor that made controls unreachable."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/CRASH-FORENSICS-AND-SIGNALS.md"
+title = "Memory — crash forensics & POSIX signals"
+blurb = "What a .NET/Linux crash reports versus what it means: why the signal reaching the core dump is not the one that faulted, why a printed frame count is a lower bound, alternate signal stacks and the threads no managed hook can reach, and the cgo argument-lifetime rule whose violation does not crash."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/FOLDER-SHARING-AND-SYNC.md"
+title = "Memory — folder sharing & sync"
+blurb = "The declare-then-reconcile control loop and what it took to make two machines agree: direction as a property of one shared object, conflict detection and what the default must not do, delivery saturation and the catch-up that turns a loss into a delay, and why a peer that cannot be dispatched to must never render as connected."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/MOUNTS-AND-LOCAL-FILES.md"
+title = "Memory — mounts & local files"
+blurb = "The two layers of a mount and why a single count reads the one that cannot fail, what must be persisted to survive a restart, watcher liveness, and the cost model of history recording."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/CAPABILITIES-AND-GRANTS.md"
+title = "Memory — capabilities & grants"
+blurb = "The four dimensions of a grant, what an absent one defaults to and why that default once stopped every file transfer in the product, the per-peer policy table and when it is assembled, and the test fixture whose wildcard deleted an entire stage of the product from the suite."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/SDK-AND-STORE.md"
+title = "Memory — SDK & store"
+blurb = "Addressing and path qualification: which helpers route remotely, why an already-absolute path must pass through unchanged, why a derived index over a persistent store is empty after a restart with nothing in the read path to say so, and the SDK shape rules."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/PUBLISHING-AND-CONSUMING.md"
+title = "Memory — publishing & consuming"
+blurb = "The static corridor and the live road: minting a signed root and the guard that could never fire, the ranked transport ladder, one verification stack for both roads, content-addressed caching, and the refusals that read as rigor while being wrong about the world."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/FEED-AND-SOCIAL-CONVENTIONS.md"
+title = "Memory — feed & social conventions"
+blurb = "The embed, feed and data-exchange conventions: what agrees with another implementation byte for byte and how that was established, what a curated content set is and why deriving it from a prefix disclosed things nobody meant to publish, and which reader obligations still have no gate here."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/PROGRAMS-AND-COMPUTE.md"
+title = "Memory — programs & compute"
+blurb = "The programs track: the input-port contract and why a value offered between ticks was never observed, why a deterministic substrate makes a randomizer a hash and a linear hash a translation, and the compute-error position rules."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/CROSS-REPO-ROUTING.md"
+title = "Memory — cross-repo routing"
+blurb = "Working across repository boundaries: why delivery is a fact and addressing something is an intention, why a backlog delivered all at once is a scheduling decision imposed on somebody else, marking which sentences in a packet are measured, and pricing work against the substrate rather than against our own tree."
+group = "Memory"
+
+[[doc]]
+path  = "docs/agents/memory/DOCS-AND-PUBLICATION.md"
+title = "Memory — docs & publication"
+blurb = "This manifest as a published artifact rather than configuration, why an omission from a keep-list is an act of deletion, and where project state actually lives."
+group = "Memory"

@@ -48,7 +48,7 @@ import (
 // machinery and is the user's.
 //
 // **What building it taught, routed to arch rather than resolved here**
-// (see `docs/architecture/reviews/`): the proposal's `identity_hint MUST
+// (see `docs/outbox/`): the proposal's `identity_hint MUST
 // be absent` was written against a carrier with no signed container, and
 // core-go's has one (§6.3, `ext/signaling.ClassifyCollected`) — so a
 // verified counterpart identity is available at the mailbox and this

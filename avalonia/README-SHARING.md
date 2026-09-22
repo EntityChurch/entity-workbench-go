@@ -220,7 +220,7 @@ this project describing its own test harness, which dials explicitly for
 determinism, as though it were the operator's flow.
 
 That the *mechanism* costs a reconnect at all is a design smell and is
-routed as such (`reviews/LIVE-GRANT-REFRESH-2026-09-08.md`): a permission
+routed as such (`docs/outbox/LIVE-GRANT-REFRESH-2026-09-08.md`): a permission
 change should not require destroying a working connection, and it should
 certainly never surface as an instruction.
 

@@ -806,7 +806,7 @@ func writePolicyIfChanged(st *workbench.Store, peerID string, grants []types.Gra
 // The workaround was a process-scoped set of peers we had dialled, because
 // core-go's `Connections()` concatenated both directions without tagging
 // them and `IsConnected()` conflated the pool with the §6.11 reentry map.
-// We routed that (`reviews/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md`)
+// We routed that (`docs/outbox/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md`)
 // and **core-go answered it**: `Connection.IsOutbound()` / `Direction()`,
 // recorded once in `PerformConnect`, dialer-only (their tracker row 13).
 //

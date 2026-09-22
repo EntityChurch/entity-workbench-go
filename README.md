@@ -8,8 +8,12 @@ lift from, or ignore.
 
 ## Quickstart
 
+**Clone both repos into the same parent directory.** This one does not build on
+its own — see [Repository layout](#repository-layout-sibling-dependency) for why.
+
 ```bash
-git clone <this repo>                    # and its sibling, see "Repository layout"
+git clone https://github.com/EntityChurch/entity-workbench-go
+git clone https://github.com/EntityChurch/entity-core-go      # the required sibling
 cd entity-workbench-go
 
 make doctor      # is this machine set up? names anything missing, exits non-zero on blockers
@@ -218,10 +222,19 @@ per-`go.mod` `replace` directives above.
 
 ## Versioning
 
-Module / app version is **0.9.0** (preview); the previous release, `v0.8.0`, is
-tagged. A tag is a release act, reserved for the release cut — it is not applied
-to a docs or tooling change. What each release contains is in
-[`CHANGELOG.md`](CHANGELOG.md).
+This tree is **0.10.0**. Releases are three-field `MAJOR.MINOR.PATCH` with
+`MAJOR` held at `0`, and a release is a tag — never a push, and never applied
+to a docs or tooling change. So the newest tag can lag the version the tree
+calls itself, and the top section of [`CHANGELOG.md`](CHANGELOG.md) is the
+honest statement of which is which: a section headed with a date is released,
+`[Unreleased]` is not.
+
+**What we promise across a version** is the command surface of the shipped
+binaries (verbs, flags, exit codes, `-json` output), the exported Go API of
+`entitysdk/`, and the on-disk and in-tree shapes we author that something else
+reads back. Every other package is internal and is refactored freely; console
+prose, panel layout and the development `make` targets are not promises. Each
+release says in one line whether it breaks any of that.
 
 The number tracks the Go reference implementation this repo builds on
 (`entity-core-go`, and `-py` / `-rust` alongside it), which moved to semantic
