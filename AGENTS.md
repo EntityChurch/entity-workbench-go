@@ -37,7 +37,7 @@ D12–D27 here are ours, earned on the eight crash-hunt commits, two feedback ep
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP75, and the promotion
+  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP76, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -133,6 +133,16 @@ one — name the recurring cycle first, then let each step own one lever of it.
   5 when it was 171. `make test-each` exists precisely so the correct thing is also the easy
   thing; it replaces the hand-typed `for t in sdk inspect …; do make test-$t; done` loop this
   file used to make you remember.
+- **NOTHING ELSE MAY RUN A PODMAN TARGET WHILE A SWEEP IS RUNNING — not `make -C avalonia
+  test`, and not `lint`, `textual`, `build` or any other `:Z` target either.** The rule below
+  used to name the avalonia suite only, and on 2026-09-07 a session read that as "the avalonia
+  suite is the collider", ran `make textual` and `make lint` during a `test-each`, and got a
+  sweep reporting **9 of 10 suites `FAIL 0s` with no log files at all** — a different
+  presentation from the one documented below, same cause, and it reads as a catastrophic
+  regression rather than as an environment fault. **The collider is the second `:Z` mount, not
+  the target that happens to make it.** The tell that it is not your code: a suite that
+  "failed" in **0s**, or a missing `.test-logs/<suite>.log`. Start a sweep, then keep your
+  hands off podman until it prints its table.
 - **Never run `make test-each` and `make -C avalonia test` at the same time.** Both bind-mount
   this tree into podman with `:Z` (private SELinux relabel), and the second relabel revokes the
   first container's access mid-run: every suite after the first reports as failed with
@@ -502,7 +512,22 @@ one — name the recurring cycle first, then let each step own one lever of it.
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
 - The project measures everything against the **27 disciplines (D1–D27)**, ten review
-  questions, and anti-pattern catalog (AP1–AP75) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+  questions, and anti-pattern catalog (AP1–AP76) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+- **A COPY OF A LIVE SQLITE STORE IS NOT THE STORE, AND THE MISSING WRITES READ AS ZERO ROWS**
+  (AP76). File-backed `SqliteStore` opens **WAL** (`core/store/sqlite.go`, `buildSqliteDSN`
+  defaults `JournalMode` to `"WAL"`), so everything since the last checkpoint is in the `-wal`
+  sidecar. `podman cp /data/store.db` then `sqlite3` on the copy therefore answers a question
+  about a store that does not exist — **measured at the same instant on the same store: 0 rows
+  naming the file from the main file alone, 2 with `-wal` alongside.** That is how *"the
+  receiving peer binds no file entity"* was reported as the blocker ahead of M3, with four
+  further conclusions built on it, when the receiver binds correctly in every configuration.
+  Copy the sidecars, read the file in place, or ask the running peer. Two generalisations,
+  both worth more than the recipe: **silence from a new instrument is a claim about the
+  instrument first** — before an absence becomes a finding, point the same instrument at a
+  case you know is populated (the publisher's own binding was right there and would have
+  failed identically) — and **when you have just finished proving that every surface lies, the
+  replacement you reach for needs its own control arm**, because the reasoning that retired
+  the surfaces is exactly what makes the new instrument feel beyond question.
 - **A model with no shipped surface is not shipped** (D23). Landing a renderer-neutral model
   is half a feature; the other half is a verb, panel, or menu entry a user can reach, in the
   same session. Three times now — the name arc, the handler browser, `PeerLiveness` — every
@@ -809,6 +834,48 @@ one — name the recurring cycle first, then let each step own one lever of it.
   `404 no_mount_for_uri` — a mount that listed as healthy and had silently stopped producing
   documents. `Mount` writes it, `Unmount` removes it (or the unmount undoes itself at the next
   launch), and every failure path in between unwinds it.
+- **HISTORY RECORDING IS OPT-IN PER PATH, AND NOTHING IN THE MOUNT/SYNC/SHARE PATH TURNS IT
+  ON** — which is the whole distance between where M3 is and where it needs to be. The
+  recorder tracks a path only when a `system/history/config` entity matches it
+  (`ext/history/config.go`, `configCache.find`); with no config a query returns **empty and no
+  error**, which reads exactly like "the tree kept nothing". `DOMAIN-LOCAL-FILES` §1.1a — our
+  own WB-25 closure — rules that a concurrent same-path write is last-arrival-wins at the FS
+  surface with **both writes recorded at distinct chain positions**, and *the substrate already
+  delivers that in full the moment recording is enabled.* Measured
+  (`shellboot/concurrent_edit_baseline_test.go`), receiver's chain after a concurrent edit:
+  `[0] updated local/files:write` (the delivery, which won on disk) · `[1] updated
+  local/files:watch` (the receiver's own edit, **preserved and byte-recoverable**) ·
+  `[2] created local/files:write` (the seed). **The `handler`/`operation` on a transition is
+  already the provenance discriminator conflict detection needs** — a local edit arrives
+  through the WATCHER, a delivered one through `blob_resolve`'s dispatch — so "they edited
+  this" and "I am behind" are distinguishable today, at zero cost, and that distinction is
+  what the whole milestone turns on. Known limit, invisible from the field name: a local
+  caller dispatching `local/files:write` directly records as a delivery; nothing in the
+  shipped flow does that. So M3 is **not** "build a merge engine": the tree-side guarantee is
+  already met and had simply never been switched on. **`shellcmd/folder_history.go` switches
+  it on**, as a derived output of the reconciler — a folder that `Receives()` and is mounted
+  gets a config for its mount prefix. `Receives()` and **not** `IsLocal()`, and here the two
+  genuinely differ: `share` declares the OWNER's folder `both`, so either side of a shared
+  folder can be overwritten and both record, while keying on `IsLocal()` would leave the owner
+  — whose files these actually are — as the one side with no chain. A **send-only** folder
+  gets none, because one writer means an entity per save forever answering no question. What
+  is left of M3 is: branch at `blob_resolve.go`'s existing F9 *different* arm, write keep-both
+  under the spec's `{path}.keep-both-{hash8}`, then layer `EXTENSION-REVISION`. This is D20
+  aimed at the kernel one more time: **grep `../entity-core-go` for the mechanism before
+  pricing the build.**
+- **`history query` IS the recovery surface, so it has to take the paths people type and say
+  who wrote each position.** Both were broken and both were found by running the flow, not by
+  reading it (AP71's shape). It passed its argument to the handler **raw**, so `@alias/…`
+  matched nothing and the operator got *"(no transitions recorded — is a config installed?)"*
+  — a confident diagnosis pointing at the one thing that was fine. A **bare** path must keep
+  passing through untouched (the store canonicalizes it against the local peer, which works
+  from any WD; `sh.Resolve` on a bare path at the REPL root yields `/local/files/…` with no
+  peer in it and matches nothing), so `historyPath` resolves the `@` form **only**. And the
+  renderer dropped `Handler`/`Operation`, which the recorder has always carried: on a shared
+  folder that column is the whole operator story — `local/files:watch` is *you edited this*,
+  `local/files:write` is *their copy replaced yours*. Note the harness consequence: a chain
+  assertion that only counts positions is satisfied by four DELIVERIES, so assert that both
+  provenances appear.
 - **A SUBSCRIPTION IS A FUTURE TENSE — `sync` now BACKFILLS, and before it did the share
   transferred every file except the ones in the folder** (AP65). `Sync` subscribed on
   `created`/`updated` only, so a folder that already had files in it delivered **nothing**: no

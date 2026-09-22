@@ -74,7 +74,7 @@ export GOTOOLCHAIN ?= go1.25.1
 # includes the same file and uses the caps on every podman build/run.
 include caps.mk
 
-.PHONY: crossimpl-go twopeer-sync threepeer-sync gui-drive twopeer-gui consume-live workbench-test console-build console-run test test-each test-each-native test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native lint-perfreview fmt-native
+.PHONY: crossimpl-go twopeer-sync threepeer-sync conflict-semantics gui-drive twopeer-gui consume-live workbench-test console-build console-run test test-each test-each-native test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native lint-perfreview fmt-native
 
 # ============================================================
 # make + podman — bare-box entry points
@@ -724,6 +724,26 @@ twopeer-sync:
 #   KEEP_UP=1 ...                                       # leave them up
 threepeer-sync:
 	bash scripts/threepeer-sync.sh
+
+# conflict-semantics — what happens when two peers change the same file,
+# measured against DOMAIN-LOCAL-FILES §1.1a rather than against a guess.
+#
+# The spec SPECIFIES this and we drove the ruling (WB-25): last-arrival
+# wins at the FS surface, both writes recorded in the tree at distinct
+# chain positions, no automatic merge, and EXTENSION-REVISION is where
+# collaborative-edit semantics live. twopeer-sync's PHASE 8b said "there
+# is no specified behaviour to assert against yet" — that sentence was
+# false and is why this sat parked.
+#
+# The harness answers the guarantee that decides what we are looking at:
+# are the superseded bytes still in the loser's tree (divergence
+# recorded, conflict tracking buildable) or gone (data destroyed)?
+#
+# It found something larger: the receiving peer binds NO file entity for
+# a delivered file, by either the backfill or the live path. See
+# reviews/CONFLICT-SEMANTICS-LANDSCAPE-2026-09-06.md.
+conflict-semantics:
+	bash scripts/conflict-semantics.sh
 
 # gui-drive — press buttons in the REAL Avalonia app from outside the
 # process, and read back what the window says.

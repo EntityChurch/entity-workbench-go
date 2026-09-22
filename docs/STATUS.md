@@ -1,8 +1,10 @@
 # entity-workbench-go — status
 
-_Updated: 2026-09-06 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
+_Updated: 2026-09-07 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
-> **Start here:** **§14 — three peers**, then
+> **Start here:** **§16 — the blocker was the instrument, and M3 is much smaller than we
+> priced it**, then **§15 — the receiver stores nothing (SUPERSEDED by §16)**, then
+> **§14 — three peers**, then
 > **§13 — the SIGSEGV, named**, then
 > **§12 — the two-peer flow, by pressing buttons**, then
 > **§11 — the GUI can be driven now**, then
@@ -31,7 +33,218 @@ _Updated: 2026-09-06 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
 
-## §14 NEW (2026-09-06) — three peers: fan-out and a chain work, `Mode: both` does not run backwards
+## §16 NEW (2026-09-07) — the blocker was the instrument, and the milestone it blocked is mostly already built
+
+Three things, and the third is the one to carry forward.
+
+### 1. There is no M2b. The receiver binds correctly, and always did.
+
+§15 reported *"the receiving peer binds no file entity"* as the thing standing between us and
+concurrent-edit work, and inserted a milestone ahead of it. **It is not a defect.** The
+measurement was a `podman cp` of a live SQLite store followed by `sqlite3` on the copy.
+File-backed stores open **WAL**, so every write since the last checkpoint lives in the `-wal`
+sidecar, which did not come along — and the missing rows come back as **zero rows with no
+error**. Measured on one store at one instant: **0 rows naming the file from the main file
+alone, 2 with `-wal` beside it.**
+
+The asymmetry that made it convincing is exactly what WAL predicts. The publisher's binding
+was older and checkpointed; the receiver's was seconds old and still in the log. So the
+artifact presented as a clean structural finding about one side of the pipeline.
+
+Refuted three independent ways: the receiver's live location index holds the binding in **all
+four** configurations that differ from the in-process tests (memory/sqlite × symmetric and
+asymmetric root names); the measurement error reproduces exactly on demand; and an **already
+green** gate — `TestBackfill_FilesAlreadyInTheFolderArrive`, asserting `AlreadyCurrent == 4`
+after a resync — can only pass if the receiver binds. It had been passing the whole time.
+
+**Four conclusions built on it are void with it.** F9's already-current check is not dead
+code. `resync`'s "everything already current" does fire. And neither `Mode: both`'s missing
+receiver → owner leg nor first-change-after-restart is explained by this; both are open again
+on their own terms, which for `Mode: both` means the measurement §14 already recorded — the
+owner holds no sync binding naming the receiver (`receiveFromPeers`, `shellcmd/reconcile.go`).
+
+The thing that was real: **every sync test in this tree asserted bytes on disk and none read
+the receiver's tree.** The whole tree-side half of the receive path had zero coverage, which
+is why a claim that it did not work at all was consistent with a fully green suite.
+`shellboot/receive_binds_e2e_test.go` closes that, and additionally asserts the two peers'
+blob hashes are **equal** — the property everything downstream actually needs — plus that the
+`ls` verb agrees with the index, since the containerised harness has no way to read a peer's
+store (the alpine image ships no `sqlite3`) and has to ask the shell.
+
+Catalogued as **AP76**. The two generalisations are worth more than the recipe: **silence from
+a new instrument is a claim about the instrument first** — point it at a case you know is
+populated before an absence becomes a finding; the publisher's own binding was right there and
+would have failed identically — and **when you have just finished proving that every surface
+lies, the replacement needs its own control arm**, because the reasoning that retired the
+surfaces is what makes the new instrument feel beyond question. That is precisely how it
+happened: the session had correctly established that `info`, `mounts`, `subscription ls` and
+`inspect errors` each gave a wrong answer that day, and reached for "read the store directly"
+as the trustworthy floor. Right instinct, wrong floor.
+
+### 2. The concurrent-edit guarantee is already met by the substrate. It was never switched on.
+
+The measurement nobody had run, and it reframes the milestone
+(`shellboot/concurrent_edit_baseline_test.go`). With history recording enabled on a mount
+prefix, a concurrent same-path edit already produces exactly what `DOMAIN-LOCAL-FILES` §1.1a
+rules — last arrival wins on disk, **both writes at distinct chain positions**, and the
+overwritten bytes byte-recoverable from the chain:
+
+```
+[0] updated  local/files:write   ← the delivered edit; won on disk
+[1] updated  local/files:watch   ← the receiver's own edit, preserved
+[2] created  local/files:write   ← the seed
+```
+
+Two things follow. **Recording is opt-in per path** (`ext/history/config.go`,
+`configCache.find`) and **nothing in the mount / sync / share path installed a config** — so
+the chain the ruling depends on was not being written for the one namespace whose whole point
+it is. With no config a query returns **empty and no error**, which reads as "the tree kept
+nothing"; that is the same failure shape as AP76, one layer up, and it is why this went
+unnoticed. And **the provenance discriminator conflict detection needs is already on every
+transition**: a local edit arrives through the WATCHER (`local/files:watch`), a delivered one
+through `blob_resolve`'s dispatch (`local/files:write`), so *"they edited this"* and *"I am
+behind"* are distinguishable today at no cost. Known limit, invisible from the field name: a
+local caller dispatching `local/files:write` directly records as a delivery — nothing in the
+shipped flow does that.
+
+### 3. Landed: the chain is now a derived output of the control loop.
+
+`shellcmd/folder_history.go`. A folder that `Receives()` and is mounted gets a
+`system/history/config` for its mount prefix, written by `Reconcile` — so it is idempotent,
+restart-safe, and automatically correct when a folder's direction changes later. Not by
+`mount`, for the same reason the policy row and the sync binding are not: a verb that wrote it
+directly would be undone by the next pass.
+
+`Receives()` and **not** `IsLocal()`, and here the two genuinely differ: `share` declares the
+owner's folder `both`, so either side of a shared folder can be overwritten and both record.
+Keying on `IsLocal()` would have left the owner — the peer whose files these are — as the one
+side with no chain. The first version of the test asserted the opposite and was wrong; the
+control arm now sets `send` explicitly and asserts a send-only folder gets **no** config,
+because a folder with one writer records an entity per save forever and answers no question.
+
+**M3 is therefore not "build a merge engine".** In order: install the config (done); branch at
+`blob_resolve.go`'s existing F9 *different* arm; write a keep-both copy under the spec's own
+`{path}.keep-both-{hash8}` naming; then layer `EXTENSION-REVISION` for real three-way merge,
+whose commit/log/status half §15 already proved works over a `local/files` prefix. The
+paper-worthy claim survives: a content-addressed tree makes both parents of a conflict
+permanently addressable with no side-car format. We are wiring it up rather than inventing it.
+
+`FILE-REPLICATION-LANDSCAPE.md` §6 is corrected in place — M2b withdrawn, M3 rescoped.
+
+### 4. And it is asserted in the real environment, not only in-process
+
+`twopeer-sync.sh` reads the receiver's tree now. Two real containers, real TCP, real SQLite:
+**35 checks / 2 failed**, where the two are the pre-existing asymmetric-restart defect
+(baseline 30 checks; the 5 new ones are all green).
+
+```
+PHASE 5b — the receiver's TREE, not just its disk
+  ok  tree: the receiver BOUND one.txt, not only wrote it
+  ok  tree: a second delivered file is bound
+PHASE 8b — rename, and a concurrent edit
+  ok  conflict: both writes are on the chain (4 positions) — the losing edit is addressable
+  ok  conflict: peer-b's OWN edit is on the chain (local/files:watch)
+  ok  conflict: the DELIVERED edit is on the chain (local/files:write)
+```
+
+Nothing in the script enables recording — the reconciler does. That is §1.1a, end to end, in
+the environment the false finding came from.
+
+Four defects turned up on the way there, all found by *using* the thing rather than reading it:
+
+- **`ls` needs `@alias/…`, not a bare relative path.** At the REPL root the working directory
+  is `/`, which is the connection list and not a peer namespace, so `ls local/files/received/`
+  resolves to `/local/files/…` and fails with `no connection for path`.
+- **`expect` greps the WHOLE log, so a listing assertion written with it is vacuous** — a
+  filename any earlier phase printed satisfies it. `log_lines` + `expect_after` scope an
+  assertion to one command's output; every listing assertion needs that form.
+- **`history query` refused the `@alias` form and blamed the config for it.** It passed its
+  argument to the handler raw, so the path matched nothing and the operator was told *"(no
+  transitions recorded — is a config installed?)"*: a confidently wrong diagnosis pointing at
+  the one thing that was fine. A bare path still passes through untouched — the store
+  canonicalizes it against the local peer, which works from any working directory — and
+  `@alias/…` now resolves like everywhere else.
+- **`history query` did not say WHO wrote each position.** The recorder has carried
+  `Handler`/`Operation` on every transition since it was written and the renderer dropped both.
+  On an ordinary tree path that column reads `system/tree:put` throughout and says little; on a
+  shared folder it is the whole operator story — `local/files:watch` is *you* edited this,
+  `local/files:write` is *their copy arrived and replaced yours*. It is also what let the
+  harness's assertion go from "four things happened" (satisfied by four deliveries) to "both
+  sides are represented", which is the claim §1.1a actually makes.
+
+**Still owed:** the same assertions in `threepeer-sync.sh`, and a GUI surface — the chain is
+reachable from `history query` and from no pixel, which is D23's shape.
+
+---
+
+## §15 SUPERSEDED (2026-09-06) — the receiving peer stores nothing, and the conflict question was ruled long ago
+
+> **Superseded by §16.** The central finding below — that the receiving peer binds no file
+> entity — is **false**, and it was an artifact of reading a copied WAL SQLite store (AP76).
+> The conflict-question half of this section stands. Kept unedited so the error is legible.
+
+Two corrections and one new defect, and the defect is the one that matters.
+
+### The conflict question was never open
+
+`DOMAIN-LOCAL-FILES` §1.1a specifies concurrent same-path writes exactly: last-arrival wins at
+the filesystem surface, **both writes recorded in the tree at distinct chain positions**, no
+automatic merge, and `EXTENSION-REVISION` is where collaborative-edit semantics live. The spec
+attributes the ruling to *"workbench-go **WB-25** closure"* — **our own case validated it.**
+
+`entity-core-go` implements **all 19** revision operations, writes conflict entities at
+`system/revision/{H}/conflicts/{path}`, and offers `keep-both` (what Syncthing, Dropbox, OneDrive
+and iCloud all do) and `manual` (conflict tracking, on demand). We invoke none of it, because we
+never commit versions. **Our gap — not a spec gap and not a core gap.**
+
+`docs/architecture/FILE-REPLICATION-LANDSCAPE.md` had already established all of this on
+2026-09-01, including the milestone sequence in which this is **M3**. It was re-derived rather
+than read. `twopeer-sync.sh` PHASE 8b still carries the comment *"there is no specified behaviour
+to assert against yet"* — false, and the reason it stayed parked (D27).
+
+### Verified: `revision` works over a `local/files` mount prefix
+
+Nobody had run M3's feasibility check. Live, one peer, real mount: `revision commit` over
+`local/files/src/` commits with a root hash, a file edit produces a second commit with a
+different root, `revision log` shows a real DAG, and **`revision status` reports a conflict
+count**. The composition the landscape doc calls novel is reachable from the shipped shell today.
+
+### The blocker: the receiving peer binds NO file entity
+
+Measured by reading the receiver's SQLite store directly rather than through any surface:
+
+| | |
+|---|---|
+| publisher store | `local/files/src/f.txt` bound correctly by its watcher |
+| receiver store | **zero** rows matching the filename |
+| receiver `archives/` | **empty** |
+| receiver disk | correct bytes, present |
+
+**A delivered file reaches the receiver's disk and produces no entity anywhere in its tree.** Not
+backfill-specific: a file present before the share and one created after behave identically.
+
+That single fact explains the shape of several open items — conflict tracking is impossible (no
+local entity to compare against), `revision` has nothing to version on the receiver, the F9
+`already_current` short-circuit is dead code so every delivery re-fetches the whole blob closure,
+and `resync`'s *"everything already current"* — documented as the only positive confirmation this
+flow offers — comes from a check that never fires. It is also a candidate cause for both
+first-change-after-restart-is-lost and `Mode: both` not running backwards.
+
+**The cause is not established and is deliberately not guessed at.** `local/files:write` binds
+unconditionally and reports failure if the bind fails; the receiver reports neither. Also found:
+`inspect errors` counts the bare `system/runtime/chain-errors` namespace entity as a marker, so
+it reports one error with every column blank when there is none — a phantom that was very nearly
+written up as the cause.
+
+### What this session got wrong
+
+Three readings were retracted mid-investigation — namespace pollution, swapped subscriptions, and
+a chain error causing the bind failure — all from trusting a surface. A peer-id read out of
+`info` turned out to be the **connected** peer's rather than self, and every conclusion built on
+it was confidently wrong. **The store is ground truth; `info`, `mounts`, `subscription ls` and
+`inspect errors` were each wrong at least once in one session.**
+
+## §14 (2026-09-06) — three peers: fan-out and a chain work, `Mode: both` does not run backwards
 
 Two peers are one edge, so every sharing gate here has been blind to the question that begins
 *"and then the third machine…"*. **`make threepeer-sync` — 27 checks, 0 failed**, three peers in

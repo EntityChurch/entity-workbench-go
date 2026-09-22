@@ -302,11 +302,57 @@ Two rows in §2a's table move as a result. **"Sharing with specific devices"** i
 policy table, which is genuinely finer-grained than pairing a device with a folder. **"Folder
 status"** gains `access`, `shares` and `syncs` as inspectable surfaces.
 
-**M3 — the novel claim, tested.** Concurrent edit to one path on two disconnected peers, then
-reconnect. Today: one write vanishes. Target: `ext/revision` three-way merge where the file
-merges, and a first-class versioned conflict — both parents addressable, history intact — where
-it does not. **This is the milestone that is worth writing a paper about, and the only one that
-is not catch-up.**
+**M2b — "the receiver binds nothing". WITHDRAWN 2026-09-07; there was no such defect.**
+It was inserted on 2026-09-06 ahead of M3 on a measurement that read a `podman cp` of a live
+SQLite store — WAL, sidecar not copied, so the receiver's recent bindings were simply absent
+from the file being queried and came back as zero rows with no error (AP76). The receiver
+binds correctly in all four configurations that matter (memory/sqlite × symmetric/asymmetric
+root names), gated now by `shellboot/receive_binds_e2e_test.go`. Four conclusions that rested
+on it are void with it: F9 is *not* dead code, `resync`'s already-current *does* fire (an
+existing green gate asserts `AlreadyCurrent == 4`), and neither `Mode: both` nor
+first-change-after-restart is explained by it — both are open again on their own terms.
+
+What was real, and is the reason the row is kept rather than deleted: **every sync test in
+this tree asserted bytes on disk and none read the receiver's tree.** The tree-side half of
+the receive path had zero coverage, which is why a claim that it did not work at all was
+consistent with a fully green suite.
+
+**M3 — the novel claim, tested. RESCOPED 2026-09-07, and it is much smaller than this page
+priced it.** The measurement nobody had run
+(`shellboot/concurrent_edit_baseline_test.go`): with history recording enabled on the mount
+prefix, a concurrent same-path edit already produces exactly what `DOMAIN-LOCAL-FILES` §1.1a
+rules — last arrival wins on disk, **both writes at distinct chain positions**, and the
+overwritten bytes byte-recoverable from the chain:
+
+```
+[0] updated  local/files:write   ← the delivered edit; won on disk
+[1] updated  local/files:watch   ← the receiver's own edit, preserved
+[2] created  local/files:write   ← the seed
+```
+
+Two things follow. **The tree-side guarantee is already met by the substrate** — it had simply
+never been switched on, because history recording is opt-in per path
+(`ext/history/config.go`, `configCache.find`) and nothing in the mount / sync / share path
+installs a config. With none, a query returns empty *and no error*, which reads as "the tree
+kept nothing". And **the provenance discriminator conflict detection needs already exists on
+every transition**: a local edit arrives through the WATCHER (`local/files:watch`), a
+delivered one through `blob_resolve`'s dispatch (`local/files:write`), so "they edited this"
+and "I am behind" are distinguishable today at zero cost.
+
+So M3 is not "build a merge engine". In order: **(1)** install a history config for a mount
+prefix at mount time, so the chain exists for the namespace whose whole point it is;
+**(2)** branch at `blob_resolve.go`'s existing F9 *different* arm — equal means current,
+different plus a local `:watch` position since the last delivery means conflict; **(3)** write
+a keep-both copy on conflict under the spec's own `{path}.keep-both-{hash8}` naming, which is
+what Syncthing / Dropbox / OneDrive / iCloud all do; **(4)** layer `EXTENSION-REVISION` for
+real three-way merge, whose commit/log/status half is already proven to work over a
+`local/files` prefix. Each strategy has a distinct observable outcome, so gate each on bytes
+on disk **plus** `revision status`'s conflict count, with an anti-vacuity arm distinguishing a
+strategy that resolves from one that degrades.
+
+**The paper-worthy claim survives the rescoping** — a content-addressed tree makes both
+parents of a conflict permanently addressable with no side-car format, which is the thing no
+comparable product offers. What changed is that we are wiring it up rather than inventing it.
 
 **M4 — the product.** Daemon/service install, per-OS packaging, ignore patterns matching user
 expectation, and the filesystem edge cases enumerated rather than discovered.

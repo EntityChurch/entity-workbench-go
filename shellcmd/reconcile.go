@@ -706,6 +706,12 @@ func (ws *ShellWorkspace) reconcileFolder(f workbench.FolderData, out *Reconcile
 		return fs
 	}
 
+	// Turn on the chain BEFORE opening the subscription, because a
+	// delivery that lands between the two is exactly the one nobody can
+	// recover. See folder_history.go for why this is derived state and
+	// not something `mount` writes.
+	ws.reconcileFolderHistory(f, fs, out)
+
 	// Subscribe to everyone we receive from. This IS establishable
 	// without a human decision: the mount exists and the operator
 	// already said yes, so subscribing carries out their decision

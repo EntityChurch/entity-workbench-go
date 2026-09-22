@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.entitychurch.org/entity-core-go/core/types"
@@ -63,12 +64,36 @@ func cmdHistoryConfig(sh *Shell, args []string) (Result, error) {
 	return MessageResult(fmt.Sprintf("recording enabled for %q (config %s)", pattern, name)), nil
 }
 
+// historyPath accepts the path forms an operator already types
+// everywhere else and hands the handler one it can key on.
+//
+// A BARE relative path (`local/files/received/f.txt`) is passed through
+// untouched, because the store canonicalizes it against the local peer
+// and that works from any working directory. An `@alias/…` path is
+// RESOLVED, because the handler keys on `/{peer-id}/…` and has no idea
+// what an alias is — before this it matched nothing and the caller was
+// told "(no transitions recorded — is a config installed?)", which is a
+// confidently wrong diagnosis pointing at the one thing that was fine.
+//
+// Not `sh.Resolve` unconditionally: at the REPL root the working
+// directory is `/`, so resolving a bare path yields `/local/files/…`
+// with no peer in it, which matches nothing either. The two forms are
+// handled differently because they genuinely are different, and the
+// silent-empty result is the same shape either way.
+func historyPath(sh *Shell, raw string) string {
+	if strings.HasPrefix(raw, "@") {
+		return sh.Resolve(raw).String()
+	}
+	return raw
+}
+
 // cmdHistoryQuery walks the recorded transition chain at path.
 func cmdHistoryQuery(sh *Shell, args []string) (Result, error) {
 	if len(args) < 1 {
 		return Result{}, fmt.Errorf("usage: history query <path> [-limit N]")
 	}
-	params := types.HistoryQueryParamsData{Path: args[0]}
+	path := historyPath(sh, args[0])
+	params := types.HistoryQueryParamsData{Path: path}
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "-limit":
@@ -91,7 +116,10 @@ func cmdHistoryQuery(sh *Shell, args []string) (Result, error) {
 		return Result{}, fmt.Errorf("history query: %w", err)
 	}
 	if len(res.Transitions) == 0 {
-		return MessageResult(fmt.Sprintf("(no transitions recorded for %s — is a config installed?)", args[0])), nil
+		return MessageResult(fmt.Sprintf(
+			"(no transitions recorded for %s — is a config installed? "+
+				"`history config <pattern>` enables recording; a shared folder's "+
+				"mount prefix is configured for you when it receives)", path)), nil
 	}
 	lines := make([]string, 0, len(res.Transitions)+1)
 	for i, td := range res.Transitions {
@@ -100,7 +128,20 @@ func cmdHistoryQuery(sh *Shell, args []string) (Result, error) {
 			marker = "*"
 		}
 		ts := time.UnixMilli(int64(td.Timestamp)).Format("2006-01-02 15:04:05")
-		lines = append(lines, fmt.Sprintf("%s %s  %-9s %s", marker, ts, td.Event, shortHash(td.Hash)))
+		// WHO wrote it, not only when. On a shared folder this is the
+		// difference between "you changed this" and "their copy arrived
+		// and replaced yours": a local edit is ingested by the WATCHER
+		// (`local/files:watch`), a delivered one is dispatched by
+		// blob-resolve (`local/files:write`). The recorder has carried
+		// both fields since it was written and this renderer dropped
+		// them, so the one surface an operator has for recovering an
+		// overwritten edit could not say which position was theirs.
+		src := td.Handler
+		if td.Operation != "" {
+			src += ":" + td.Operation
+		}
+		lines = append(lines, fmt.Sprintf("%s %s  %-9s %s  %s",
+			marker, ts, td.Event, shortHash(td.Hash), src))
 	}
 	if res.HasMore {
 		lines = append(lines, "(more — pass -limit to extend)")
@@ -119,7 +160,7 @@ func cmdHistoryRollback(sh *Shell, args []string) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("target-hash: %w", err)
 	}
-	res, err := sh.Local.Peer.History().Rollback(context.Background(), args[0], target)
+	res, err := sh.Local.Peer.History().Rollback(context.Background(), historyPath(sh, args[0]), target)
 	if err != nil {
 		return Result{}, fmt.Errorf("history rollback: %w", err)
 	}

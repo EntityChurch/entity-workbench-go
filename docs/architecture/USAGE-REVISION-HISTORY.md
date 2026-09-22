@@ -94,7 +94,9 @@ need spec-level detail on what a primitive does.
 ```
 $ make shell ARGS="cd local: && put articles/intro test/note '\"v1\"'"
 $ make shell ARGS="cd local: && history query articles/intro"
-(no transitions recorded for articles/intro — is a config installed?)
+(no transitions recorded for articles/intro — is a config installed? `history
+config <pattern>` enables recording; a shared folder's mount prefix is
+configured for you when it receives)
 ```
 
 The recorder is wired but matches no paths until you add a config.
@@ -119,13 +121,26 @@ name if you want multiple configs in the same peer.
 > put articles/intro test/note '"second"'
 > put articles/intro test/note '"third"'
 > history query articles/intro
-* rev-3  updated   00d3e1f4a8b2...
-  rev-2  updated   009de5e2b687...
-  rev-1  updated   0075f97cb4a8...
+* rev-3  updated   00d3e1f4a8b2...  system/tree:put
+  rev-2  updated   009de5e2b687...  system/tree:put
+  rev-1  updated   0075f97cb4a8...  system/tree:put
 ```
 
 The `*` marks the most recent transition (head). Hashes are short —
 the full hex is what `cat -diag` emits and what rollback needs.
+
+The last column is **who wrote it** — the handler and operation. On an
+ordinary tree path it is `system/tree:put` throughout and tells you
+little. On a **shared folder** it is the whole point: a file you edited
+yourself was ingested by the watcher and reads `local/files:watch`,
+while a copy that arrived from the peer you share with was dispatched by
+blob-resolve and reads `local/files:write`. That is how you tell *"I
+changed this"* from *"their version replaced mine"* when both happened
+to the same path.
+
+Paths accept the forms every other verb takes: a bare relative path is
+resolved against this peer, and `@alias/…` is resolved like anywhere
+else.
 
 The first write counts as `created`, subsequent writes are
 `updated`, deletes are `deleted`. You can filter with the typed SDK
@@ -500,9 +515,9 @@ A realistic loop:
 
 # See per-path history
 > history query articles/intro
-* ...  updated   00final...
-  ...  updated   00first...
-  ...  created   00draft...
+* ...  updated   00final...  system/tree:put
+  ...  updated   00first...  system/tree:put
+  ...  created   00draft...  system/tree:put
 
 # See subtree versions
 > revision log articles/

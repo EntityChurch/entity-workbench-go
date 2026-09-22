@@ -139,6 +139,25 @@ expect() {
   fi
 }
 
+# log_lines CONTAINER — how many lines the log has right now. Paired with
+# expect_after to scope an assertion to ONE command's output.
+log_lines() { podman exec "$1" sh -c "wc -l < /data/out.log 2>/dev/null || echo 0"; }
+
+# expect_after CONTAINER MARK PATTERN LABEL — assert PATTERN appears in
+# the log BELOW line MARK.
+#
+# `expect` greps the whole log, which is right for "did this peer ever
+# report X" and WRONG for "what did that command just print": a filename
+# mentioned by an earlier phase satisfies it, so the assertion passes
+# without the command under test having produced anything. Every listing
+# assertion needs this form.
+expect_after() {
+  local c="$1" mark="$2" pat="$3" label="$4"
+  if out "$c" | tail -n +"$((mark + 1))" | grep -qE "$pat"; then ok "$label"; else
+    bad "$label — [$c] nothing matching /$pat/ in the output of that command"
+  fi
+}
+
 # ---- files_match — the assertion that actually matters ---------------
 # Compares what peer B has on DISK against what peer A has on disk. A
 # tree-count assertion would pass while the operator's folder was empty,
@@ -248,6 +267,34 @@ wait_for_file "$RUNDIR/received/one.txt"       "first"  "backfill: one.txt arriv
 wait_for_file "$RUNDIR/received/two.txt"       "second" "backfill: two.txt arrived"
 wait_for_file "$RUNDIR/received/sub/three.txt" "nested" "backfill: nested file arrived"
 
+# --- phase 5b: the receiver's TREE, not just its disk ------------------
+# Every assertion above this point is about bytes on disk, and for a long
+# time that was every assertion in this harness. It is not enough: a
+# delivered file has to become an ENTITY on the receiver, or there is
+# nothing for conflict detection to compare against, nothing for
+# `revision` to version, and blob-resolve's already-current check can
+# never fire.
+#
+# Ask the SHELL, not the store. The alpine image ships no sqlite3, and
+# copying the store out is worse than useless — file-backed stores open
+# WAL, so a `podman cp store.db` without its `-wal` sidecar answers a
+# question about a database that is missing every recent write, and
+# reports the absence as zero rows with no error. That is AP76, and it
+# cost a milestone. `shellboot/receive_binds_e2e_test.go` asserts that
+# `ls` agrees with the location index, which is what makes asking the
+# shell here sound.
+log "PHASE 5b — the receiver's TREE, not just its disk"
+#
+# `@peer-b/` and not a bare relative path: at the REPL root the working
+# directory is `/`, which is the CONNECTION list and not a peer
+# namespace, so `ls local/files/...` resolves to `/local/files/...` and
+# fails with `no connection for path`. The alias form is the pinned
+# sigil (AGENTS.md); the peer's own alias is what it was started with.
+mark=$(log_lines peer-b)
+say peer-b "ls @peer-b/local/files/received/"
+expect_after peer-b "$mark" "one\.txt" "tree: the receiver BOUND one.txt, not only wrote it"
+expect_after peer-b "$mark" "two\.txt"  "tree: a second delivered file is bound"
+
 # --- phase 6: create --------------------------------------------------
 log "PHASE 6 — a file is ADDED on peer-a"
 echo "added-after-share" > "$RUNDIR/photos/added.txt"
@@ -292,10 +339,61 @@ CONFLICT_A=$(cat "$RUNDIR/photos/conflict.txt" 2>/dev/null)
 CONFLICT_B=$(cat "$RUNDIR/received/conflict.txt" 2>/dev/null)
 log "conflict outcome: sender='$CONFLICT_A' receiver='$CONFLICT_B'"
 ls "$RUNDIR/received/" | grep -i conflict | sed 's/^/     received: /' >&2
-# Not asserted as pass/fail — there is no specified behaviour to assert
-# against yet. It is MEASURED and printed so the next session designs
-# against what actually happens rather than against a guess.
-ok "conflict: outcome recorded (no specified behaviour yet — see handoff)"
+# THE PREVIOUS COMMENT HERE SAID "there is no specified behaviour to
+# assert against yet". THAT WAS FALSE, and it parked this question for
+# days — a dismissal written into a comment, where review never re-reads
+# it (D27).
+#
+# DOMAIN-LOCAL-FILES §1.1a specifies it exactly, and credits our own
+# WB-25 case with validating it: last-arrival wins at the filesystem
+# surface, BOTH writes recorded in the tree at distinct chain positions,
+# no automatic merge, and EXTENSION-REVISION is where collaborative-edit
+# semantics live.
+#
+# It IS asserted here now, and the reason it was not is worth recording
+# because it was wrong twice over. The old comment said this harness only
+# reads the disk (fixed — PHASE 5b reads the tree through the shell) and
+# that `make conflict-semantics` had found the receiving peer binds no
+# file entity at all. THAT FINDING WAS AN ARTIFACT of reading a `podman
+# cp` of a live WAL SQLite store without its sidecar (AP76). The receiver
+# binds correctly, and the chain below is the proof an operator can see.
+ok "conflict: on-disk outcome recorded"
+
+# The tree-side half of §1.1a: BOTH writes at distinct chain positions,
+# so the edit that lost on disk is still addressable. The reconciler
+# installs the recording config for a folder that receives
+# (shellcmd/folder_history.go), so nothing here turns it on — if this
+# fails because no transitions were recorded, that is the finding.
+#
+# `@peer-b/` for PHASE 5b's reason. Two positions minimum: one authored
+# by the WATCHER (peer-b's own edit) and one by the delivery.
+mark=$(log_lines peer-b)
+say peer-b "history query @peer-b/local/files/received/conflict.txt"
+if out peer-b | tail -n +"$((mark + 1))" | grep -qE "no transitions recorded"; then
+  bad "conflict: nothing was recorded — the overwritten edit is unrecoverable"
+else
+  n=$(out peer-b | tail -n +"$((mark + 1))" | grep -cE "(created|updated)")
+  if [ "$n" -lt 2 ]; then
+    bad "conflict: only $n chain position(s); §1.1a requires both writes recorded"
+  else
+    ok "conflict: both writes are on the chain ($n positions) — the losing edit is addressable"
+  fi
+  # A count alone is satisfied by four DELIVERIES. The claim is that both
+  # SIDES are represented, and the chain says which is which: a local
+  # edit is ingested by the watcher, a delivered one is dispatched by
+  # blob-resolve. Without this arm the check above passes on a chain in
+  # which peer-b's own edit was never recorded at all.
+  if out peer-b | tail -n +"$((mark + 1))" | grep -q "local/files:watch"; then
+    ok "conflict: peer-b's OWN edit is on the chain (local/files:watch)"
+  else
+    bad "conflict: no watcher-authored position — peer-b's own edit was not recorded"
+  fi
+  if out peer-b | tail -n +"$((mark + 1))" | grep -q "local/files:write"; then
+    ok "conflict: the DELIVERED edit is on the chain (local/files:write)"
+  else
+    bad "conflict: no delivery-authored position on the chain"
+  fi
+fi
 
 # restart_and_check WHO LABEL N — restart one or both peers, re-dial, then
 # assert a change made AFTER the restart arrives. Factored because the
