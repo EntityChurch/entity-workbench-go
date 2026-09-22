@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -83,6 +84,41 @@ func (ws *workspace) switchScreen(idx int) {
 }
 
 // --- Window management ---
+
+// seedWindowIDs lifts the window-id counter above every id that already has
+// persisted state, per `GUIDE-ENTITY-WORKBENCH-APP` §8: an application that
+// persists per-window state MUST be able to tell which window each persisted
+// entity belongs to, satisfied here by *"sweeping
+// `app/{app-id}/workspace/windows/` at startup, before allocating any window
+// id."*
+//
+// Without it `nextID` starts at zero every launch, so this session's first
+// window is `1` and reads back the *previous* session's window 1 — including
+// through `workbench.LogModel`, which binds a display level by ordinal. §8
+// names that outcome as the case the rule exists to prevent: *"persisting,
+// restoring, and silently restoring the wrong thing."*
+//
+// **Ordering is the whole correctness argument**, so it is asserted rather than
+// assumed: if a window has already been allocated, the sweep cannot help and
+// the ids it would have skipped are already in use. It logs and leaves the
+// counter alone rather than moving it under a live window, because raising
+// `nextID` after the fact would re-address nothing and hide the fault.
+//
+// This does not make state RESTORABLE — a new window gets a fresh id, so the
+// old bundle is orphaned rather than mis-read. Restoration is §8's *other* arm
+// (an `app/state/window-index`, §4.2a) and would be the right build if this
+// renderer ever offered session resumption. It does not: console is frozen and
+// single-peer, kept to keep the renderer-neutral core honest.
+func (ws *workspace) seedWindowIDs(state *wb.WorkspaceState) {
+	if state == nil {
+		return
+	}
+	if ws.nextID != 0 {
+		log.Printf("console: WARN: seedWindowIDs called after window %d was allocated — per-window state may collide with a previous session (GUIDE-ENTITY-WORKBENCH-APP §8)", ws.nextID)
+		return
+	}
+	ws.nextID = state.HighestPersistedWindowID()
+}
 
 func (ws *workspace) newWindow() *consoleWindow {
 	ws.nextID++

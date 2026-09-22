@@ -71,13 +71,36 @@ import (
 // the shape. `types.CapabilityPolicyEntryData` is the kernel's type.
 const AccessPolicyPrefix = "system/capability/policy/"
 
+// SharedScope is one folder's contribution to a peer's authorization: the
+// root OUR copy lives under, and the folder's shared identity.
+//
+// Both fields, and neither is derivable from the other here. **The root is
+// this peer's, and the id is the OWNER's** — a folder we received and
+// republish under `both` sits at our own `LocalRoot` while keeping the
+// originator's id (`FolderID(owner, their-root)`), because the id is what
+// makes it one object across peers (S6/AP72).
+//
+// Deriving either one inside this function was the first version and it
+// was wrong in exactly the asymmetric case the id exists for: it built
+// `FolderID(self, f.Root)` and `local/files/{f.Root}`, which on the
+// receiving peer names an id nobody holds and a directory that does not
+// exist. Both reverse-leg tests caught it. Read `ReceivingRoot()`, never
+// `Root` — the two agree in the symmetric case, which is what makes the
+// mistake survive a suite that only tests matching names.
+type SharedScope struct {
+	// LocalRoot is the local-files mount root on THIS peer.
+	LocalRoot string
+	// FolderID is the cross-peer folder identity.
+	FolderID string
+}
+
 // SyncSenderGrants is what the peer PUBLISHING a folder must grant the
 // peer receiving it.
 //
-// This set is not invented. It is the minimum established by
+// The HANDLER list is not invented. It is the minimum established by
 // `shellcmd/cmd_stage3_cap_delegation_test.go`, which pairs a positive
 // case with a negative one that drops `system/content:get` and confirms
-// materialization then fails — so each entry is load-bearing by
+// materialization then fails — so each handler is load-bearing by
 // measurement rather than by reasoning.
 //
 //   - system/subscription:* — the receiver subscribes to our prefix.
@@ -87,17 +110,150 @@ const AccessPolicyPrefix = "system/capability/policy/"
 //   - local/files:read + system/tree:get — the subscription engine's own
 //     pattern-match traversal over the matching tree paths.
 //
-// Resources are bare "*" and never also "/*/*": under §PR-8
-// canonicalization "*" becomes "/{ourPeerID}/*", a peer can only
-// advertise coverage of its own namespace, and coverage requires EVERY
-// Include member to match — so adding "/*/*" would make the whole entry
-// uncoverable and silently drop the authority "*" alone grants.
-func SyncSenderGrants() []types.GrantEntry {
+// Resource patterns are written bare and never also as "/*/*": under §PR-8
+// canonicalization a bare pattern becomes "/{ourPeerID}/…", a peer can
+// only advertise coverage of its own namespace, and coverage requires
+// EVERY Include member to match — so adding a "/*/…" form would make the
+// whole entry uncoverable and silently drop the authority the bare form
+// grants.
+//
+// # The resources are scoped to the shared folders, and were `*` until 2026-09-10
+//
+// Three of these four entries carried `Resources: ["*"]`, and the
+// reconciler writes this set into `system/capability/policy/{peer}`
+// verbatim. So the gesture *"share this folder"* authorized the receiving
+// peer to read **the entire tree and every mounted file on the machine**.
+//
+// Measured, not reasoned: `shellboot/share_scope_probe_test.go` shares one
+// folder and then reads a file from an unshared one across the wire. Before
+// this change it came back — 126 bytes including the `content` hash, which
+// is precisely what `system/content:get` needs. Share one folder, enumerate
+// everything, fetch anything.
+//
+// **Why the doc comment above did not catch it.** It says this set is "the
+// minimum established by cmd_stage3_cap_delegation_test.go", and that is
+// true of the HANDLER LIST and false of everything else: that test's
+// negative arm drops `system/content:get` *entirely* and confirms
+// materialization then fails. Dropping a whole handler shows the handler is
+// necessary. It says nothing about whether its resources are minimal. **A
+// grant minimized along one axis reads as a minimized grant** — the
+// sentence was written about the rows and got read as being about the
+// cells.
+//
+// # `system/content` IS scopeable, we are not scoping it, and the spec
+// # calls what we are doing security-defective
+//
+// **An earlier version of this comment said the content handler "cannot be
+// scoped per folder in this or any implementation" and called that a
+// property to design around. That was WRONG**, asserted without reading
+// `EXTENSION-CONTENT` §6.4, and it is the worst shape of wrong: a confident
+// architectural sentence that closes a question permanently (AP45). It was
+// caught by the operator, who knows the capability system, and not by us.
+//
+// What §6.4 actually specifies:
+//
+//   - The dispatch's resource target is a **namespace path**, not a hash —
+//     `content.EnsureClosure(…, namespace)` puts it in
+//     `ResourceTarget{Targets: [namespace]}` and the hashes travel in
+//     params (`ext/content/sequencer.go`). So the cap layer scopes on a
+//     namespace the caller names.
+//   - §6.4.2 binds each hash into the tree at `{namespace}/{hex(H)}`.
+//     Lookup is one `tree:get` probe. **The tree is the capability
+//     boundary** — which is the whole design, and the thing the earlier
+//     comment talked itself out of.
+//   - §6.4.1 defines two topologies. **Namespace-scoped is the production
+//     default and a MUST for any multi-party deployment**, where get
+//     "consults the tree binding and serves only when the hash is bound
+//     under the requested namespace". Single-trust-domain — get resolves
+//     any hash for any cap-holding caller — is opt-in, MUST NOT be the
+//     default, and the spec says in terms that **"multi-party deployments
+//     operating under single-trust-domain topology are out-of-spec and
+//     security-defective."**
+//
+// **We are that sentence.** We pass the bare `"system/content"` default
+// namespace (`workbench/blob_resolve.go`), we never call
+// `system/content:ingest`, so nothing is bound at `{namespace}/{hex(H)}`
+// anywhere in our tree, and two laptops owned by different people are
+// unambiguously multi-party.
+//
+// # What is ALSO true, and why this is not fixable here alone
+//
+// core-go implements the **ingest** half — `bindHashTreePresence` writes
+// the §6.4.2 binding — and **not the get half**: `handleGet` is a bare
+// `hctx.Store.Get(hreq)` with no namespace consult, and `requireResource`
+// only checks that a target was *supplied*. So today the namespace is a
+// label the cap layer checks against your grant, after which any hash is
+// served. Scoping our grant alone would narrow which label we may claim,
+// not which bytes we may get. Routed.
+//
+// # So, until both halves land: the TREE grant is the operative boundary
+//
+// Stated as the current fact rather than as a law of nature. With get
+// unenforced, an unshared file is confidential because its hash is
+// undiscoverable, and the tree is what discloses hashes — so narrowing the
+// tree grant is what actually holds the line right now. **A second
+// implementation that grants a wide tree scope has re-opened this**, and one
+// that implements §6.4.1 properly does not need to rely on it at all.
+//
+// Resource dimension 3 is only checked *when the execute carries a
+// resource* (`core/capability/check.go`), so this narrowing is worth
+// nothing unless the dispatches actually carry one. Verified that all three
+// do: `tree.CreateGetRequest` returns a target, `local/files` reads carry
+// the path, and a subscribe carries its pattern
+// (`entitysdk/subscription.go`).
+//
+// Patterns canonicalize against the GRANTER's peer-id under §PR-8, targets
+// against the request path, which is why these are written bare and never
+// as `/*/…`.
+func SyncSenderGrants(folders []SharedScope) []types.GrantEntry {
+	// Both the bare prefix and its subtree: the prefix itself is the
+	// listing target, the subtree is every file under it.
+	var fileRes, subRes []string
+	for _, f := range folders {
+		p := LocalFilesSourcePrefix + f.LocalRoot
+		fileRes = append(fileRes, p, p+"/*")
+		subRes = append(subRes, p+"/*")
+	}
+
+	// The tree grant covers the shared files PLUS the folder declarations
+	// for exactly the folders shared with this peer — the reverse leg reads
+	// the counterpart's record over the wire (`ObserveRemoteFolder`), and
+	// without it a two-way folder cannot learn which directory the other
+	// side keeps it in.
+	//
+	// Scoped to the specific folder ids rather than `app/workbench/folders/*`:
+	// that prefix holds every folder this peer shares with ANYONE, and a
+	// receiver has no business enumerating the others. It is only metadata,
+	// which is exactly the argument that gets a leak shipped.
+	treeRes := append([]string{}, fileRes...)
+	for _, f := range folders {
+		treeRes = append(treeRes, FolderPrefix+f.FolderID)
+	}
+	// The offer records. `offers` is a dispatched read of the counterpart's
+	// `app/share/records/*` (AP11), so a receiver that cannot read this
+	// prefix cannot see what we offered them — measured: the flow test
+	// 403s at `offers` the moment the tree grant stops being `*`.
+	//
+	// Prefix-wide rather than per-record, and that IS a disclosure: this
+	// peer's offers to OTHER peers are readable. Narrowing it needs the
+	// record id at grant time, which the reconciler does not hold, and the
+	// offer is a label rather than an authority (APP-CONVENTION-SHARE
+	// §2.2), so nothing is authorized by seeing one. Named here rather
+	// than left silent: it is the one wildcard left in this set.
+	treeRes = append(treeRes, ShareOfferPrefix+"*")
+
+	if len(folders) == 0 {
+		// No folders shared with this peer means no authority. Returning
+		// the wildcard set here would make "share nothing" the most
+		// permissive state in the system.
+		return nil
+	}
+
 	return []types.GrantEntry{
 		{
 			Handlers:   types.CapabilityScope{Include: []string{"system/subscription"}},
 			Operations: types.CapabilityScope{Include: []string{"*"}},
-			Resources:  types.CapabilityScope{Include: []string{"*"}},
+			Resources:  types.CapabilityScope{Include: subRes},
 		},
 		{
 			Handlers:   types.CapabilityScope{Include: []string{"system/content"}},
@@ -107,12 +263,12 @@ func SyncSenderGrants() []types.GrantEntry {
 		{
 			Handlers:   types.CapabilityScope{Include: []string{"local/files"}},
 			Operations: types.CapabilityScope{Include: []string{"read"}},
-			Resources:  types.CapabilityScope{Include: []string{"*"}},
+			Resources:  types.CapabilityScope{Include: fileRes},
 		},
 		{
 			Handlers:   types.CapabilityScope{Include: []string{"system/tree"}},
 			Operations: types.CapabilityScope{Include: []string{"get"}},
-			Resources:  types.CapabilityScope{Include: []string{"*"}},
+			Resources:  types.CapabilityScope{Include: treeRes},
 		},
 	}
 }

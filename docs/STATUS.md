@@ -2,6 +2,11 @@
 
 _Updated: 2026-09-10 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
+> **PICKING THIS UP AFTER THE BROWSER-RUST DETOUR? Read
+> `docs/status/HANDOFF-2026-09-10-file-sync-closeout.md` first** — it splits every open item
+> into ours / waiting-on-architecture / waiting-on-core-go, in the order to do them, with the
+> one piece of work that is deliberately sequenced behind somebody else named as such.
+>
 > **Start here:** **§28 — it worked on two real machines, and the first surface
 > to read the failures was lying**, then
 > **§27 — sharing was dead all morning, and the directory names
@@ -81,6 +86,75 @@ and it is harder to see for exactly that reason. Now matched segment-exact again
 gated with the byte-exact string off the operator's log and a near-miss control arm
 (`system/networking-…` must still be counted), and verified by reverting the predicate: 3
 counted before, 0 after. **AP88.**
+
+**SHARING ONE FOLDER GRANTED A READ OF THE WHOLE MACHINE, and the operator found it by asking
+the right question.** They looked at `system/content:get` in the leverage review and said *"we
+just need to make sure it's not having access to stuff outside the scope."* It was.
+`workbench.SyncSenderGrants` carried `Resources: ["*"]` on three of its four entries and the
+reconciler writes that row verbatim, so the gesture *"share this folder"* authorized the
+receiving peer to read **every entity in the tree and every mounted file**. Measured across the
+wire before the fix (`shellboot/share_scope_probe_test.go`, written to fail): share one folder,
+read a file from an unshared one, **126 bytes back including the `content` hash** — which is
+exactly what the next `system/content:get` needs. Enumerate everything, fetch anything.
+
+**The doc comment is the finding.** It said the set was "the minimum established by
+`cmd_stage3_cap_delegation_test.go`" — true of the **handler list** and false of everything
+else, because that test's negative arm drops a whole handler and never narrows a resource.
+Dropping a handler shows the handler is necessary; it says nothing about its cells. **A grant
+has four dimensions and "minimal" is a claim about all four.** AP90.
+
+And it was **non-conformance, not just an oversight**: `APP-CONVENTION-SHARE` §2.2 already says
+*"`target` is what the grant's `resources` scope covers"*. Nothing in any suite compared our
+share record's target against the grant, so they disagreed for months at full green — which is
+now ask A-14, because a boundary the spec states and nothing enforces will drift in every
+implementation, not just ours.
+
+Fixed: resources derive per folder from `workbench.SharedScope`. **The first version of the fix
+was wrong and the suite caught it** — it derived the folder id from the local peer, which names
+an id nobody holds on any folder received and republished under `both`; both reverse-leg tests
+failed, and a symmetric-names fixture would have passed. Full `shellboot` green with the narrowing in place.
+
+**And then the operator corrected us on the part we had got wrong.** We wrote — in five places —
+that `system/content:get` "cannot be scoped in any implementation" because a hash does not belong
+to a folder. **That is false.** `EXTENSION-CONTENT` §6.4.2 binds each hash into the tree at
+`{namespace}/{hex(H)}`, lookup is a single `tree:get` probe, and §6.4.1 makes namespace-scoped
+topology a **MUST for any multi-party deployment** — get "consults the tree binding and serves
+only when the hash is bound under the requested namespace". The flat behaviour we described as
+inherent is the **single-trust-domain** topology, which that section says MUST NOT be the default
+and which it calls **"out-of-spec and security-defective"** when run multi-party. We run it: bare
+`system/content` namespace, and `system/content:ingest` is called nowhere in this tree, so no hash
+is bound under any namespace.
+
+**It is not fixable on our side alone** — core-go implements the ingest half
+(`bindHashTreePresence`) and not the get half (`handleGet` is a bare store lookup with no
+namespace consult), so scoping our grant would narrow which label we may claim and not which bytes
+we may get. Both halves routed. Until they land, the tree grant is the operative boundary, which
+is a fact about this build and not about the architecture.
+
+**And then a second operator question moved the fix off our side almost entirely.** *"Local files
+does the content chunks — and because they know the permissions of the paths, they can handle the
+chunk permissioning into the content store."* Measured, that is exactly what the code says. The
+`local/files` watcher runs FastCDC and puts the blob and every chunk **straight into the content
+store**, without dispatching `system/content:ingest` — so the only writer of the §6.4.2 namespace
+binding is unreachable for file bytes *whatever an application does*. And the domain specification
+that owns file bytes pins that handler's own grant to the **bare** namespace, which is the topology
+`EXTENSION-CONTENT` §6.4.1 says must not be the default for multiple parties. Two conforming
+documents, in tension, and the component that could resolve it is the one holding both halves:
+`local/files` is the chunker **and** the only holder of the path→grant relation, since a mount root
+is already the boundary a share names. So the namespace is its to derive, not an application's to
+remember. Asked as A-20 and kernel row 20. **Our own scoping work is deliberately not done yet** —
+narrowing our grants while every file byte stays unbound would make the product look scoped and
+delete the only signal that it is not.
+
+**The lesson is the one this repo already has a rule for and we broke anyway:** a negative claim
+about the system needs the same evidence as one about a sibling repo. We asserted an
+impossibility, wrote it into source, charter, AGENTS, a review and a routed packet, and never
+opened `EXTENSION-CONTENT`. A dismissal recorded as a doc comment is invisible to review forever
+(AP45) — this one survived exactly one reader who knew the capability system. **A sixth copy
+outlived the correction by a day: the tracker row that carries the ask to the specification seat
+still had the retracted sentence as its premise.** Fixing a claim in the prose and leaving it in the
+tracker is not fixing it, because a counterpart reconciles against the tracker — so a retraction
+starts there.
 
 **Two findings routed to the kernel, both about its own diagnostics.**
 `ChainErrorLostData.TargetPeerID` is reserved by §3.10.6 for the peer a failed dispatch was

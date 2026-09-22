@@ -132,6 +132,13 @@ func (app *application) addManagedPeer(hp *shellboot.HostedPeer) *managedPeer {
 		app.state = wb.NewWorkspaceState(hp.AppPeer.Store())
 		app.shWs = hp.Workspace
 
+		// GUIDE-ENTITY-WORKBENCH-APP §8's persist-arm obligation. This
+		// renderer persists per-window state, so it MUST take one of the
+		// two arms; we take the sweep. Called HERE because it has to
+		// happen before any window id is allocated, and main.go builds
+		// the layout after this call — see seedWindowIDs.
+		app.ws.seedWindowIDs(app.state)
+
 		// Shared shell↔workspace integration: alias persistence.
 		// The per-shell-panel WD publisher is built per-panel inside
 		// createWindowContent so it knows the panel-id.

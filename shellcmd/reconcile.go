@@ -432,7 +432,12 @@ func (ws *ShellWorkspace) refreshDeviceAddresses(devices []workbench.DeviceData,
 // relationships needs both, and the two verbs that write this row today
 // each write only their own half over the top of the other's.
 func desiredGrantsByPeer(selfPeerID string, folders []workbench.FolderData) map[string][]types.GrantEntry {
-	needSender := map[string]bool{}
+	// Peer -> the roots we publish TO them. A set of roots and not a bool,
+	// because the sender grant is now scoped to exactly those folders
+	// (workbench.SyncSenderGrants): a peer we share two folders with must
+	// be authorized for both, and a peer we share one with must not be
+	// authorized for the rest of the tree.
+	needSender := map[string][]workbench.SharedScope{}
 	needReceiver := map[string]bool{}
 
 	// Direction comes from Mode, NOT from Origin. Before S6 this loop
@@ -456,7 +461,8 @@ func desiredGrantsByPeer(selfPeerID string, folders []workbench.FolderData) map[
 			if f.Publishes() {
 				switch p.State {
 				case workbench.FolderStateOffered, workbench.FolderStateAccepted:
-					needSender[p.PeerID] = true
+					needSender[p.PeerID] = appendScope(needSender[p.PeerID],
+						workbench.SharedScope{LocalRoot: f.ReceivingRoot(), FolderID: f.ID})
 				}
 			}
 			// We receive from them: they need the receiver grant so their
@@ -489,13 +495,43 @@ func desiredGrantsByPeer(selfPeerID string, folders []workbench.FolderData) map[
 	}
 
 	out := map[string][]types.GrantEntry{}
-	for peerID := range needSender {
-		out[peerID] = append(out[peerID], workbench.SyncSenderGrants()...)
+	for peerID, scopes := range needSender {
+		// Sorted so the grant set is a pure function of the declarations.
+		// Map iteration order is random, and an unstable Resources list
+		// changes the row's content hash on every pass — which
+		// writePolicyIfChanged reads as a change, which forces a
+		// re-handshake, which turns the loop into an outage generator.
+		sort.Slice(scopes, func(i, j int) bool {
+			if scopes[i].LocalRoot != scopes[j].LocalRoot {
+				return scopes[i].LocalRoot < scopes[j].LocalRoot
+			}
+			return scopes[i].FolderID < scopes[j].FolderID
+		})
+		out[peerID] = append(out[peerID], workbench.SyncSenderGrants(scopes)...)
 	}
 	for peerID := range needReceiver {
 		out[peerID] = append(out[peerID], workbench.SyncReceiverGrants()...)
 	}
 	return out
+}
+
+// appendScope adds v to s when it is not already there.
+//
+// The same folder can name the same peer more than once across
+// declarations, and a duplicate would duplicate every resource pattern
+// derived from it — harmless to the capability check and not harmless to
+// the row's content hash, which is what decides whether a re-handshake
+// happens.
+func appendScope(s []workbench.SharedScope, v workbench.SharedScope) []workbench.SharedScope {
+	if v.LocalRoot == "" {
+		return s
+	}
+	for _, e := range s {
+		if e == v {
+			return s
+		}
+	}
+	return append(s, v)
 }
 
 // reconcilePolicies writes each peer's policy row when it differs from

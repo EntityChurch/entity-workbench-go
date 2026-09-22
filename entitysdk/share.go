@@ -42,6 +42,23 @@ const (
 	TypeShareRecord   = "app/share/record"
 	TypeShareAudience = "app/share/audience-entry"
 	TypeShareFollow   = "app/share/follow"
+
+	// TypeSharePublication is §2.5's audience-less share: `share-record`
+	// **minus `audience`, and nothing else differs**. We do not EMIT one —
+	// every share this product authors names a peer — but we read them,
+	// because `entity-browser-rust` emits this type for the public case as
+	// of their 2026-09-10 `app/share/*` alignment, and before this constant
+	// existed our offer reader rejected it as *"unexpected type"* and
+	// reported the peer's conformant record as malformed.
+	//
+	// **It is NOT a record with an empty audience, and conflating the two is
+	// what `SHARE-7` exists to fail on.** §2.2 keeps an empty `audience`
+	// array meaning *"an authored share with no members yet"* — i.e.
+	// self-only — so decoding a publication into `ShareRecordData{}` would
+	// turn *"anyone may fetch this"* into *"nobody may"* or, read the other
+	// way round, turn a self-only record into a public one. The two are
+	// separate types precisely so that confusion is not expressible.
+	TypeSharePublication = "app/share/publication"
 )
 
 // Share target tags (§2.2). TAGGED so there is no untagged ambiguity
@@ -125,6 +142,37 @@ type ShareRecordData struct {
 	Audience  []AudienceEntryData `cbor:"audience"`
 	Note      string              `cbor:"note,omitempty"`
 	CreatedAt uint64              `cbor:"created_at"`
+}
+
+// SharePublicationData is §2.5's audience-less share — `ShareRecordData`
+// with the `audience` field removed and nothing else changed.
+//
+// **A publication carrying an `audience` field is invalid** (§2.5), which is
+// why this is its own struct rather than the record struct with the field left
+// nil: a shared struct would decode an invalid entity into a valid-looking
+// value and lose the only thing that distinguishes the two types.
+//
+// Read-only on our side. We author no publications, so there is no `ToEntity`
+// here — adding one is a product decision (it means offering a folder to
+// anyone who can reach us) and not a codec convenience.
+type SharePublicationData struct {
+	Title     string      `cbor:"title"`
+	Target    ShareTarget `cbor:"target"`
+	Note      string      `cbor:"note,omitempty"`
+	CreatedAt uint64      `cbor:"created_at"`
+}
+
+// Validate enforces §2.5's shape. The target rules are §2.2's, unchanged —
+// the split is on the audience model and on nothing else.
+func (d SharePublicationData) Validate() error {
+	if err := d.Target.Validate(); err != nil {
+		return err
+	}
+	if d.CreatedAt == 0 {
+		return NewError(400, "invalid_share_publication",
+			"publication carries no created_at; it is REQUIRED (APP-CONVENTION-SHARE §2.5)")
+	}
+	return nil
 }
 
 // ShareFollowData is a consumer's subscription to another peer's share

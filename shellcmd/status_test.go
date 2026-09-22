@@ -368,7 +368,7 @@ func TestStatusSnapshot_OutboundIsStatedAndInboundIsNot(t *testing.T) {
 		t.Errorf("a peer we authorize for nothing reported %q, want an explicit nothing", got)
 	}
 
-	if err := workbench.SaveAccessPolicy(st, themPeer, workbench.SyncSenderGrants(), "test"); err != nil {
+	if err := workbench.SaveAccessPolicy(st, themPeer, workbench.SyncSenderGrants([]workbench.SharedScope{{LocalRoot: "probe", FolderID: "probe-id"}}), "test"); err != nil {
 		t.Fatal(err)
 	}
 	snap, err = ws.StatusSnapshot()

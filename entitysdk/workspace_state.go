@@ -3,6 +3,8 @@ package entitysdk
 import (
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -450,7 +452,73 @@ func (ws *WorkspaceState) ReadSetting(key string) string {
 	return ws.readSettingValue(ws.settingsPath(key))
 }
 
+// --- The §8 persist-arm obligation ---
+
+// HighestPersistedWindowID sweeps `app/{app-id}/workspace/windows/` and
+// returns the largest window id that has a persisted state entity, or 0 if
+// none has. A renderer that persists per-window state seeds its window-id
+// counter ABOVE this value, before allocating any window.
+//
+// This is `GUIDE-ENTITY-WORKBENCH-APP` §8's second arm — *"sweeping
+// `app/{app-id}/workspace/windows/` at startup, before allocating any window
+// id"* — and taking one of the two arms is a **MUST** for any application that
+// persists per-window state. The first arm is an `app/state/window-index`
+// (§4.2a), which is the right answer for an application that wants to *restore*
+// a window's state; the sweep is the right answer for one that only wants to
+// avoid handing the next session's window a stranger's state.
+//
+// **Why the obligation exists, in the words of the failure it prevents:**
+// `{window_id}` is a session-scoped slot address (§3), so an in-memory counter
+// starting at zero makes the next launch's first window `1` — and it then reads
+// back whatever the *previous* session's first window wrote. That is not a lost
+// session, it is a wrong one, and §8 names it as the third case the rule exists
+// to prevent: *"persisting, restoring, and silently restoring the wrong
+// thing."* Found by `entity-browser-rust` reading our source (their `W-3`,
+// 2026-09-01); `console.workspace.nextID` was exactly that counter, and
+// `workbench.LogModel` reads a window setting back by ordinal.
+//
+// **`Store.List` returns PEER-QUALIFIED paths** (AP58), so the id is parsed by
+// locating the `workspace/windows/` segment rather than by trimming the prefix
+// we passed in — a `TrimPrefix` with a relative prefix removes nothing and the
+// arithmetic after it is then confidently wrong. `entitysdk` cannot import
+// `workbench`, so `TreeRelative` is not available here; segment-scanning is the
+// equivalent and is idempotent on either path form.
+//
+// A malformed or non-numeric id segment is skipped rather than erroring: this
+// is a floor for allocation, and refusing to start because one stray binding
+// sits under the prefix would be worse than allocating above the ids we could
+// read.
+func (ws *WorkspaceState) HighestPersistedWindowID() uint32 {
+	const marker = "workspace/windows/"
+	var highest uint32
+	for _, e := range ws.store.List(ws.windowsPrefix()) {
+		i := strings.Index(e.Path, marker)
+		if i < 0 {
+			continue
+		}
+		rest := e.Path[i+len(marker):]
+		seg := rest
+		if j := strings.IndexByte(rest, '/'); j >= 0 {
+			seg = rest[:j]
+		}
+		n, err := strconv.ParseUint(seg, 10, 32)
+		if err != nil {
+			continue
+		}
+		if uint32(n) > highest {
+			highest = uint32(n)
+		}
+	}
+	return highest
+}
+
 // --- Path helpers ---
+
+// windowsPrefix is the sweep prefix for [HighestPersistedWindowID]. It is the
+// directory the §8 obligation names, with no trailing id.
+func (ws *WorkspaceState) windowsPrefix() string {
+	return fmt.Sprintf("app/%s/workspace/windows/", ws.appID)
+}
 
 func (ws *WorkspaceState) windowsStatePath(windowID uint32) string {
 	return fmt.Sprintf("app/%s/workspace/windows/%d/state", ws.appID, windowID)

@@ -37,7 +37,7 @@ D12–D27 here are ours, earned on the eight crash-hunt commits, two feedback ep
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP89, and the promotion
+  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP91, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -582,7 +582,7 @@ one — name the recurring cycle first, then let each step own one lever of it.
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
 - The project measures everything against the **27 disciplines (D1–D27)**, ten review
-  questions, and anti-pattern catalog (AP1–AP89) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+  questions, and anti-pattern catalog (AP1–AP91) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A COPY OF A LIVE SQLITE STORE IS NOT THE STORE, AND THE MISSING WRITES READ AS ZERO ROWS**
   (AP76). File-backed `SqliteStore` opens **WAL** (`core/store/sqlite.go`, `buildSqliteDSN`
   defaults `JournalMode` to `"WAL"`), so everything since the last checkpoint is in the `-wal`
@@ -695,6 +695,48 @@ one — name the recurring cycle first, then let each step own one lever of it.
   purpose — while `pull`'s whole job is to reach another peer. Routed:
   `docs/status/ROUTING-2026-09-10-a-entity-core-go-e1-breaks-cross-peer-ops.md`, core-go tracker
   rows 15–16. **Do not shim it locally** — that hides a cohort-wide question.
+- **SHARING ONE FOLDER USED TO GRANT A READ OF THE WHOLE TREE** (AP90, fixed 2026-09-10).
+  `workbench.SyncSenderGrants` carried `Resources: ["*"]` on three of its four entries, and the
+  reconciler writes that row verbatim — so *"share this folder"* authorized every entity and
+  every mounted file on the machine. Measured across the wire
+  (`shellboot/share_scope_probe_test.go`): a file from an unshared folder came back, **including
+  its `content` hash**, which is the next thing `system/content:get` needs. Its doc comment
+  claimed the set was "the minimum established by" a delegation test — true of the **handler
+  list**, false of the resources, because that test's negative arm drops a whole handler and
+  never narrows a cell. **A grant has four dimensions and "minimal" is a claim about all four.**
+  Now derived per folder from `workbench.SharedScope`, which carries **this peer's `LocalRoot`
+  and the OWNER's `FolderID`** — derive either from the other and you name an id nobody holds on
+  any folder received and republished under `both`.
+  **`system/content` IS scopeable and we are not scoping it** — an earlier version of this bullet
+  said the opposite and was wrong. `EXTENSION-CONTENT` §6.4.2 binds each hash into the tree at
+  `{namespace}/{hex(H)}` (lookup is one `tree:get`), and §6.4.1 makes namespace-scoped topology a
+  **MUST for multi-party deployments**; the flat mode we run — bare `system/content` namespace, no
+  `system/content:ingest` call anywhere in this tree — is the opt-in single-trust-domain one that
+  the same section says MUST NOT be the default and calls **"out-of-spec and security-defective"**
+  for multi-party. **Not fixable here alone:** core-go implements the ingest binding
+  (`bindHashTreePresence`) and **not** the get consult (`handleGet` is a bare store lookup), so
+  scoping our grant narrows which label we may claim, not which bytes we may get. Both halves are
+  routed.
+  **AND FOR MOUNTED FILE BYTES IT IS NOT OURS AT ALL — `local/files` IS THE CHUNKER AND IT NEVER
+  CALLS `ingest`** (measured 2026-09-10 on an operator question; the framing was the finding).
+  `ext/localfiles/watcher.go:327-345` runs FastCDC and `contentStore.Put`s the blob and every chunk
+  **directly**, so `bindHashTreePresence` — the only writer of the §6.4.2 binding — is *unreachable
+  for file bytes whatever the app tier does*; and `DOMAIN-LOCAL-FILES` §3.1 pins that handler's
+  internal scope to the **bare** namespace, so it is conformant while §6.4.1 says that topology MUST
+  NOT be the default. **The party that holds the path→grant relation is the party doing the
+  chunking**, which is why the namespace is `local/files`'s to derive (from the mount root — already
+  the boundary a share names) and not an application's to remember. Asks: arch **A-20**, core-go row
+  **20**, packet `ROUTING-2026-09-10-e-…`. **Do not scope our own grants before A-20 answers** — a
+  product that looks namespace-scoped while every file byte stays unbound has deleted the only signal
+  that the boundary is missing. We *do* chunk for our own documents at three sites
+  (`workbench/markdown_view_model.go:178`, `mount_sweep.go:209`, `ingest_tree.go:140`) using their
+  `chunker.ChunkFastCDC` at `types.DefaultChunkSize`, so the bytes agree by construction; what those
+  sites cannot do is know a namespace.
+  **Until all of that lands the tree grant is the operative boundary** — widen it and you have
+  re-opened this. `ShareOfferPrefix+"*"` is the one wildcard left and is named in the source as a
+  known disclosure. Note `APP-CONVENTION-SHARE` §2.2 had already ruled this — *"`target` is what
+  the grant's `resources` scope covers"* — so it was non-conformance, not just a leak; A-14 asks
+  arch whether that rule is conformance-checkable, since nothing anywhere compared the two.
 - **A WILDCARD TEST FIXTURE DELETES A STAGE OF THE PRODUCT FROM THE SUITE** (AP63). Every
   cross-peer test in this repo — twenty-four of them — runs under `peer.OpenAccessGrants()`, so
   the whole suite establishes that the transport works and **nothing at all** about permission.

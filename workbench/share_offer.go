@@ -49,15 +49,34 @@ type ShareOffer struct {
 	// publishing side. Informational: a receiver mounts wherever they
 	// like, and the two need not match.
 	TargetPrefix string
-	// Audience is the peer-ids this offer names.
+	// Audience is the peer-ids this offer names. Empty means **self-only**
+	// — an authored share with no members yet — and never "public"; see
+	// Public.
 	Audience []string
+	// Public is true when this offer came from an `app/share/publication`
+	// (§2.5): no audience, no minted token, pull-only.
+	//
+	// **A separate field and not `len(Audience) == 0`.** §2.2 gives an empty
+	// audience the meaning *"authored, no members yet"*, so the two states
+	// are opposites — one is reachable by anybody, the other by nobody — and
+	// `SHARE-7` is the conformance vector that makes reading one as the other
+	// fail loudly. A surface MUST render them differently.
+	Public bool
 	// CreatedAt is the authoring timestamp in Unix milliseconds, carried
 	// as the convention stores it.
 	CreatedAtMillis uint64
 }
 
 // OfferedTo reports whether this offer names a peer.
+//
+// **A publication is offered to everyone**, so it answers true for any
+// non-empty peer-id — the alternative is an audience check that reads a
+// pull-only share as addressed to nobody, which is the same conflation
+// ShareOffer.Public exists to prevent.
 func (o ShareOffer) OfferedTo(peerID string) bool {
+	if o.Public {
+		return peerID != ""
+	}
 	for _, a := range o.Audience {
 		if a == peerID {
 			return true
@@ -134,33 +153,54 @@ func LoadShareOffers(st *Store) (offers []ShareOffer, problems []string) {
 			problems = append(problems, root+": listed but not resolvable")
 			continue
 		}
-		if ent.Type != entitysdk.TypeShareRecord {
-			problems = append(problems, root+": unexpected type "+ent.Type)
+		offer, problem := decodeOfferEntity(root, ent)
+		if problem != "" {
+			problems = append(problems, problem)
 			continue
 		}
-		var rec entitysdk.ShareRecordData
-		if err := ecf.Decode(ent.Data, &rec); err != nil {
-			problems = append(problems, root+": did not decode: "+err.Error())
-			continue
-		}
-		offers = append(offers, shareOfferFromRecord(root, rec))
+		offers = append(offers, offer)
 	}
 	sort.Slice(offers, func(i, j int) bool { return offers[i].Root < offers[j].Root })
 	sort.Strings(problems)
 	return offers, problems
 }
 
+// decodeOfferEntity turns one offer entity into a ShareOffer, or returns a
+// problem line naming the root. **The one decode point for both §2 share
+// types**, shared by the local listing and by the remote read, because the two
+// used to carry the type check separately and only one of them would have been
+// taught about `app/share/publication`.
+//
+// The problem string is the empty string on success — a caller must test that
+// rather than the zero ShareOffer, since a publication legitimately has an
+// empty audience.
+func decodeOfferEntity(root string, ent entity.Entity) (ShareOffer, string) {
+	switch ent.Type {
+	case entitysdk.TypeShareRecord:
+		var rec entitysdk.ShareRecordData
+		if err := ecf.Decode(ent.Data, &rec); err != nil {
+			return ShareOffer{}, root + ": did not decode: " + err.Error()
+		}
+		return shareOfferFromRecord(root, rec), ""
+	case entitysdk.TypeSharePublication:
+		var pub entitysdk.SharePublicationData
+		if err := ecf.Decode(ent.Data, &pub); err != nil {
+			return ShareOffer{}, root + ": did not decode: " + err.Error()
+		}
+		return shareOfferFromPublication(root, pub), ""
+	default:
+		return ShareOffer{}, root + ": unexpected type " + ent.Type
+	}
+}
+
 // DecodeRemoteShareOffer converts one record read from ANOTHER peer's
 // tree. Separate from the local path because the root name arrives in the
 // path there and has to be recovered from it here.
+//
+// Reads `app/share/publication` as well as `app/share/record` — the peer whose
+// tree this is need not be us, and the other application tier on this protocol
+// emits the publication type for its public shares.
 func DecodeRemoteShareOffer(path string, ent entity.Entity) (ShareOffer, bool) {
-	if ent.Type != entitysdk.TypeShareRecord {
-		return ShareOffer{}, false
-	}
-	var rec entitysdk.ShareRecordData
-	if err := ecf.Decode(ent.Data, &rec); err != nil {
-		return ShareOffer{}, false
-	}
 	root := path
 	if i := strings.LastIndex(root, "/"); i >= 0 {
 		root = root[i+1:]
@@ -168,7 +208,25 @@ func DecodeRemoteShareOffer(path string, ent entity.Entity) (ShareOffer, bool) {
 	if root == "" {
 		return ShareOffer{}, false
 	}
-	return shareOfferFromRecord(root, rec), true
+	offer, problem := decodeOfferEntity(root, ent)
+	if problem != "" {
+		return ShareOffer{}, false
+	}
+	return offer, true
+}
+
+// shareOfferFromPublication reads §2.5's audience-less form. `Public` is set
+// and `Audience` is left empty — which is why `Public` is a field and not
+// derived from the audience length (see ShareOffer.Public).
+func shareOfferFromPublication(root string, pub entitysdk.SharePublicationData) ShareOffer {
+	return ShareOffer{
+		Root:            root,
+		Title:           pub.Title,
+		TargetPrefix:    pub.Target.Path,
+		Audience:        []string{},
+		Public:          true,
+		CreatedAtMillis: pub.CreatedAt,
+	}
 }
 
 func shareOfferFromRecord(root string, rec entitysdk.ShareRecordData) ShareOffer {

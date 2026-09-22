@@ -92,7 +92,7 @@ func TestReconcile_PolicyIsTheUnionOfBothDirections(t *testing.T) {
 	// Seed the row the way the verbs leave it: Share first, then Accept
 	// over the top of it. This is not a contrived starting point — it is
 	// the byte-for-byte state `share` followed by `accept` produces.
-	if err := workbench.SaveAccessPolicy(st, them, workbench.SyncSenderGrants(), "share"); err != nil {
+	if err := workbench.SaveAccessPolicy(st, them, workbench.SyncSenderGrants([]workbench.SharedScope{{LocalRoot: "probe", FolderID: "probe-id"}}), "share"); err != nil {
 		t.Fatal(err)
 	}
 	if err := workbench.SaveAccessPolicy(st, them, workbench.SyncReceiverGrants(), "accept"); err != nil {

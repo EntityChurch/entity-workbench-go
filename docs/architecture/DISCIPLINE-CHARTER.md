@@ -690,7 +690,7 @@ Short enough to run on every change. Six inherited, four substrate-native.
 
 ---
 
-## 4. The anti-pattern catalog (AP1-AP89)
+## 4. The anti-pattern catalog (AP1-AP91)
 
 Each a real defect that shipped or a claim that was routed, diagnosed, and
 is now pinned by a regression test.
@@ -977,6 +977,45 @@ one mount and silently static for every one chosen afterwards.
 
 | AP88 | the delivery-failure banner told an operator **"20 file transfer(s) failed … the content was not there when we asked"** on its first day in front of a human — about 20 markers with no content in them | **A FIXTURE THAT *ADDS* WHAT PRODUCTION LACKS IS AS BLIND AS ONE THAT OMITS WHAT PRODUCTION HAS, AND IT IS HARDER TO SEE BECAUSE THE INVENTED VALUE MAKES THE CODE LOOK MORE CAREFUL.** The noise filter matched `"/system/network"`, leading slash, because the test beside it seeded `entity://{peer}/system/network` and the peer-qualified form was assumed to be the only one. The kernel writes the **bare** handler path — `failed_uri=system/network`, verbatim in the run log, and neither writer (`ext/continuation/advance.go`, `ext/subscription/chain_error_lost.go`) qualifies it. So the filter matched nothing, every reconnect marker was counted as a failed transfer, and a surface built *that same day* to end a morning of being told nothing spent its first day confidently saying something false instead. This is **AP58 inverted**: AP58's fixture omitted the `NamespacedIndex` production always has; this one added qualification production never has. Both make the arithmetic work in the test and nowhere else. Three rules. **When a predicate matches a value another repo writes, the test carries a byte-exact string from a real run, cited to the log line** — not a string of our own construction, however reasonable. **Widening a matcher to fix a miss must not trade a false alarm for a silent one**: the near-miss arm (`system/networking-does-not-exist` must still be counted) is what stops `Contains` being the fix. And **a diagnostic surface's explanatory clause is a claim** — *"the content was not there"* was appended by matching a code, on a marker whose URI said no content was involved; if a sentence explains a cause, something must have established the cause. | D19, D25 |
 | AP89 | the operator repeatedly clicked a Nearby row for a peer they could not reach, because it was the control that looked like it should reconnect; it is a label | **A ROW THAT RENDERS STATE AND OFFERS NO VERB IS AP57 AT ROW GRANULARITY, AND IT BITES HARDEST IN THE FAILURE STATE.** A discovered peer already in the address book renders as `known` with no control — correct labelling, hard-won (`known` is an address-book fact; `Connected` would assert reachability nothing checked). But the panel then offers nothing to *do*, and the state in which an operator stares at that row is exactly the one where they want an action: we know this peer and cannot reach them. The action exists in a different panel. **A surface may decline to assert a fact it cannot check; it may not also swallow the verb.** When a row's state is a problem, the row carries the remedy or names where it lives. | D23 |
+
+| AP90 | `workbench.SyncSenderGrants`, from the day per-peer policy replaced the development wildcard (2026-09-02) until 2026-09-10 — found by an operator asking what `system/content:get` could reach | **A GRANT MINIMIZED ALONG ONE AXIS READS AS A MINIMIZED GRANT.** Three of the four entries a sharing peer writes into `system/capability/policy/{peer}` carried `Resources: ["*"]`, so the gesture *"share this folder"* authorized the receiving peer to read **the entire tree and every mounted file on the machine**. Measured (`shellboot/share_scope_probe_test.go`): share one folder, read a file from an unshared one, 126 bytes back **including the `content` hash** — which is exactly what `system/content:get` needs next. Share one folder, enumerate everything, fetch anything. **The doc comment is the whole lesson.** It said the set "is not invented — it is the minimum established by `cmd_stage3_cap_delegation_test.go`", and that is TRUE OF THE HANDLER LIST and false of everything else: that test's negative arm drops `system/content:get` *entirely*. Dropping a whole handler proves the handler is necessary and says nothing about whether its resources are minimal. The sentence was written about the rows and got read as being about the cells — by us, repeatedly, for eight days. **And `APP-CONVENTION-SHARE` §2.2 already ruled it** — *"`target` is what the grant's `resources` scope covers"* — so this was not merely a leak, it was non-conformance with the convention that governs the feature, sitting under a comment claiming measurement. Three rules. **A grant has four dimensions and "minimal" is a claim about all four** — say which ones you measured. **When a capability is narrowed, the probe asserts the NEGATIVE across the wire** (a peer-qualified read dispatches, AP11; reading our own mirror passes whatever the grants say) **with an anti-vacuity arm proving the authorized path still works** — without it the negative passes against a peer that authorized nothing. And **a security boundary that the spec states and nothing enforces will drift**: nothing in any suite compared our share record's `target` against the grant's `resources`, so they disagreed for months at full green. | D19, D24, D10 |
+
+*Enforcement (AP90):* `shellboot/share_scope_probe_test.go` — two folders,
+one shared, negative read over the wire, positive arm first. The second arm
+RECORDS a known deviation rather than asserting either side of it. **The first
+version of this entry claimed `system/content:get` "cannot be scoped in any
+implementation" — that was wrong and is corrected here, because a wrong
+security claim in a charter is worse than the bug it describes.**
+`EXTENSION-CONTENT` §6.4.2 binds each hash into the tree at
+`{namespace}/{hex(H)}` and §6.4.1 makes namespace-scoped topology a **MUST for
+multi-party deployments**, where get "consults the tree binding and serves only
+when the hash is bound under the requested namespace". We run the flat
+single-trust-domain mode the same section says MUST NOT be the default and
+calls "out-of-spec and security-defective" when multi-party. It is not fixable
+here alone: core-go implements the ingest binding and **not** the get consult.
+**And for MOUNTED FILE BYTES it is not ours at any layer** — measured
+2026-09-10, one operator question later: `ext/localfiles/watcher.go:327-345`
+runs FastCDC and `contentStore.Put`s the blob and every chunk **without
+dispatching `system/content:ingest`**, so `bindHashTreePresence` is unreachable
+for file bytes whatever an application does, and `DOMAIN-LOCAL-FILES` §3.1 pins
+that handler's own grant to the bare namespace. The party holding the
+path→grant relation is the party doing the chunking, so the namespace is
+`local/files`'s to derive from the mount root. Asked as A-20 / kernel row 20.
+Until both land the tree grant is the operative boundary — a fact about this
+build, not a law of architecture. `workbench.SharedScope`
+carries the pair the grant needs — **this peer's `LocalRoot` and the OWNER's
+`FolderID`** — because deriving either from the other was the first version
+and it named an id nobody holds on any folder received and republished under
+`both`. Both reverse-leg tests caught it; a symmetric-names fixture would not
+have.
+
+| AP91 | `docs/status/TRACKER-entity-system-architecture.md` row A-15, 2026-09-10 — the retraction of AP90's *"cannot be scoped in any implementation"* reached five documents on the day it was found and missed the sixth by a day | **A RETRACTION THAT MISSES THE TRACKER ROW HAS NOT BEEN MADE, BECAUSE THE TRACKER IS THE COPY A COUNTERPART READS.** The false claim was corrected in the source, the charter, `AGENTS.md`, the design review and the outbound packet — a conscientious sweep — and survived as the **premise of an open ask** pointed at the specification seat, who would have answered a question built on it. This is AP80 (*grep the published docs for the sentence that used to be true*) arriving in the one file whose whole job is to tell another seat what we are waiting on, and it evades AP80's own habit for a structural reason: **a tracker row reads as an index entry rather than as prose making an assertion**, so a sweep of "documents" does not feel like it includes it. The ecosystem convention already says why it matters — *other seats reconcile against the tracker, not against the directory* — which cuts both ways: it is where a missing packet becomes invisible **and** where a withdrawn claim stays alive. **The rule: when you retract a claim, fix the TRACKER ROW FIRST, then the prose.** The row is the shortest, most-read, most-quoted copy, and the one with a reader who will act on it. | D19, D24 |
+
+*Enforcement (AP91):* none available and it is worth saying so plainly —
+**nothing in the tree can fail on prose** (AP80's own note), and a tracker row
+is prose. The procedural hook is the retraction checklist in AGENTS.md's
+publication rules: grep the claim, and start the sweep at
+`docs/status/TRACKER-*.md` rather than ending there.
 
 *Enforcement (AP88):* `shellcmd/delivery_failures_test.go` carries
 `TheBareURIFormIsTheOneProductionEmits` — the observed marker, `TargetPeerID`

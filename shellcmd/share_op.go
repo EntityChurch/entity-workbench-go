@@ -197,7 +197,7 @@ func (ws *ShellWorkspace) Share(req ShareRequest) (ShareOutcome, error) {
 		PeerID:        peerID,
 		PeerAlias:     alias,
 		PolicyPath:    workbench.AccessPolicyPrefix + peerID,
-		GrantSummary:  workbench.SummarizeGrants(workbench.SyncSenderGrants()),
+		GrantSummary:  workbench.SummarizeGrants(workbench.SyncSenderGrants([]workbench.SharedScope{{LocalRoot: root, FolderID: workbench.FolderID(ws.Local.Peer.PeerID(), root)}})),
 		Audience:      audience,
 		Reconnected:   reconnected,
 		ReconnectNote: note,
