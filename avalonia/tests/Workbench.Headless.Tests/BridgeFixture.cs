@@ -52,6 +52,19 @@ public sealed class BridgeFixture : IDisposable
         // never reaches the bridge.
         EntityAvalonia.Panels.SharePanel.AutoDialOnConnect = false;
 
+        // Same rule, and one extra reason. SharingStatusPanel runs a real
+        // reconcile pass when it opens — correct in the app, since opening
+        // it IS the operator asking whether their sharing works, and a
+        // pass is the only thing that can answer. Here it would dial. It
+        // would also land ASYNCHRONOUSLY and REPLACE the panel's row
+        // collections, wiping whatever a test seeded moments earlier: a
+        // race decided by dispatcher timing and blamed on the assertion.
+        //
+        // Assembly-wide rather than per-test, because PanelStackScrollTests
+        // constructs every registered panel and would otherwise dial on
+        // whatever the last test happened to leave this static set to.
+        EntityAvalonia.Panels.SharingStatusPanel.AutoReconcileOnOpen = false;
+
         var config = new BridgeConfig
         {
             Identity = "",

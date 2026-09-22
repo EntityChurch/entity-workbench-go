@@ -74,6 +74,18 @@ type SyncRequest struct {
 	// folder under different names. Empty means "the same name", which
 	// is the symmetric case and by far the common one.
 	TargetRoot string
+
+	// SkipBackfill establishes the subscription WITHOUT catching up on
+	// the files already in the remote folder.
+	//
+	// The default is to catch up, because the opposite default is the
+	// bug this option's absence used to be: a subscription is a future
+	// tense, so without a backfill "share a folder that has files in
+	// it" transferred nothing at all and reported success. The flag
+	// exists for the two callers that genuinely want only the future —
+	// a test pinning delivery behaviour, and a re-subscribe on a folder
+	// already known to be current — and for nobody else.
+	SkipBackfill bool
 }
 
 // SyncOutcome describes the relationship that now exists. Every field is
@@ -89,6 +101,18 @@ type SyncOutcome struct {
 	CapabilityPath string
 	HandlerPattern string
 	SubscriptionID string
+
+	// Backfill reports the catch-up pass over files that were already
+	// in the remote folder when this sync was established. It is a
+	// field rather than a log line because it is the answer to the
+	// question the operator actually has — "did my files come across" —
+	// and a surface that drops it is back to reporting an empty folder
+	// as a success.
+	Backfill BackfillResult
+
+	// BackfillSkipped records that no catch-up ran, so a surface can
+	// tell "nothing to bring across" apart from "we did not look".
+	BackfillSkipped bool
 }
 
 // Sync establishes the receiving half of a folder sync from a remote
@@ -205,7 +229,23 @@ func (ws *ShellWorkspace) Sync(req SyncRequest) (SyncOutcome, error) {
 
 	ws.registerSyncSub(remotePeerID, root, sub)
 
-	return SyncOutcome{
+	// Catch up on what is already there — AFTER the subscription is
+	// live and persisted, never before.
+	//
+	// The order is the whole correctness argument. Subscribing first
+	// means a file written DURING the backfill is delivered by the
+	// subscription; backfilling first would leave a window in which a
+	// write is missed by both halves, and that window is exactly when
+	// the operator is doing things, because they just pressed the
+	// button. The overlap is harmless in the other direction: a file
+	// covered by both arrives twice and the handler's F9 short-circuit
+	// makes the second one a no-op.
+	//
+	// A backfill failure does NOT unwind the sync. The subscription is
+	// the durable half and a folder that catches up on the next write
+	// is strictly better than no relationship at all — so this reports
+	// and does not roll back.
+	out := SyncOutcome{
 		RemotePeerID:   remotePeerID,
 		RemoteAlias:    remoteAlias,
 		Root:           root,
@@ -215,7 +255,66 @@ func (ws *ShellWorkspace) Sync(req SyncRequest) (SyncOutcome, error) {
 		CapabilityPath: capPath,
 		HandlerPattern: workbench.BlobResolvePattern,
 		SubscriptionID: sub.ID(),
-	}, nil
+	}
+	if req.SkipBackfill {
+		out.BackfillSkipped = true
+		return out, nil
+	}
+	out.Backfill = ws.backfill(remotePeerID, sourcePrefix, targetPrefix, sub.ID())
+	return out, nil
+}
+
+// Resync re-runs the catch-up pass over an established sync, without
+// touching the subscription.
+//
+// This is the "pull everything now" affordance, and it exists for a
+// reason that is not redundancy with Sync: a sync established while the
+// grant had not yet reached the remote peer backfills nothing, silently
+// and correctly, and there was previously no way to retry that half
+// short of tearing the whole relationship down and rebuilding it. It is
+// also the honest answer to "did it work?" — running it twice should
+// report everything as already-current, which is a positive
+// confirmation rather than an absence of errors.
+//
+// Idempotent by construction: every file goes through the handler's F9
+// content-hash short-circuit, so a second pass transfers no bytes.
+func (ws *ShellWorkspace) Resync(remote, root string) (BackfillResult, error) {
+	if ws == nil || ws.Local == nil || ws.Local.Peer == nil {
+		return BackfillResult{}, fmt.Errorf("workspace has no local peer")
+	}
+	local := ws.Local.Peer
+
+	remotePeerID := strings.TrimSpace(remote)
+	if pc, ok := ws.Conns[remotePeerID]; ok && pc != nil {
+		remotePeerID = pc.PeerID
+	}
+	root = sanitizeRootName(strings.TrimSpace(root))
+	if remotePeerID == "" || root == "" {
+		return BackfillResult{}, fmt.Errorf("resync needs a remote peer and a root name")
+	}
+
+	binding, found := workbench.LoadSyncBinding(local.Store(), remotePeerID, root)
+	if !found {
+		return BackfillResult{}, fmt.Errorf(
+			"no sync from %s for %q — run `sync %s %s` first",
+			shortPeer(remotePeerID), root, remote, root)
+	}
+
+	// The blob-resolve mount table is process state, and a sync
+	// restored from disk at startup registers it; a sync whose mapping
+	// is missing would 404 every file with "no_mount_for_uri", which
+	// reads as a routing bug rather than as the re-registration this
+	// actually needs.
+	if ws.BlobResolve == nil {
+		return BackfillResult{}, fmt.Errorf(
+			"workbench blob-resolve handler not wired on this workspace")
+	}
+	if ws.BlobResolve.LookupMount(binding.SourcePrefix) == "" {
+		ws.BlobResolve.RegisterMount(binding.SourcePrefix, binding.TargetPrefix)
+	}
+
+	return ws.backfill(remotePeerID, binding.SourcePrefix, binding.TargetPrefix,
+		binding.SubscriptionID), nil
 }
 
 // UnsyncOutcome reports what teardown managed to do, including what it

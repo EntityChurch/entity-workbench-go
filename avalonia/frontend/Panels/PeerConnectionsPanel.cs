@@ -861,7 +861,19 @@ public sealed class PeerConnectionsPanel : UserControl, IDisposable, IPanelPrefe
             }
             if (!result.TryGetProperty("listening", out var listening) || !listening.GetBoolean())
             {
-                return "Not listening (configure -listen to accept incoming peers)";
+                return "Not listening — no other peer can reach this one, and no folder can be shared to it (--no-listen, or --ephemeral)";
+            }
+            // Prefer the bring-up's own summary. It is the only form that
+            // can say "bound, but on a different port than asked for" or
+            // "bound, and NOT dialable by peer-id" — two states that
+            // otherwise present to an operator as an unexplained silence.
+            if (result.TryGetProperty("summary", out var sum))
+            {
+                var text = sum.GetString() ?? "";
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return char.ToUpperInvariant(text[0]) + text.Substring(1);
+                }
             }
             var scheme = result.TryGetProperty("scheme", out var s) ? (s.GetString() ?? "") : "";
             var addr = result.TryGetProperty("addr", out var a) ? (a.GetString() ?? "") : "";

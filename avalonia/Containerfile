@@ -28,6 +28,21 @@ RUN dnf install -y \
         libicu \
     && dnf clean all
 
+# BUILD STAMP — the answer to "which build is this machine running?"
+#
+# Two machines running different builds, with no way to tell them apart,
+# cost a full day on 2026-09-03: a fix was "reproduced" as still broken
+# against a binary that predated it. The stamp is derived by the Makefile
+# from git describe PLUS a hash of the working-tree diff, so it is stable
+# for an unchanged tree (the layer cache still hits on a no-op rebuild)
+# and distinct for any edit, committed or not.
+#
+# It is baked into BOTH artifacts. They are always built together here, so
+# a disagreement between them at runtime means dist-native/ has a stale
+# libbridge.so beside a fresh frontend — which `extract` can produce and
+# nothing else would report.
+ARG BUILD_STAMP=unknown
+
 # Both siblings into /src
 COPY entity-core-go         /src/entity-core-go
 COPY entity-workbench-go    /src/entity-workbench-go
@@ -37,15 +52,29 @@ COPY entity-workbench-go    /src/entity-workbench-go
 # uses addr2line against this library to decode coredump
 # addresses to Go function names — we can't diagnose without it,
 # and the size cost is ~3-4MB which we don't care about.
+#
+# CACHE MOUNTS, on every compile step in this file. Before them, the two
+# COPY lines above invalidated everything below on any source edit, so
+# every build re-downloaded the whole Go module graph and the whole NuGet
+# graph — including the self-contained linux-x64 runtime packs — and
+# recompiled from cold. A cache mount is not part of the image, so it
+# survives that invalidation: the module and NuGet caches persist, and so
+# does the Go build cache, which is the larger win (incremental compile
+# rather than incremental download).
 WORKDIR /src/entity-workbench-go/avalonia/bridge
-RUN CGO_ENABLED=1 \
+RUN --mount=type=cache,target=/root/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 \
     go build -buildmode=c-shared \
+        -ldflags "-X main.buildStamp=${BUILD_STAMP}" \
         -o /build/libbridge.so .
 
 # ---- Avalonia self-contained publish -----------------------
 WORKDIR /src/entity-workbench-go/avalonia/frontend
-RUN dotnet publish -c Release -r linux-x64 --self-contained true \
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet publish -c Release -r linux-x64 --self-contained true \
         -p:PublishSingleFile=false \
+        -p:InformationalVersion=${BUILD_STAMP} \
         -o /build/dist
 
 # Drop the bridge into the .NET runtime directory so the loader
@@ -56,7 +85,8 @@ RUN cp /build/libbridge.so /build/dist/
 # /build/dist so `make crash` on the host can run it via the
 # self-contained .NET runtime included in the dist. Without this
 # the host (which has no .NET SDK) can't decode managed minidumps.
-RUN dotnet tool install --tool-path /build/dist/tools dotnet-dump
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet tool install --tool-path /build/dist/tools dotnet-dump
 
 # -----------------------------------------------------------
 # Stage 1.5: headless UI tests
@@ -73,7 +103,8 @@ RUN dotnet tool install --tool-path /build/dist/tools dotnet-dump
 FROM builder AS tester
 WORKDIR /src/entity-workbench-go/avalonia/tests/Workbench.Headless.Tests
 ENV LD_LIBRARY_PATH=/build
-RUN dotnet test -c Release --logger "console;verbosity=normal"
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet test -c Release --logger "console;verbosity=normal"
 
 # -----------------------------------------------------------
 # Stage 2: runtime image (minimal X11/GL stack for Avalonia)

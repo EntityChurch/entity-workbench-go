@@ -73,14 +73,67 @@ func cmdSync(sh *Shell, args []string) (Result, error) {
 		fmt.Sprintf("  handler:       %s", out.HandlerPattern),
 		fmt.Sprintf("  capability:    %s", out.CapabilityPath),
 		fmt.Sprintf("  subscription:  %s", out.SubscriptionID),
-		"",
-		// Said out loud because the alternative is an operator watching
-		// an empty directory and concluding the feature is broken. The
-		// subscription fires on CHANGE; it does not replay history.
-		"note: this delivers files the remote peer changes from now on.",
-		"      Files already in their mount arrive when they next change,",
-		"      or immediately if they re-mount (the watcher's initial scan",
-		"      re-writes every entity it admits).",
+	}
+	lines = append(lines, backfillLines(out.Backfill, out.BackfillSkipped)...)
+	return LinesResult(lines), nil
+}
+
+// backfillLines renders a catch-up pass for a terminal.
+//
+// It leads with the count because that is the operator's actual
+// question — "did my files come across" — and every previous version of
+// this output answered a different one. The note it replaced said
+// "files already in their mount arrive when they next change", which
+// was true of the implementation, described the product as not doing
+// the thing it is named after, and stood for long enough that an
+// operator reasonably concluded the whole feature was broken.
+func backfillLines(res BackfillResult, skipped bool) []string {
+	if skipped {
+		return []string{"", "backfill skipped — only files changed from now on will arrive."}
+	}
+	lines := []string{"", "existing files: " + res.Summary()}
+	for _, e := range res.Errors {
+		lines = append(lines, "  ! "+e)
+	}
+	if res.Failed > len(res.Errors) {
+		lines = append(lines, fmt.Sprintf("  ! ... and %d more", res.Failed-len(res.Errors)))
+	}
+	if res.Unreachable {
+		// Distinct from a failure count: nothing about their folder was
+		// observed, so there is nothing to retry per-file.
+		lines = append(lines,
+			"  the subscription IS established — changes they make from now on will still",
+			"  arrive; run `resync` once the grant has reached this peer.")
+		return lines
+	}
+	if res.Failed > 0 {
+		// The most common cause by a wide margin, and the one an
+		// operator cannot guess: their grant has not reached us yet, so
+		// the content fetch is refused. Naming the retry is worth more
+		// than naming the error class.
+		lines = append(lines,
+			"  a failure here is usually their grant not having reached this peer yet —",
+			"  the subscription is established regardless; run `resync` to retry.")
+	}
+	return lines
+}
+
+func cmdResync(sh *Shell, args []string) (Result, error) {
+	if len(args) < 2 {
+		return Result{}, fmt.Errorf("usage: resync <peer> <root>")
+	}
+	res, err := sh.Resync(args[0], args[1])
+	if err != nil {
+		return Result{}, err
+	}
+	lines := []string{fmt.Sprintf("re-pulled %s from %s", args[1], args[0])}
+	lines = append(lines, backfillLines(res, false)...)
+	if res.Complete() && res.Failed == 0 && res.Materialized == 0 && res.AlreadyCurrent > 0 {
+		// A positive confirmation, which the operator otherwise has no
+		// way to obtain: "no errors" and "nothing happened" render
+		// identically, and this is the run where they differ.
+		lines = append(lines, "",
+			"everything the remote folder holds is already here — the sync is current.")
 	}
 	return LinesResult(lines), nil
 }

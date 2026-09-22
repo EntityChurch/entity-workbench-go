@@ -53,7 +53,10 @@ package shellcmd
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -137,9 +140,29 @@ func (ws *ShellWorkspace) Share(req ShareRequest) (ShareOutcome, error) {
 		audience = mergeAudience(existing.Audience, peerID)
 	}
 
-	if err := workbench.SaveAccessPolicy(local.Store(), peerID,
-		workbench.SyncSenderGrants(),
-		"share: "+root); err != nil {
+	// Record the DECLARATION before touching the substrate. From here on
+	// the durable answer to "does this peer have this folder" is one
+	// record, and the policy row below is derivable from it — which is
+	// what lets a restart, or any later pass of the reconciler, put the
+	// substrate back without an operator repeating this sequence.
+	//
+	// Declared first, and on purpose: if the policy write fails, having
+	// declared the intent is the state we want to be left in. The reverse
+	// order leaves authority granted for something nothing remembers
+	// wanting.
+	priorFolder, hadPriorFolder, err := ws.declareLocalShare(root, peerID, alias, req.NowMillis)
+	if err != nil {
+		return ShareOutcome{}, err
+	}
+
+	// DERIVED from the declaration, never written directly — see
+	// ApplyDeclaredPolicy. Writing `SyncSenderGrants` here would replace
+	// the whole row, and a peer we have also accepted a folder FROM needs
+	// the receiver half of it: the second of the two verbs to run used to
+	// revoke the first, so two-way sharing between one pair of machines
+	// authorized in one direction only (AP68).
+	if _, err := ws.ApplyDeclaredPolicy(peerID, "share: "+root); err != nil {
+		ws.undeclareLocalShare(root, peerID, priorFolder, hadPriorFolder)
 		return ShareOutcome{}, err
 	}
 
@@ -154,9 +177,15 @@ func (ws *ShellWorkspace) Share(req ShareRequest) (ShareOutcome, error) {
 		Audience:        audience,
 		CreatedAtMillis: req.NowMillis,
 	}); err != nil {
-		// Unwind the grant: an authorization with no offer beside it is
+		// Unwind the DECLARATION, and let the policy row be re-derived from
+		// what is left — an authorization with no offer beside it is
 		// authority nobody asked for and nothing records the reason for.
-		workbench.RemoveAccessPolicy(local.Store(), peerID)
+		//
+		// Not `RemoveAccessPolicy`, which is what this did while the verb
+		// owned the row: the row is now a union, so deleting it would also
+		// revoke a folder we accepted FROM this peer and break a working
+		// relationship because an unrelated one failed to record an offer.
+		ws.undeclareLocalShare(root, peerID, priorFolder, hadPriorFolder)
 		return ShareOutcome{}, err
 	}
 
@@ -236,21 +265,49 @@ func (ws *ShellWorkspace) Unshare(root, peer string) (UnshareOutcome, error) {
 		}
 	}
 
-	// Only drop the peer's policy if they are no longer in ANY of our
-	// offers. The policy is per-peer and a share is per-root, so revoking
-	// on the first unshare would silently cut a folder the operator did
-	// not mention.
-	if !peerIsStillOffered(local.Store(), peerID) {
-		out.PolicyRemoved = workbench.RemoveAccessPolicy(local.Store(), peerID)
+	// Withdraw the DECLARATION first. Removing only the policy row leaves
+	// a folder record still saying this peer is offered the folder, and
+	// the next reconcile writes the grant straight back — so the
+	// withdrawal would quietly reverse itself at the next `status` or the
+	// next launch.
+	if err := ws.declareWithdrawnShare(root, peerID); err != nil {
+		return out, err
 	}
+
+	// Then re-derive the row. This drops the peer's policy exactly when
+	// nothing declared authorizes them any more, which is a stronger and
+	// narrower test than the one it replaces: `peerIsStillOffered` reads
+	// only OFFERS, so unsharing the last folder from a peer we also
+	// receive one FROM used to delete their delivery grant as well.
+	removed, err := ws.WithdrawDeclaredPolicy(peerID, "unshare: "+root)
+	if err != nil {
+		return out, err
+	}
+	out.PolicyRemoved = removed
 	return out, nil
 }
 
 // AcceptOutcome reports what accepting an offer established.
 type AcceptOutcome struct {
-	PeerID        string
-	PeerAlias     string
-	Root          string
+	PeerID    string
+	PeerAlias string
+	Root      string
+
+	// LocalRoot is the mount root the files land in. Equal to Root in
+	// the symmetric case; different whenever the operator chose a
+	// directory whose name is not what the sender called theirs.
+	LocalRoot string
+
+	// Mounted is the mount this accept CREATED, or nil when it received
+	// into one that already existed.
+	//
+	// A pointer, so that "reused an existing mount" and "made a new one"
+	// are distinguishable at a glance. They are different events for the
+	// operator: one of them just bridged a directory on their disk, and
+	// a surface that reports both identically is hiding the act it
+	// should be confirming.
+	Mounted *MountOutcome
+
 	PolicyPath    string
 	GrantSummary  string
 	Sync          SyncOutcome
@@ -278,42 +335,124 @@ type AcceptOutcome struct {
 	PublisherMustDial string
 }
 
-// Accept is the receiving side's one step: write the delivery policy that
-// lets the publisher reach our blob-resolve handler, re-establish the
-// connection so it is in force, then sync.
+// AcceptRequest is the renderer-neutral input to an accept.
+type AcceptRequest struct {
+	// Peer is who is offering — an alias or a bare peer-id.
+	Peer string
+
+	// Root is THEIR mount root name, as `offers` reports it.
+	Root string
+
+	// Directory is where the files should land on this machine. When
+	// set, Accept mounts it — creating the directory if it is not there
+	// — and receives into it. When empty, Accept requires a mount
+	// already named Root, which is what it always required.
+	//
+	// This field is the whole of step 6 of the nine-step flow. Until it
+	// existed, `sync` refused without a local mount (correctly — a sync
+	// that 404s on every delivery is worse than one that refuses), and
+	// the only way to satisfy that was a separate `mount` step whose
+	// directory basename had to match, by an unstated coupling, whatever
+	// the SENDER had called their folder.
+	Directory string
+
+	// AllowNonEmpty proceeds when Directory already contains files.
+	//
+	// The refusal it overrides is not fussiness. Incoming files
+	// overwrite same-named local files and remote deletes propagate, so
+	// pointing an accept at a directory that already has contents in it
+	// is a destructive act — and the operator's mental model at that
+	// moment is "choose somewhere to put these", not "choose something
+	// to merge with". Naming the flag after the thing it permits, rather
+	// than `Force`, keeps that visible at the call site.
+	AllowNonEmpty bool
+}
+
+// NonEmptyDirectory is returned when Accept was asked to receive into a
+// directory that already has files in it.
 //
-// The three actions are one verb because they are not independently
-// useful. A policy with no sync grants a stranger a handler they will
-// never call; a sync with no policy is accepted and delivers nothing.
-func (ws *ShellWorkspace) Accept(peer, root string) (AcceptOutcome, error) {
+// Typed, for MountConflict's reason: a shell prints it, and a panel wants
+// to say "this folder has 12 items in it" beside a button that proceeds
+// anyway.
+type NonEmptyDirectory struct {
+	Path    string
+	Entries int
+}
+
+func (e *NonEmptyDirectory) Error() string {
+	return fmt.Sprintf(
+		"%s already has %d item(s) in it — accepting into a folder that is not empty lets "+
+			"incoming files overwrite same-named local ones, and lets their deletes remove "+
+			"yours. Choose an empty folder, or accept it anyway if this is the right one.",
+		e.Path, e.Entries)
+}
+
+// AsNonEmptyDirectory reports whether err is (or wraps) a
+// NonEmptyDirectory, and hands back the typed value.
+func AsNonEmptyDirectory(err error) (*NonEmptyDirectory, bool) {
+	var ne *NonEmptyDirectory
+	if errors.As(err, &ne) {
+		return ne, true
+	}
+	return nil, false
+}
+
+// Accept is the receiving side's one step: put a mount where the files
+// will land, write the delivery policy that lets the publisher reach our
+// blob-resolve handler, re-establish the connection so it is in force,
+// then sync and catch up.
+//
+// The actions are one verb because they are not independently useful. A
+// policy with no sync grants a stranger a handler they will never call; a
+// sync with no policy is accepted and delivers nothing; and a sync with
+// no mount 404s on every delivery while reporting itself healthy.
+func (ws *ShellWorkspace) Accept(req AcceptRequest) (AcceptOutcome, error) {
 	if ws == nil || ws.Local == nil || ws.Local.Peer == nil {
 		return AcceptOutcome{}, fmt.Errorf("workspace has no local peer")
 	}
 	local := ws.Local.Peer
 
-	peerID, alias, err := ws.resolvePeerRef(peer)
+	peerID, alias, err := ws.resolvePeerRef(req.Peer)
 	if err != nil {
 		return AcceptOutcome{}, err
 	}
-	root = sanitizeRootName(strings.TrimSpace(root))
+	root := sanitizeRootName(strings.TrimSpace(req.Root))
 	if root == "" {
-		return AcceptOutcome{}, fmt.Errorf("accept needs a root name (try `offers %s`)", peer)
+		return AcceptOutcome{}, fmt.Errorf("accept needs a root name (try `offers %s`)", req.Peer)
 	}
 
-	if err := workbench.SaveAccessPolicy(local.Store(), peerID,
-		workbench.SyncReceiverGrants(),
-		"accept: deliveries for "+root); err != nil {
+	// Put the receiving mount in place BEFORE anything durable is
+	// written. It is the step most likely to fail for an ordinary reason
+	// — a path that does not exist, a folder with files already in it, a
+	// basename that collides with another mount — and every one of those
+	// is better met before this peer has granted anybody anything.
+	localRoot, mounted, err := ws.prepareReceivingMount(root, req)
+	if err != nil {
+		return AcceptOutcome{}, err
+	}
+
+	// Declare before establishing, same as Share — see declareLocalShare.
+	if err := ws.declareAcceptedFolder(peerID, alias, root, localRoot); err != nil {
+		return AcceptOutcome{}, err
+	}
+
+	// Derived from the declaration, for the reason given in Share: this
+	// row is a union across both directions, and writing only the
+	// receiver half here revoked the sender half of a folder we share
+	// back to the same peer (AP68).
+	if _, err := ws.ApplyDeclaredPolicy(peerID, "accept: deliveries for "+root); err != nil {
 		return AcceptOutcome{}, err
 	}
 
 	reconnected, note := ws.refreshGrantConnection(peerID)
 
-	syncOut, err := ws.Sync(SyncRequest{Remote: peerID, Root: root})
+	syncOut, err := ws.Sync(SyncRequest{Remote: peerID, Root: root, TargetRoot: localRoot})
 	if err != nil {
 		// Leave the policy in place on failure and say so in the error:
-		// the usual cause is a missing local mount, the operator is about
-		// to fix that and retry, and removing the grant would make the
-		// retry fail for a second, different reason.
+		// the operator is about to fix the cause and retry, and removing
+		// the grant would make the retry fail for a second, different
+		// reason. The mount is left in place for the same reason, and
+		// because it is a directory on their disk that they named.
 		return AcceptOutcome{}, fmt.Errorf(
 			"%w\n(the delivery grant for %s was written and is left in place; "+
 				"re-run accept once the cause above is fixed)", err, peerID)
@@ -323,6 +462,8 @@ func (ws *ShellWorkspace) Accept(peer, root string) (AcceptOutcome, error) {
 		PeerID:        peerID,
 		PeerAlias:     alias,
 		Root:          root,
+		LocalRoot:     localRoot,
+		Mounted:       mounted,
 		PolicyPath:    workbench.AccessPolicyPrefix + peerID,
 		GrantSummary:  workbench.SummarizeGrants(workbench.SyncReceiverGrants()),
 		Sync:          syncOut,
@@ -331,6 +472,111 @@ func (ws *ShellWorkspace) Accept(peer, root string) (AcceptOutcome, error) {
 		PublisherMustDial: fmt.Sprintf(
 			"connect %s <this-peer's host:port>   (run on %s)", local.PeerID(), peerID),
 	}, nil
+}
+
+// prepareReceivingMount makes sure there is somewhere for the incoming
+// files to land, and reports which local mount root that is.
+//
+// Three cases, and the distinction between the last two is the whole
+// safety story:
+//
+//   - **No directory named.** The caller is using the old shape, so a
+//     mount named after THEIR root must already exist. Unchanged.
+//   - **A directory that is already mounted.** Reuse it. The operator
+//     made the decision to bridge that directory when they mounted it,
+//     and re-accepting after a restart, or accepting a second folder
+//     into the same place, must not ask again or refuse.
+//   - **A directory that is not mounted.** Mount it — and refuse first
+//     if it already has files in it, because from here on their deletes
+//     remove the operator's files and their writes overwrite them.
+//
+// Creating the directory when it is absent is deliberate and is not the
+// same kind of act: the operator typed a path that does not exist, which
+// only means one thing.
+func (ws *ShellWorkspace) prepareReceivingMount(theirRoot string, req AcceptRequest) (localRoot string, mounted *MountOutcome, err error) {
+	local := ws.Local.Peer
+	dir := strings.TrimSpace(req.Directory)
+
+	if dir == "" {
+		if !hasLocalRoot(local, theirRoot) {
+			return "", nil, fmt.Errorf(
+				"no local mount named %q to receive into — give a directory "+
+					"(`accept <peer> %s <directory>`) and it will be created and mounted for you",
+				theirRoot, theirRoot)
+		}
+		return theirRoot, nil, nil
+	}
+
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve %s: %w", dir, err)
+	}
+	info, statErr := os.Stat(absDir)
+	switch {
+	case os.IsNotExist(statErr):
+		if err := os.MkdirAll(absDir, 0o755); err != nil {
+			return "", nil, fmt.Errorf("create %s: %w", absDir, err)
+		}
+	case statErr != nil:
+		return "", nil, fmt.Errorf("stat %s: %w", absDir, statErr)
+	case !info.IsDir():
+		return "", nil, fmt.Errorf("%s is not a directory", absDir)
+	}
+
+	localRoot = sanitizeRootName(filepath.Base(absDir))
+	if localRoot == "" {
+		return "", nil, fmt.Errorf("could not derive a usable mount name from %s", absDir)
+	}
+
+	// Is this directory already mounted, under this name?
+	if existing, ok := workbench.MountFilesystemRoot(local.Store(), localRoot); ok {
+		if existing != absDir {
+			// A DIFFERENT directory holds this basename. Refusing is the
+			// only honest answer: mounting would collide, and silently
+			// receiving into the other directory would put a stranger's
+			// files somewhere the operator did not choose.
+			return "", nil, fmt.Errorf(
+				"the mount name %q is already taken by %s — accepting into %s would collide "+
+					"with it; rename or move the folder you are accepting into",
+				localRoot, existing, absDir)
+		}
+		return localRoot, nil, nil
+	}
+
+	if !req.AllowNonEmpty {
+		n, err := countDirEntries(absDir)
+		if err != nil {
+			return "", nil, fmt.Errorf("read %s: %w", absDir, err)
+		}
+		if n > 0 {
+			return "", nil, &NonEmptyDirectory{Path: absDir, Entries: n}
+		}
+	}
+
+	out, err := ws.Mount(MountRequest{
+		FilesystemDir: absDir,
+		TargetPrefix:  "archives/" + localRoot + "/",
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("mount %s to receive into: %w", absDir, err)
+	}
+	return out.RootName, &out, nil
+}
+
+// countDirEntries counts what is in a directory without reading it all
+// into memory — a receiving folder an operator points at by mistake can
+// be their home directory.
+func countDirEntries(dir string) (int, error) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		return 0, err
+	}
+	return len(names), nil
 }
 
 // DialableAddressFor reports an address that can actually be dialled to
@@ -486,6 +732,10 @@ func (ws *ShellWorkspace) CompleteShare(peer, address string) (CompleteShareOutc
 
 	out.Connected = true
 	ws.rememberAddress(peerID, addr)
+	// And onto the declaration, so the address survives this process.
+	// The GUI's "Complete connection" button is this path, and it was
+	// losing the operator's address at exit exactly as `connect` was.
+	ws.RememberDeviceAddress(peerID, addr)
 	return out, nil
 }
 
@@ -722,6 +972,16 @@ func (ws *ShellWorkspace) dialableAddressFor(peerID string) string {
 			return pc.Address
 		}
 	}
+	// The DECLARATION, which is the only one of these three sources that
+	// survives the process. Source 1 above is this session's connections
+	// and source 3 below is a live announcement; without this, an address
+	// the operator typed yesterday is gone today, and the reconciler has
+	// nothing to dial with after a restart.
+	if d, ok := workbench.LoadDevice(ws.Local.Peer.Store(), peerID); ok {
+		if addr := d.PreferredAddress(); addr != "" {
+			return addr
+		}
+	}
 	local := ws.Local.Peer
 	if local.DiscoveryEnabled() {
 		for _, cand := range local.ReadDiscoveredCandidates() {
@@ -746,15 +1006,17 @@ func findOffer(st *workbench.Store, root string) (workbench.ShareOffer, bool) {
 	return workbench.ShareOffer{}, false
 }
 
-func peerIsStillOffered(st *workbench.Store, peerID string) bool {
-	offers, _ := workbench.LoadShareOffers(st)
-	for _, o := range offers {
-		if o.OfferedTo(peerID) {
-			return true
-		}
-	}
-	return false
-}
+// peerIsStillOffered is deliberately GONE, not kept for a future caller.
+//
+// It answered "does this peer appear in any remaining offer", which was
+// `Unshare`'s test for whether to drop their policy row — and offers
+// describe only the OUTGOING direction, so it returned false for a peer
+// actively delivering a folder to us and the row went with it. Its
+// replacement asks the question that is actually being decided: does
+// anything we have DECLARED still authorize this peer
+// (`WithdrawDeclaredPolicy`). Leaving the old predicate in the file would
+// leave the wrong question one autocomplete away from its right-looking
+// name.
 
 func mergeAudience(existing []string, add string) []string {
 	seen := map[string]bool{}

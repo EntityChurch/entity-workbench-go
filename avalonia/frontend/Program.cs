@@ -17,20 +17,46 @@ public static class Program
     public static BridgeConfig Config { get; private set; } = new();
     public static string ConfigJson { get; private set; } = "";
 
+    // DefaultListenAddr — the port this app listens on when nobody said.
+    //
+    // A fixed port rather than an ephemeral one because a fixed port is
+    // something an operator can write in a firewall rule and type into
+    // another machine. It falls back to an ephemeral port when taken (see
+    // ListenFallback), so a second instance on one machine still starts —
+    // which is the case that would otherwise make a fixed default hostile.
+    public const string DefaultListenAddr = "0.0.0.0:9110";
+
     private const string Usage = @"Usage:
   entity-avalonia [flags]
 
+By default this is a PERSISTENT, REACHABLE peer: the same peer-id every
+launch, an on-disk store, an inbound listener, and an mDNS announcement so
+peers on your LAN can find it without being told an address. Sharing a
+folder is not possible without all four, and until 2026-09-03 the default
+had none of them — every launch was a brand-new peer-id, so every grant,
+offer and share from the previous session named a peer that no longer
+existed.
+
 Flags:
   --identity NAME      Use named identity from ~/.entity/identities/
-                       (default: ephemeral keypair, lost on exit)
+                       (default: ""default"", created on first launch)
   --alias NAME         Alias for the in-process peer in the shell
                        (default: --identity name, or ""self"")
-  --storage KIND       Storage backend: ""memory"" (default) or ""sqlite""
-  --storage-path PATH  SQLite DB path. When --storage=sqlite and
-                       --identity NAME is set, defaults to
-                       ~/.entity/peers/NAME/store.db.
-  --listen ADDR        TCP listener for inbound peer connections.
-                       Empty (default) = no inbound listener.
+  --storage KIND       Storage backend: ""sqlite"" (default) or ""memory""
+  --storage-path PATH  SQLite DB path (default:
+                       ~/.entity/peers/NAME/store.db).
+  --listen ADDR        TCP listener for inbound peer connections
+                       (default: " + DefaultListenAddr + @"). An address given
+                       here is taken literally: if it is in use, startup
+                       fails rather than silently moving to another port.
+  --no-listen          Outbound only. Nobody can reach this peer, and no
+                       folder can be shared TO it.
+  --advertise URL      The dial URL published as this peer's transport
+                       profile. Defaults to this host's LAN address plus
+                       the bound port — set it behind NAT or a proxy.
+  --ephemeral          Throwaway peer: in-memory store, fresh keypair,
+                       no listener. Everything is lost on exit. This was
+                       the default until 2026-09-03.
   --open-access        DEV: grant wildcard caps to connecting peers.
   -h, --help           Show this message and exit.
 ";
@@ -42,6 +68,15 @@ Flags:
         // A crash during startup is exactly as undiagnosable as one an
         // hour in, and this costs nothing when nothing goes wrong.
         CrashDiagnostics.Install();
+
+        // Immediately after, and before anything can go wrong: say which
+        // build this is. Every crash artifact, every operator screenshot and
+        // every "is the fix in?" question needs this line, and until now the
+        // only way to answer was to guess from a timestamp on dist-native/.
+        // It goes to BOTH stderr (the run log) and the crash trail, because
+        // the two are read in different situations.
+        Console.Error.WriteLine("entity-avalonia: " + BuildInfo.Line);
+        CrashDiagnostics.Breadcrumb("build", BuildInfo.Line);
 
         if (!ParseArgs(args, out var avaloniaArgs))
         {
@@ -120,6 +155,8 @@ Flags:
     // unknown by default.
     private static bool ParseArgs(string[] args, out string[] remaining)
     {
+        _ephemeral = false;
+        _listenExplicit = false;
         var passthrough = new System.Collections.Generic.List<string>();
         for (int i = 0; i < args.Length; i++)
         {
@@ -151,6 +188,24 @@ Flags:
                 case "--listen":
                     if (!TakeValue(args, ref i, a, out var ln)) { remaining = Array.Empty<string>(); return false; }
                     Config.Listen = ln;
+                    // An address the operator typed is honoured exactly. The
+                    // ephemeral fallback exists for the default nobody chose;
+                    // applying it here would hide a port conflict and produce
+                    // a peer unreachable at the address they wrote down.
+                    Config.ListenFallback = false;
+                    _listenExplicit = true;
+                    break;
+                case "--no-listen":
+                    Config.Listen = "";
+                    Config.ListenFallback = false;
+                    _listenExplicit = true;
+                    break;
+                case "--advertise":
+                    if (!TakeValue(args, ref i, a, out var adv)) { remaining = Array.Empty<string>(); return false; }
+                    Config.Advertise = adv;
+                    break;
+                case "--ephemeral":
+                    _ephemeral = true;
                     break;
                 case "--open-access":
                     Config.OpenAccess = true;
@@ -161,7 +216,55 @@ Flags:
             }
         }
         remaining = passthrough.ToArray();
+        ApplyDefaults();
         return true;
+    }
+
+    private static bool _ephemeral;
+    private static bool _listenExplicit;
+
+    // ApplyDefaults turns the parsed flags into the configuration the peer
+    // is actually built from. It runs after parsing, never during, so the
+    // order flags appear on the command line cannot change the result.
+    //
+    // THE DEFAULT IS A SERVICE, NOT A DEMO. Until 2026-09-03 it was the
+    // reverse — memory store, ephemeral keypair, no listener — and the
+    // consequence was not "some features are off". The whole tree is
+    // peer-id-namespaced, so a fresh keypair per launch means the app was a
+    // DIFFERENT PEER every time it started: mounts, grants, offers, accepted
+    // shares and roster entries from the last session all named a peer-id
+    // that no longer existed, and every one of them silently did nothing.
+    // An operator debugging a two-machine share by restarting the app —
+    // which is what anyone does — was destroying the state they were
+    // debugging, on both machines, on every launch.
+    //
+    // `--ephemeral` keeps that behaviour for a throwaway peer, which is a
+    // real and useful thing; it just is not what someone gets by default.
+    private static void ApplyDefaults()
+    {
+        if (_ephemeral)
+        {
+            if (string.IsNullOrEmpty(Config.Storage)) Config.Storage = "memory";
+            if (!_listenExplicit) { Config.Listen = ""; Config.ListenFallback = false; }
+            return;
+        }
+
+        // Persistent store. shellboot substitutes the "default" identity for
+        // an empty one under sqlite (and creates it on first use), so the
+        // identity name has ONE definition and it is not duplicated here.
+        if (string.IsNullOrEmpty(Config.Storage)) Config.Storage = "sqlite";
+
+        if (!_listenExplicit && string.IsNullOrEmpty(Config.Listen))
+        {
+            Config.Listen = DefaultListenAddr;
+            Config.ListenFallback = true;
+        }
+
+        // Re-establish every declared relationship at startup. This is the
+        // answer to "why do I have to press connect again after every
+        // launch", and it is on for a persistent peer because a persistent
+        // peer is the only kind that HAS declarations to re-establish.
+        Config.ReconcileOnStart = true;
     }
 
     private static bool TakeValue(string[] args, ref int i, string flag, out string value)
@@ -196,6 +299,22 @@ public class BridgeConfig
 
     [System.Text.Json.Serialization.JsonPropertyName("listen")]
     public string Listen { get; set; } = "";
+
+    // Allow an ephemeral port when Listen is taken. Set only for the
+    // DEFAULT address; an address the operator typed fails loudly instead.
+    [System.Text.Json.Serialization.JsonPropertyName("listen_fallback")]
+    public bool ListenFallback { get; set; }
+
+    // The dial URL published as this peer's transport profile. Empty means
+    // "derive it" — LAN address + bound port for a wildcard bind.
+    [System.Text.Json.Serialization.JsonPropertyName("advertise")]
+    public string Advertise { get; set; } = "";
+
+    // Re-establish declared peers and folders once, in the background,
+    // after the peer comes up. Off for an ephemeral peer, which by
+    // definition has nothing declared to re-establish.
+    [System.Text.Json.Serialization.JsonPropertyName("reconcile_on_start")]
+    public bool ReconcileOnStart { get; set; }
 
     [System.Text.Json.Serialization.JsonPropertyName("open_access")]
     public bool OpenAccess { get; set; }
@@ -296,6 +415,17 @@ public class App : Application
             PanelRegistry.Category.Network,
             "Offer a mounted folder to a peer, see what they are offering you, accept it, "
             + "and see what is arriving. Both peers must dial each other.");
+        // Named for the question it answers, not for the machinery behind
+        // it. With Peer Connections ("who am I connected to") and Shared
+        // Folders ("share and receive") already here, a third panel called
+        // "Sync" would repeat the Browser / Local Site / Origin Inspector
+        // naming failure an operator called incomprehensible.
+        PanelRegistry.Register("sharing-status", "Sharing Status (declared vs. actual)",
+            (handle, _) => new SharingStatusPanel(handle),
+            PanelRegistry.Category.Network,
+            "What you declared — peers and folders — beside what is actually established, "
+            + "and what is stopping the rest. What you grant a peer is stated exactly; what "
+            + "they grant you is not knowable from here, so it is shown as what has arrived.");
         // The generic host: ONE panel class, every program, mounted from
         // descriptors.
         //

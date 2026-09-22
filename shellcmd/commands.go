@@ -376,10 +376,18 @@ func init() {
 		Handler: cmdOffers,
 	})
 	r.Register(Command{
-		Name:    "accept",
-		Usage:   "accept <peer> <root>",
-		Help:    "Take a peer up on a shared folder: authorize their deliveries and sync.",
+		Name:  "accept",
+		Usage: "accept <peer> <root> [<directory>] [-anyway]",
+		Help: "Take a peer up on a shared folder: pick where the files go, authorize " +
+			"their deliveries, sync and catch up. Creates and mounts the directory.",
 		Handler: cmdAccept,
+	})
+	r.Register(Command{
+		Name:  "status",
+		Usage: "status",
+		Help: "Everything you have declared, whether it is actually established, " +
+			"and what is stopping it. Re-establishes what it can.",
+		Handler: cmdStatus,
 	})
 	r.Register(Command{
 		Name:    "access",
@@ -398,6 +406,18 @@ func init() {
 		Usage:   "unsync <peer> <root>",
 		Help:    "Stop receiving a peer's folder. Leaves the mount and everything already received.",
 		Handler: cmdUnsync,
+	})
+	r.Register(Command{
+		Name:    "resync",
+		Usage:   "resync <peer> <root>",
+		Help:    "Pull everything currently in a synced folder now, without waiting for a change.",
+		Handler: cmdResync,
+	})
+	r.Register(Command{
+		Name:    "forget",
+		Usage:   "forget <peer> | forget --all",
+		Help:    "Drop syncs, offers, authorization and the connection for a peer. Deletes no files.",
+		Handler: cmdForget,
 	})
 	r.Register(Command{
 		Name:    "syncs",

@@ -75,11 +75,32 @@ func TestCreate_AdvertisesTheListenerItBound(t *testing.T) {
 	}
 }
 
-// TestCreate_WildcardBindIsNotAdvertised pins the non-fatal refusal: a
-// peer that binds 0.0.0.0 still listens, still works for anyone told
-// its address out-of-band, and publishes NO profile — because a durable
-// claim that peers can dial 0.0.0.0 is worse than silence.
-func TestCreate_WildcardBindIsNotAdvertised(t *testing.T) {
+// TestCreate_WildcardBindAdvertisesAConcreteAddress.
+//
+// **This test asserted the opposite until 2026-09-03**, and the change is
+// deliberate rather than a relaxation — so it is worth being exact about
+// what was right in the old rule and what was wrong.
+//
+// Right: *a durable claim that peers can dial 0.0.0.0 is worse than
+// silence.* Publishing the wildcard verbatim would be a profile nobody
+// can use, and that is still forbidden — it is the assertion below.
+//
+// Wrong: concluding from that that a wildcard bind must publish NOTHING.
+// A wildcard is the only sensible bind for a machine on a LAN, so the old
+// rule meant the normal configuration published no transport profile at
+// all — and a peer with no profile cannot be reconnected to by peer-id.
+// `EnsureConnected` resolves a profile, finds none, and the relationship
+// can only be revived by somebody re-typing an address. That manual step
+// is the one the sharing redesign exists to delete, and this refusal was
+// quietly guaranteeing it.
+//
+// So a wildcard now resolves to this host's LAN address
+// (`shellboot.lanDialHost`). It is a GUESS — a multi-homed machine may be
+// reachable on a different interface — and it is labelled as one wherever
+// it is rendered; an operator who knows better passes AdvertiseURL, which
+// still wins. A guess that is usually right and always visible beats a
+// refusal that is always useless.
+func TestCreate_WildcardBindAdvertisesAConcreteAddress(t *testing.T) {
 	m := shellboot.NewPeerManager("test-advertise-wildcard")
 	h, err := m.Create(shellboot.Config{ListenAddr: "0.0.0.0:19101"})
 	if err != nil {
@@ -96,13 +117,20 @@ func TestCreate_WildcardBindIsNotAdvertised(t *testing.T) {
 	if hp.ListenScheme != "tcp" {
 		t.Errorf("ListenScheme = %q, want tcp — the listener should still have bound", hp.ListenScheme)
 	}
-	if hp.AdvertisedURL != "" {
-		t.Errorf("AdvertisedURL = %q, want empty for a wildcard bind", hp.AdvertisedURL)
+	if hp.AdvertiseErr != nil {
+		t.Fatalf("AdvertiseErr = %v; a wildcard bind on a host with any address should resolve", hp.AdvertiseErr)
 	}
-	if hp.AdvertiseErr == nil {
-		t.Fatal("AdvertiseErr = nil; a wildcard bind must not silently publish a profile")
+	if hp.AdvertisedURL == "" {
+		t.Fatal("AdvertisedURL is empty — a peer with no transport profile cannot be reconnected to by peer-id")
 	}
-	if !strings.Contains(hp.AdvertiseErr.Error(), "unroutable_advertisement") {
-		t.Errorf("AdvertiseErr does not name the reason: %v", hp.AdvertiseErr)
+	// The part of the old rule that was right, and is now the assertion.
+	for _, forbidden := range []string{"0.0.0.0", "[::]", "*"} {
+		if strings.Contains(hp.AdvertisedURL, forbidden) {
+			t.Errorf("AdvertisedURL = %q — it carries the wildcard %q, which nobody can dial",
+				hp.AdvertisedURL, forbidden)
+		}
+	}
+	if !strings.HasSuffix(hp.AdvertisedURL, ":19101") {
+		t.Errorf("AdvertisedURL = %q, want the bound port 19101", hp.AdvertisedURL)
 	}
 }

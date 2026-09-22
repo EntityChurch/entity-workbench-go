@@ -65,7 +65,42 @@ type Config struct {
 
 	// ListenAddr is the inbound TCP listener address (e.g.
 	// "127.0.0.1:9100"). Empty means outbound-only.
+	//
+	// **Setting this does not bind anything by itself.** The address is
+	// carried into peer.WithListenAddr, and core-go reads it in exactly
+	// one place — Peer.Listen — so a frontend must call
+	// BringUpListener (or PeerManager.Create, which does). Until
+	// 2026-09-03 entity-shell did neither, and its documented -listen
+	// flag bound no socket at all.
 	ListenAddr string `json:"listen"`
+
+	// ReconcileOnStart runs one pass of the sharing reconciler once the
+	// peer is up: re-establish every declared relationship, re-authorize
+	// every declared folder, and report what could not be established.
+	//
+	// Opt-in rather than automatic, for two reasons that are not the same
+	// reason. A pass DIALS, and a test process that quietly opens
+	// connections to whatever a fixture left in its store is a test suite
+	// with a network dependency it never declared. And a one-shot CLI
+	// invocation (`entity-shell mounts`) has no business spending a dial
+	// budget on a relationship it will not use before it exits.
+	//
+	// A frontend that stays running — the GUI, the REPL — sets it, and
+	// that is where "why do I have to press connect again" is actually
+	// answered.
+	ReconcileOnStart bool `json:"reconcile_on_start"`
+
+	// ListenFallback allows an ephemeral port when ListenAddr is already
+	// in use.
+	//
+	// Off by default, and that is the point: an address an operator TYPED
+	// must fail loudly when something else holds it, because silently
+	// binding a different port hides a real conflict and produces a peer
+	// nobody can reach at the address they wrote down. It is set by a
+	// frontend that supplies a DEFAULT port the operator never chose —
+	// where refusing to start because a second instance is already
+	// running would be absurd.
+	ListenFallback bool `json:"listen_fallback"`
 
 	// AdvertiseURL is the dial address published as this peer's
 	// transport profile (EXTENSION-NETWORK §6.5.1a D1 self-publication)
@@ -302,6 +337,24 @@ func Bootstrap(ctx context.Context, cfg Config) (*entitysdk.AppPeer, *shellcmd.S
 			_ = ap.Close()
 			return nil, nil, fmt.Errorf("shellboot: reload local-files mounts: %w", err)
 		}
+		// ...and then restore them again, because the call above restores
+		// NOTHING. Its enumeration TrimPrefixes a relative prefix off a
+		// peer-qualified index path and skips every row (AP58); the
+		// symptom is a mount that works until the app is restarted and is
+		// silently dead afterwards — writes 404 `no_root_mapping` and the
+		// watcher never starts, while every surface still lists it as
+		// healthy because they read the tree, which is fine.
+		//
+		// Reproduced with no network and no GUI in
+		// shellboot/mount_restart_write_test.go. Routed to core-go; this
+		// is ours until it lands there. See
+		// workbench/localfiles_root_restore.go.
+		restored, problems := workbench.RestoreLocalFilesRoots(
+			ctx, ap.Store(), lfh, ap.RawContentStore(), ap.RawLocationIndex(), ap.IdentityHash())
+		for _, p := range problems {
+			fmt.Fprintf(os.Stderr, "warning: local-files root not restored — %s\n", p)
+		}
+		_ = restored
 	}
 
 	// The kernel's Load above restores the WATCHER half of every mount.

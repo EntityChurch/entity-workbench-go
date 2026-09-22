@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,6 +76,17 @@ type HostedPeer struct {
 	// anyone who was not.
 	AdvertisedURL string
 	AdvertiseErr  error
+
+	// Listener is the full bring-up result — bound address, whether the
+	// port fell back, and both non-fatal failures — for surfaces that
+	// want more than the three flattened fields above. nil when the peer
+	// is outbound-only.
+	//
+	// The flattened fields are kept because two renderers and the roster
+	// already read them; this is the one an operator-facing surface
+	// should prefer, because ListenScheme and AdvertisedURL together
+	// still cannot say "the port you asked for was taken".
+	Listener *ListenerInfo
 
 	// listenCancel cancels the auto-Listen goroutine. nil for
 	// outbound-only peers. Called during Destroy, before AppPeer.Close.
@@ -150,70 +162,20 @@ func (m *PeerManager) Create(cfg Config) (int64, error) {
 		AddedAt:   now,
 	}
 
-	// Auto-Listen when ListenAddr is configured. Without this, every
-	// frontend (avalonia/shell/console) is outbound-only by default —
-	// the PeerConfig.ListenAddr is plumbed through to peer.WithListenAddr
-	// at construction but nothing calls Listen unless we do it here.
-	//
-	// Scheme routing matches AppPeer.Connect: ws://+wss:// routes to
-	// ListenWebSocketReady; bare host:port and tcp:// route to ListenReady.
-	if cfg.ListenAddr != "" {
-		listenCtx, cancel := context.WithCancel(context.Background())
-		ready := make(chan struct{})
-		listenErrCh := make(chan error, 1)
-		scheme, bindAddr, wsPath, parseErr := parseListenAddr(cfg.ListenAddr)
-		if parseErr != nil {
-			cancel()
-			_ = ap.Close()
-			return 0, fmt.Errorf("shellboot: parse listen addr %q: %w", cfg.ListenAddr, parseErr)
-		}
-		go func() {
-			if scheme == "ws" {
-				listenErrCh <- ap.ListenWebSocketReady(listenCtx, bindAddr, wsPath, ready)
-			} else {
-				listenErrCh <- ap.ListenReady(listenCtx, ready)
-			}
-		}()
-		// Wait until the listener binds or the goroutine errors out. A
-		// 5s ceiling — well above a kernel ephemeral-port bind — turns
-		// a hung listener into a surfaced error instead of a phantom
-		// hang during Create.
-		select {
-		case <-ready:
-			hp.ListenScheme = scheme
-			hp.listenCancel = cancel
-			// Self-publish now that the address is real. §6.5.1a D1 is a
-			// SHOULD, and until this existed nothing in this tree ever
-			// told another peer how to reach us — we published profiles
-			// only for peers WE dialed. A browser peer cannot learn that
-			// a Go peer accepts a WebSocket any other way.
-			hp.AdvertisedURL, hp.AdvertiseErr = advertiseListener(ap, cfg.AdvertiseURL, scheme, bindAddr, wsPath)
-		case err := <-listenErrCh:
-			cancel()
-			_ = ap.Close()
-			return 0, fmt.Errorf("shellboot: listen on %q: %w", cfg.ListenAddr, err)
-		case <-time.After(5 * time.Second):
-			cancel()
-			_ = ap.Close()
-			return 0, fmt.Errorf("shellboot: listen on %q timed out after 5s", cfg.ListenAddr)
-		}
-
-		// Auto-Announce on the listener's scheme so LAN peers can find
-		// this peer via mDNS. Failure here is non-fatal — the peer is
-		// already live and reachable by direct address; we just lose
-		// auto-discovery. Most likely cause: no multicast-capable
-		// interface (CI runners, isolated network namespaces).
-		if hp.ListenScheme != "" {
-			announceCtx, announceCancel := context.WithTimeout(
-				context.Background(), 2*time.Second)
-			if err := ap.Announce(announceCtx, hp.ListenScheme); err != nil {
-				// Drop the error — non-fatal. A future iteration could
-				// surface this via a HostedPeer.AnnounceErr field for
-				// the panel to display.
-				_ = err
-			}
-			announceCancel()
-		}
+	// Bind, advertise and announce — all three in BringUpListener, which
+	// is shared with the frontends that do NOT go through this manager.
+	// It used to live here in full, and `entity-shell` (which calls
+	// Bootstrap directly) therefore accepted a -listen flag and bound
+	// nothing at all. See shellboot/listener.go.
+	if li, err := BringUpListener(context.Background(), ap, cfg); err != nil {
+		_ = ap.Close()
+		return 0, err
+	} else if li != nil {
+		hp.Listener = li
+		hp.ListenScheme = li.Scheme
+		hp.listenCancel = li.Cancel
+		hp.AdvertisedURL = li.AdvertisedURL
+		hp.AdvertiseErr = li.AdvertiseErr
 	}
 
 	var systemPeerForRoster *entitysdk.AppPeer
@@ -247,8 +209,51 @@ func (m *PeerManager) Create(cfg Config) (int64, error) {
 			return h, fmt.Errorf("peer created (handle %d) but roster write failed: %w", h, werr)
 		}
 	}
+
+	// Re-establish everything this peer declared. In the BACKGROUND, and
+	// that is the whole design decision here: a pass dials, a declared
+	// peer being switched off is the normal case rather than the
+	// exceptional one, and doing it inline would make how long the app
+	// takes to open depend on whether another machine happens to be
+	// awake. Nothing on screen needs the result to render.
+	if cfg.ReconcileOnStart {
+		go reconcileAtStartup(ws, ws.Local.Alias)
+	}
 	return h, nil
 }
+
+// reconcileAtStartup runs one pass and reports it on stderr.
+//
+// stderr rather than a return value because this runs after Create has
+// answered, and stderr is where the frontends' run logs already are —
+// `avalonia/run-logs/`, which is the artifact anyone diagnosing this
+// reads. Problems are printed individually and actions are summarized:
+// an operator needs to know that eight things could not be established
+// far more than which four were re-established silently and correctly.
+func reconcileAtStartup(ws *shellcmd.ShellWorkspace, alias string) {
+	out, err := ws.ReconcileWithTimeout(startupReconcileTimeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: [%s] startup reconcile failed: %v\n", alias, err)
+		return
+	}
+	if len(out.Devices) == 0 && len(out.Folders) == 0 {
+		return // nothing declared: say nothing
+	}
+	fmt.Fprintf(os.Stderr, "[%s] reconciled %d peer(s), %d folder(s)\n",
+		alias, len(out.Devices), len(out.Folders))
+	for _, a := range out.Actions {
+		fmt.Fprintf(os.Stderr, "[%s]   %s\n", alias, a)
+	}
+	for _, p := range out.Problems {
+		fmt.Fprintf(os.Stderr, "warning: [%s] %s\n", alias, p)
+	}
+}
+
+// startupReconcileTimeout bounds the background pass. Generous, because
+// it is off the critical path and a slow LAN is not an error; bounded,
+// because an unbounded goroutine holding a dial gate is how a shutdown
+// hangs.
+const startupReconcileTimeout = 60 * time.Second
 
 // Destroy tears down peer h. Cascade order:
 //  1. Remove from in-memory registry; demote system-peer if it was h.
@@ -498,28 +503,6 @@ func (m *PeerManager) liveHostedPeerIDs() map[string]struct{} {
 	return out
 }
 
-// advertiseListener self-publishes the peer's transport profile for the
-// listener that just bound, returning the URL actually advertised.
-//
-// Explicit AdvertiseURL wins. Otherwise the dial URL is derived from
-// the bind address, which is correct exactly when the bind host is
-// concrete — `-listen 127.0.0.1:9100` is a real address a peer on the
-// same machine dials, and that is the first browser↔Go loop we expect
-// to run. A wildcard bind has no derivation and returns an error
-// instead of publishing a profile nobody can use; the caller surfaces
-// it rather than failing Create.
-func advertiseListener(ap *entitysdk.AppPeer, advertiseURL, scheme, bindAddr, wsPath string) (string, error) {
-	dialURL := advertiseURL
-	if dialURL == "" {
-		switch scheme {
-		case "ws":
-			dialURL = "ws://" + bindAddr + wsPath
-		default:
-			dialURL = "tcp://" + bindAddr
-		}
-	}
-	if err := ap.AdvertiseTransport(dialURL); err != nil {
-		return "", fmt.Errorf("shellboot: advertise %q: %w", dialURL, err)
-	}
-	return dialURL, nil
-}
+// advertiseListener moved to listener.go, beside the bind it belongs to.
+// It grew a LAN-address derivation for a wildcard bind at the same time;
+// the reasoning is in that file.

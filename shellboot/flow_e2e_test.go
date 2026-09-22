@@ -166,7 +166,9 @@ func TestFlow_DiscoverShareAuthorizeMountSync_NoOpenAccess(t *testing.T) {
 	}
 
 	// --- accept (bob authorizes alice's deliveries, then syncs) -------
-	acceptOut, err := bob.ws.Accept(alice.ap.PeerID(), offers[0].Root)
+	acceptOut, err := bob.ws.Accept(shellcmd.AcceptRequest{
+		Peer: alice.ap.PeerID(), Root: offers[0].Root,
+	})
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}

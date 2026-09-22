@@ -246,6 +246,104 @@ public class SharePanelTests
             v.PublisherMustDial);
     }
 
+    // AP49 for the field that answers the operator's actual question.
+    //
+    // `backfill` carries how many of the files ALREADY in the remote
+    // folder came across. An undeclared field is dropped by
+    // System.Text.Json in silence, and a drop here reproduces exactly
+    // the symptom the backfill was written to fix: an empty folder and a
+    // surface that says nothing about it. Asserted on arrival, not
+    // implied by the panel rendering something.
+    [Fact]
+    public void The_Accept_Reply_Keeps_The_Count_Of_Files_That_Came_Across()
+    {
+        const string json = """
+        {
+          "ok": true,
+          "root": "notes",
+          "publisherMustDial": "connect 12D3KooWLocalPeerIdentifier <host:port>",
+          "backfill": {
+            "scanned": 12,
+            "materialized": 11,
+            "alreadyCurrent": 0,
+            "skipped": 0,
+            "failed": 1,
+            "truncated": false,
+            "errors": ["local/files/notes/big.bin: blob closure fetch from 12D3Koo…: 403"],
+            "summary": "12 file(s) found, 11 transferred, 1 FAILED",
+            "ran": true
+          }
+        }
+        """;
+
+        var v = Parse<SharePanel.AcceptReply>(json);
+        Assert.NotNull(v.Backfill);
+        Assert.True(v.Backfill!.Ran);
+        Assert.Equal(12, v.Backfill.Scanned);
+        Assert.Equal(11, v.Backfill.Materialized);
+        // The failure count must survive separately from the summary
+        // string. The panel colours on it, and a surface that reports
+        // only the summary cannot tell a partial transfer from a whole
+        // one — which is the class of quiet-success bug this whole area
+        // was built out of.
+        Assert.Equal(1, v.Backfill.Failed);
+        Assert.Single(v.Backfill.Errors!);
+    }
+
+    // A skipped backfill and an empty one are DIFFERENT, and a surface
+    // that renders them the same is back to "we did not look" reading as
+    // "there was nothing to bring".
+    [Fact]
+    public void A_Skipped_Backfill_Is_Distinguishable_From_An_Empty_One()
+    {
+        var skipped = Parse<SharePanel.ResyncReply>("""
+        {"ok":true,"backfill":{"scanned":0,"summary":"no files in the remote folder yet","ran":false}}
+        """);
+        var empty = Parse<SharePanel.ResyncReply>("""
+        {"ok":true,"backfill":{"scanned":0,"summary":"no files in the remote folder yet","ran":true}}
+        """);
+
+        Assert.False(skipped.Backfill!.Ran);
+        Assert.True(empty.Backfill!.Ran);
+    }
+
+    // The forget reply's caveat is the same class of field as `caveat`
+    // on revoke: both halves of it look like a bug to an operator who
+    // just asked for a clean slate, and left unsaid the next "clean"
+    // test is silently dirty on one side.
+    [Fact]
+    public void The_Forget_Reply_Keeps_The_Caveat_And_The_Per_Peer_Problems()
+    {
+        const string json = """
+        {
+          "ok": true,
+          "allMode": true,
+          "caveat": "Files already received are untouched. The other peer still remembers YOU.",
+          "peers": [
+            {
+              "peerId": "12D3KooWRemotePeerIdentifier",
+              "peerAlias": "laptop",
+              "syncsStopped": ["notes"],
+              "offersWithdrawn": [],
+              "policyRemoved": true,
+              "disconnected": true,
+              "problems": ["unsync notes: subscription close: context deadline exceeded"],
+              "summary": "1 sync(s) stopped, authorization removed, disconnected, 1 PROBLEM(S)"
+            }
+          ]
+        }
+        """;
+
+        var v = Parse<SharePanel.ForgetReply>(json);
+        Assert.True(v.AllMode);
+        Assert.Contains("still remembers YOU", v.Caveat);
+        var one = Assert.Single(v.Peers!);
+        Assert.True(one.PolicyRemoved);
+        Assert.Equal(new[] { "notes" }, one.SyncsStopped);
+        // A partly-forgotten peer must not read as a clean one.
+        Assert.Single(one.Problems!);
+    }
+
     [Fact]
     public void The_Share_Reply_Keeps_Whether_The_Grant_Is_Actually_In_Force()
     {

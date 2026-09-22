@@ -56,7 +56,11 @@ public class MainWindow : Window
 
     public MainWindow()
     {
-        Title = "entity-avalonia";
+        // The build stamp is IN THE TITLE BAR because that is the only place
+        // it survives the way this information is actually transmitted: a
+        // photograph of a screen, or a screenshot pasted into a message. A
+        // line on stderr is correct and nobody pastes it.
+        Title = "entity-avalonia — " + BuildInfo.Line;
         // PHASE-I-SITE-VIEW-PLAN §5.1 — open maximized so the chrome
         // fills its canvas. The prior 1100×720 default sat tiny on a
         // 1280×1024 (or larger) display and made the panel grid look
@@ -102,6 +106,26 @@ public class MainWindow : Window
         }
 
         var systemPeer = Bridge.DefaultPeer();
+
+        // Say what this peer IS, on stderr and in the crash trail, before the
+        // first panel exists. Identity, store and listener are the three
+        // facts every later question depends on, and all three were
+        // unknowable from a running app: an operator could not tell a
+        // persistent peer from an ephemeral one, and an ephemeral one
+        // silently discards every share it is given.
+        try
+        {
+            var listen = FormatListenSummary(systemPeer);
+            var line =
+                $"peer: identity={(string.IsNullOrEmpty(Program.Config.Identity) ? "(default)" : Program.Config.Identity)} " +
+                $"storage={(string.IsNullOrEmpty(Program.Config.Storage) ? "memory" : Program.Config.Storage)}; {listen}";
+            Console.Error.WriteLine("entity-avalonia: " + line);
+            CrashDiagnostics.Breadcrumb("boot", line);
+        }
+        catch (Exception ex)
+        {
+            CrashDiagnostics.Breadcrumb("boot", "peer summary failed: " + ex.Message);
+        }
 
         // Replay the roster from disk so non-ephemeral peers from prior
         // sessions reappear. Idempotent w.r.t. the already-booted default
@@ -165,6 +189,20 @@ public class MainWindow : Window
         DockPanel.SetDock(diagBar, Dock.Bottom);
         root.Children.Add(_bridgeStatus);
         root.Children.Add(diagBar);
+
+        // The render thread's alternate signal stack rides in on this.
+        // It is zero-size, draws nothing and cannot be hit-tested; it
+        // exists only because sigaltstack must be called ON the thread
+        // it covers and a custom draw operation is the sole public way
+        // into the render thread in Avalonia 11.2. See AltStackProbe.
+        //
+        // Docked rather than in the fill slot: LastChildFill gives the
+        // final child the remaining space, and that child must stay
+        // _tabs.
+        var altStackProbe = new AltStackProbe();
+        DockPanel.SetDock(altStackProbe, Dock.Top);
+        root.Children.Add(altStackProbe);
+
         root.Children.Add(_tabs);
         Content = root;
 
@@ -381,6 +419,28 @@ public class MainWindow : Window
         {
             PeerHandle = handle; View = view; IsSystemPeer = isSystem;
         }
+    }
+
+    // FormatListenSummary reads the bring-up account the bridge exposes for
+    // a peer. Deliberately not shared with PeerConnectionsPanel's richer
+    // version: this one runs before any panel exists and must never throw.
+    private static string FormatListenSummary(long peerHandle)
+    {
+        var reply = Bridge.TakeString(Bridge.PeerListenAddr(peerHandle));
+        using var doc = JsonDocument.Parse(reply);
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("ok", out var ok) || !ok.GetBoolean()) return "listen status unavailable";
+        if (!root.TryGetProperty("result", out var result)) return "listen status unavailable";
+        if (!result.TryGetProperty("listening", out var listening) || !listening.GetBoolean())
+        {
+            return "not listening (outbound only — nothing can be shared TO this peer)";
+        }
+        if (result.TryGetProperty("summary", out var sum) && !string.IsNullOrWhiteSpace(sum.GetString()))
+        {
+            return sum.GetString()!;
+        }
+        var addr = result.TryGetProperty("addr", out var a) ? (a.GetString() ?? "") : "";
+        return string.IsNullOrEmpty(addr) ? "listening (address unknown)" : "listening on " + addr;
     }
 
     // DTOs for PeerList envelope.

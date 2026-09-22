@@ -353,6 +353,23 @@ func Hello() *C.char {
 	return C.CString("Hello from Go — bridge alive, multi-peer ready.")
 }
 
+// buildStamp identifies the tree this library was compiled from. Injected
+// by the Containerfile via -ldflags; "dev" means somebody built the .so by
+// hand (the bridge-only smoke build in AGENTS.md does exactly that).
+//
+// It exists because the frontend carries its own stamp from the same build,
+// and the ONE failure this catches is a stale libbridge.so sitting in
+// dist-native/ beside a fresh frontend — a state `extract` can produce and
+// which otherwise presents as "the fix did not land".
+var buildStamp = "dev"
+
+// BridgeBuildStamp returns the build stamp of this shared library.
+//
+//export BridgeBuildStamp
+func BridgeBuildStamp() *C.char {
+	return C.CString(buildStamp)
+}
+
 // FreeString releases a C-string previously returned by any bridge
 // function. Safe to call with NULL.
 //
@@ -510,12 +527,29 @@ func PeerListenAddr(h C.int64_t) *C.char {
 		if addr := hp.AppPeer.Addr(); addr != nil {
 			shown = addr.String()
 		}
-		payload["result"] = map[string]any{
+		res := map[string]any{
 			"listening":  true,
 			"scheme":     scheme,
 			"addr":       shown,
 			"advertised": hp.AdvertisedURL,
 		}
+		// The bring-up's own account of itself. `listening: true` plus an
+		// address is not the whole truth: a peer can be bound on a port it
+		// did not ask for, or bound and unable to publish a profile anyone
+		// can dial, and both of those present to an operator as "connected
+		// peers never appear" with nothing on screen to explain it.
+		if li := hp.Listener; li != nil {
+			res["summary"] = li.Summary()
+			res["requested"] = li.Requested
+			res["fell_back"] = li.FellBack
+			if li.AdvertiseErr != nil {
+				res["advertise_error"] = li.AdvertiseErr.Error()
+			}
+			if li.AnnounceErr != nil {
+				res["announce_error"] = li.AnnounceErr.Error()
+			}
+		}
+		payload["result"] = res
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {

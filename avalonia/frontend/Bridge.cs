@@ -37,6 +37,13 @@ public static class Bridge
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Hello")]
     public static extern IntPtr Hello();
 
+    // BridgeBuildStamp returns the stamp of the tree libbridge.so was
+    // compiled from. Compared against the frontend's own stamp at startup:
+    // they are produced by the same podman build, so a disagreement means
+    // dist-native/ holds a stale .so next to a fresh executable.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "BridgeBuildStamp")]
+    public static extern IntPtr BuildStamp();
+
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "FreeString")]
     public static extern void FreeString(IntPtr p);
 
@@ -640,16 +647,61 @@ public static class Bridge
     public static extern IntPtr ShareRevoke(long peerHandle, string root, string peer);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShareAccept", CharSet = CharSet.Ansi)]
-    public static extern IntPtr ShareAccept(long peerHandle, string peer, string root);
+    public static extern IntPtr ShareAccept(long peerHandle, string peer, string root,
+        string directory, int allowNonEmpty);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShareUnsync", CharSet = CharSet.Ansi)]
     public static extern IntPtr ShareUnsync(long peerHandle, string peer, string root);
+
+    // ShareResync reaches the NETWORK — it lists the remote folder and
+    // pulls blob closures — so it belongs off the UI thread with the
+    // other two, not with the local render calls.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShareResync", CharSet = CharSet.Ansi)]
+    public static extern IntPtr ShareResync(long peerHandle, string peer, string root);
+
+    // ShareForget is local-only (it drops policy, bindings and the
+    // connection) but is run off-thread anyway: Unsync inside it closes
+    // subscriptions, and a subscription close waits on a delivery
+    // goroutine (AP60).
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShareForget", CharSet = CharSet.Ansi)]
+    public static extern IntPtr ShareForget(long peerHandle, string peer);
 
     // The reciprocal dial. Pass address="" to let the workspace resolve
     // one (a peer we have dialled before, or an mDNS announcement); pass
     // a typed address when it reports needsAddress. Network-bound.
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShareComplete", CharSet = CharSet.Ansi)]
     public static extern IntPtr ShareComplete(long peerHandle, string peer, string address);
+
+    // --- Sharing status (declared state vs. what is actually true) -------
+    //
+    // Two exports, and the split is the whole design. StatusRender READS
+    // the declarations and observes the substrate — no write, no dial, so
+    // it is safe from a refresh or a wake. StatusReconcile runs one pass
+    // of the control loop, which DIALS every declared peer; wiring that to
+    // anything automatic would turn a status panel into a dialer an
+    // operator leaves running. It is called on open, on Re-check, and
+    // after a mutation this panel performed, and never otherwise.
+    //
+    // Both return the same envelope, carrying `reconciled` — so the
+    // surface says which of the two it is showing rather than implying the
+    // stronger one.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusRender")]
+    public static extern IntPtr StatusRender(long peerHandle);
+
+    // Network-bound (it dials): run it on a thread-pool worker, like
+    // ShareOffers / ShareAccept and for the same AP31 reason.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusReconcile")]
+    public static extern IntPtr StatusReconcile(long peerHandle);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusPauseDevice", CharSet = CharSet.Ansi)]
+    public static extern IntPtr StatusPauseDevice(long peerHandle, string peer, int paused);
+
+    // No directory parameter, on purpose: a remount uses the path the
+    // DECLARATION remembers, because that record is the only thing left
+    // that can say where a folder's files are once the mount that knew is
+    // gone.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StatusRemountFolder", CharSet = CharSet.Ansi)]
+    public static extern IntPtr StatusRemountFolder(long peerHandle, string folderId);
 
     // File explorer: one mount's CONTENTS, and unlike LocalFilesRender
     // above this one IS a handle. The distinction is the event source. A

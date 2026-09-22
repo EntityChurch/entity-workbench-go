@@ -196,3 +196,27 @@ func (m *LocalFilesModel) Render() LocalFilesOutput {
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Root < rows[j].Root })
 	return LocalFilesOutput{Mounts: rows}
 }
+
+// MountFilesystemRoot reads the on-disk directory one mount is bound to,
+// straight from the kernel's config entity.
+//
+// Exported because a Folder record has to carry the path an operator
+// chose, and the ONLY durable source for it is this config — the
+// workbench-side mount binding stores prefixes, not paths. A record that
+// omitted the path would be unable to say where a folder's files are
+// after the mount that knew is gone, which is precisely the state a
+// reader needs it in.
+func MountFilesystemRoot(st *Store, root string) (string, bool) {
+	if st == nil || root == "" {
+		return "", false
+	}
+	ent, ok := st.Get(MountConfigPrefix + root)
+	if !ok {
+		return "", false
+	}
+	cfg, err := localfiles.RootConfigDataFromEntity(ent)
+	if err != nil {
+		return "", false
+	}
+	return cfg.FilesystemRoot, cfg.FilesystemRoot != ""
+}

@@ -32,12 +32,12 @@ This repo runs the entity-OS methodology at the **Full** tier for the Avalonia/.
 — held where conformance alone can't reach a GUI. The framework is `METHODOLOGY.md` (maintained
 upstream, identical in every repo); the charter below carries the local grounding, and **this repo is one of
 the worked instances the framework was reconciled from** — D1–D11 there are inherited verbatim,
-D12–D26 here are ours, earned on the eight crash-hunt commits, two feedback episodes, the
+D12–D27 here are ours, earned on the eight crash-hunt commits, two feedback episodes, the
 2026-08-18 publisher/connectivity pair, the v1.13 adoption trio, the 2026-08-19 cross-impl
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D26, the ten review questions, the anti-pattern catalog AP1–AP64, and the promotion
+  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP71, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -410,12 +410,23 @@ one — name the recurring cycle first, then let each step own one lever of it.
   pointer input: the click fuzz crashed **6/8 seeds** at 16 KB and **0/8** at 1 MB, same
   binary, same seeds. Installed at startup by `CrashDiagnostics.EnlargeAltStack`;
   `WB_ALTSTACK_BYTES=0` restores stock, which is the only way to re-measure the bug. Only the
-  UI thread is covered — a crash on another managed thread would look identical and is not
-  fixed by this. **That limit stopped being theoretical on 2026-09-01**: the SIGSEGV landed on a
-  background render thread, which still has the stock 16 KB. `sigaltstack` is per-thread and must
-  be called *on* that thread, and Avalonia exposes no hook onto its render thread, so this is an
-  open gap rather than an oversight — the external `createdump` path is what covers it, which is
-  a second reason `run-with-dump.sh` is no longer optional.
+  UI thread is covered by *that* call — a crash on another managed thread would look identical.
+  **The render thread is covered too as of 2026-09-02, and it took the crash to do it** (AP66).
+  `sigaltstack` is per-thread and must be called *on* the thread it covers, so something has to
+  run there; Avalonia 11.2 offers no tidy hook (`IRenderTimer.Tick` is **internal**, `Compositor`
+  callbacks run on the UI thread, `AvaloniaLocator.Current` is gone). **`AltStackProbe` is the
+  answer**: a zero-size, hit-test-invisible control whose `ICustomDrawOperation` is executed by
+  the compositor during the render pass — the same call stack the fault was taken in. It
+  re-invalidates until the install lands, because a control that is never dirty is never drawn and
+  the crashing session had been idle for 17 s. **Gate: `run-xvfb-smoke.sh` exits 3 if the run log
+  lacks the render-thread line** — the only harness that can see it, since the headless suite has
+  no render thread and there is no cross-thread query for another thread's alt stack. Other
+  managed threads are still uncovered, so `run-with-dump.sh` stays non-optional.
+  **Read `journalctl` FIRST on any hard crash.** The 2026-09-02 death was named outright by
+  `kernel: signal: entity-avalonia[<tid>] overflowed sigaltstack`, which also converted §0J's
+  "createdump produces nothing for this fault class" from an untested hypothesis into a
+  measurement. Note the tid there is the **thread**, not the pid — if they differ, the fault is
+  not on the main thread and every per-thread mitigation you installed at startup missed it.
 - **A derived UI property is not a completion signal** (AP32). A headless test that settles on
   "the button re-enabled" returns in the window between the bridge call returning and the
   goroutine entering the operation, and then asserts against an empty view — green, measuring
@@ -432,8 +443,8 @@ one — name the recurring cycle first, then let each step own one lever of it.
   never a valid distinguishing claim** — if you reach for it to explain why something
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
-- The project measures everything against the **26 disciplines (D1–D26)**, ten review
-  questions, and anti-pattern catalog (AP1–AP64) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+- The project measures everything against the **27 disciplines (D1–D27)**, ten review
+  questions, and anti-pattern catalog (AP1–AP71) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A model with no shipped surface is not shipped** (D23). Landing a renderer-neutral model
   is half a feature; the other half is a verb, panel, or menu entry a user can reach, in the
   same session. Three times now — the name arc, the handler browser, `PeerLiveness` — every
@@ -500,6 +511,129 @@ one — name the recurring cycle first, then let each step own one lever of it.
   recallable* — building `unshare` on it would make the verb unable to do what it is named after.
   **`access` marks the peer's own kernel-seeded `*:*` row**: unlabelled it reads as a wildcard
   grant to a stranger, and hidden it would conceal a real grant.
+- **THE FLOW IS A CONTROL LOOP NOW, NOT A SEQUENCE — declare, then reconcile.** Two records are
+  written on purpose (`workbench/desired_state.go`): `app/workbench/devices/{peer-id}` and
+  `app/workbench/folders/{folder-id}`. Everything else — the policy row, the mount, the
+  subscription, the sync binding, the connection — is OUTPUT of `ShellWorkspace.Reconcile`
+  (`shellcmd/reconcile.go`), which is idempotent and runs at startup, after any change, and from
+  the `status` verb. `share` / `accept` / `unshare` **declare** (`shellcmd/declare.go`) and then
+  DERIVE the policy row through `ApplyDeclaredPolicy` / `WithdrawDeclaredPolicy` — they do not
+  write it. Read `docs/architecture/SHARING-DIRECTION.md` before touching this
+  area — the argument is that a **wizard** (order-dependent, non-idempotent, with no
+  representation of what it established) cannot survive a restart, and every restart defect in
+  this flow is that one sentence. Four rules the loop owns and nothing else may duplicate:
+  the policy row is a **union across both directions** and has exactly **one writer** (AP68 —
+  it was fixed in the reconciler first, which only *healed* the clobber a pass later, and
+  "the loop corrects it" is not the same as "nothing else writes it"); **a verb that changes
+  what the operator wants MUST write a declaration**, because a change the declaration does not
+  carry is undone by the next pass — that is how `unshare` silently reversed itself at the next
+  launch; a policy change and **only** a policy change forces a re-handshake, because grants are
+  assembled at handshake but reconnecting on every pass is an outage generator; and the loop
+  **names** what it will not do rather than doing it — it never creates a mount (that writes to
+  somebody's disk) and never deletes (that removes their files or their access).
+- **A READ AND A PASS ARE DIFFERENT OPERATIONS, AND THE READING MUST SAY WHICH ONE MADE IT.**
+  `ShellWorkspace.Reconcile` dials every declared peer; `StatusSnapshot` (`shellcmd/status.go`)
+  reads the declarations and observes the substrate and does neither. The shell's `status` verb
+  runs the loop **on purpose** — a read-only report has the same blind spot as the five verbs it
+  replaced — but a *panel* refreshes, so wiring a pass to a wake or a timer turns a status
+  surface into a dialer an operator leaves running overnight. Hence `StatusRender` /
+  `StatusReconcile` as separate bridge exports, one shape between them, and `Reconciled` carried
+  **in the outcome** rather than remembered by the caller: "verified by a pass" is a property of
+  the reading, and a surface that has to recall which function it called in order to caption its
+  table will eventually caption it wrong — always in the confident direction. Both entry points
+  share `observeDevice` / `observeFolder` and `FolderStatus.problems()`, so a read and a pass
+  cannot describe the same device, or the same fault, differently.
+- **OUTBOUND AUTHORITY IS EXACTLY KNOWABLE; INBOUND IS NOT, AND NO SURFACE MAY FAKE IT.** What we
+  grant a peer is our own `system/capability/policy/{peer}` row, so `DeviceStatus.OutboundGrant`
+  is a fact and is printed. What *they* grant *us* lives in **their** capability table, which
+  this peer cannot read — it is only ever OBSERVED, through deliveries arriving or through
+  chain-errors. So the inbound direction renders as an observation (what has actually landed:
+  `FilesPresent` / `FilesIngested`, and whether a subscription exists) and **never as a
+  health dot**. A dot there asserts something about another machine we have no way to check, and
+  it is wrong in exactly the case that matters — they revoked us and we have not tried since.
+  `SharingStatusPanelTests.Inbound_Authority_Is_Stated_As_Unknowable_Not_Drawn_As_A_State` is the
+  enforcement point; if it fails because someone added an inbound status field, **delete the
+  field, not the test.**
+- **RUN THE FLOW AND READ WHAT IT SAYS — a verb's printed guidance is a surface with no reader in
+  the suite** (AP71). `share` went on telling the operator on the other machine to `mount` first
+  and to `accept` without a directory for as long as S3 had been shipped, i.e. it instructed them
+  to reintroduce the exact coupling S3 removed. Every gate was green; the operator doc had been
+  corrected and the program had not. **When you delete or add an operator step, grep the
+  PROGRAM's output for it**, not just `docs/`. `avalonia/README-SHARING.md` is the standing
+  artifact for this — it is written by transcription from a real two-peer session, so writing it
+  is running it.
+- **THE FIRST CHANGE AFTER EITHER PEER RESTARTS IS NOT DELIVERED, AND THE CAUSE IS UNKNOWN.**
+  Measured 2026-09-03, both directions, no error on either side, `status` reporting `settled`
+  throughout: restart a peer, and the next file changed never arrives while every one after it
+  does. It is not a delay — the change is gone, and only `resync` recovers it. **Two obvious
+  hypotheses are already refuted** (a missing outbound dial; a stale entry in our own pool — the
+  evict-then-dial change was REVERTED rather than kept, because a cost justified by a dead
+  hypothesis is not a fix). Read
+  `docs/architecture/reviews/FIRST-CHANGE-AFTER-RESTART-IS-LOST-2026-09-03.md` before touching
+  this — §4 lists what has not been ruled out, and the first question to answer is whether the
+  loss is on the send side or the receive side, which nobody has instrumented.
+- **THE ADDRESS AN OPERATOR TYPES IS A DURABLE FACT AND BELONGS IN THE DECLARATION.** `connect`
+  used to put it in `ShellWorkspace.Conns` and the kernel's pool — both process memory — so it
+  died with the process and the reconciler had nothing to dial after a restart.
+  `RememberDeviceAddress` writes it to `app/workbench/devices/{peer}`, and **updates only, never
+  creates**: connecting is a means, not a relationship, and dialing a peer to look at its tree
+  must not enroll it in one the loop then maintains forever. Related: **our own outbound
+  connection is derived runtime state that must be re-established at open** (AP62's shape again)
+  — the loop does it once per process, because a connection has a direction for *authority* and
+  none for *display*, so `ConnectedPeers()` says "connected" over a route we cannot dispatch on.
+- **A PANEL TEST ASSERTS INSIDE ITS OWN ROW, because the fixture peer is SHARED and other tests
+  write real state to it** (AP70). Every headless panel test runs against
+  `BridgeFixture.DefaultPeer` — one peer for the whole assembly — and `SharePanelAcceptDirectoryTests`
+  accepts a folder into a temp directory on it. So any panel that reads real declarations renders
+  rows your test did not create, and an assertion phrased over *the panel* is really phrased over
+  everything every other test in the assembly has ever done to that peer. It bit both ways in one
+  run: a negative assertion failed on somebody else's row (which reads as a product defect and is
+  not), and a positive one passed on somebody else's row while its own seed could not express the
+  case the test was named after. Use `RowTextsFor` / `FindButtonInRow`, and **when a seed helper
+  cannot express the distinction the test name claims, fix the helper** — otherwise the test is
+  decoration. The tell: only the NEGATIVE assertion can catch this, because contamination only
+  ever adds matching rows.
+- **`Sharing Status (declared vs. actual)` is the third Network panel, and it is the missing half
+  of the control loop rather than a new feature.** Before it there was **no bridge export for
+  devices, folders or the reconciler at all** — the whole declared-state layer was reachable from
+  one shell verb and from no pixel — while the GUI *ran* a reconcile pass at every startup and
+  reported its problems to **stderr**, i.e. to `avalonia/run-logs/`, where nobody looks. An
+  operator whose accepted folder had lost its mount was told so, correctly, somewhere they would
+  never see, with every panel on screen looking fine. **`make reachability` cannot raise this**:
+  it asks whether a `workbench/*_model.go` has a surface, and the reconciler is `shellcmd`'s and
+  has a verb. The question the sweep will not ask for you is *which frontend can reach this, and
+  by pressing what*. It also carries two verbs — Pause/Resume (writes the **declaration**, so the
+  loop obeys it) and Remount (the action the loop names and refuses) — because a panel with no
+  verb in it is AP57's tell.
+- **`system/network:maintain-peer` IS the reconnect engine, and we hand-rolled around it for
+  months.** It connects, installs the §4.1 continuation graph, retries **forever** with derived
+  backoff, and restores subscriptions on reconnect; `entitysdk.NetworkClient.MaintainPeer` wraps
+  it and the handler is registered by default. It had **zero callers in shipped code** — ten
+  references, nine in its own file and one in its own test — while three verbs called
+  `AppPeer.Connect` once and called that a relationship. Its session map is in-memory with no
+  rebuild at open, so the **caller** re-issues it per launch; that is the reconciler's job.
+  `MaintainOpts.Address` is bare `host:port` — `RegisterRemote` refuses a scheme and builds a
+  TCP profile, so a `ws://` address cannot be passed here at all. This is D20 aimed at our own
+  SDK: **grep `../entity-core-go` AND `entitysdk/` for the thing you are about to build.**
+- **The GUI's default peer is persistent, listening and announcing, and it was none of those.**
+  Until 2026-09-03 the default was an in-memory peer with a fresh keypair per launch, no
+  listener and therefore no discovery. The tree is peer-id-namespaced, so that default was not
+  "some features off" — it made the app **a different peer on every start**, silently
+  invalidating every grant, mount, offer and accepted share from the previous session. An
+  operator debugging a two-machine share by relaunching was destroying the state they were
+  debugging, on both machines, every time. `--ephemeral` restores it deliberately.
+  **`BringUpListener` (`shellboot/listener.go`) is the ONE bring-up** — bind, advertise, announce
+  — shared by every frontend, because the version that lived in `PeerManager.Create` left
+  `entity-shell -listen` binding nothing (AP67). A wildcard bind now advertises this host's LAN
+  address rather than publishing no profile at all; a peer with no profile cannot be reconnected
+  to by peer-id, which is the manual step the whole redesign exists to delete.
+- **A file holds what you need in order to find the tree; the tree holds everything else.**
+  Identity, store path and listen address are pre-peer facts and must be on disk. Everything
+  after that — devices, folders, and eventually `gui-layout.json` and `browser.json` — belongs in
+  `app/workbench/`, where it is addressable, watchable and travels with the peer. The layout
+  file's stated reason for being a file (a peer-id key never matches twice under an ephemeral
+  default) died with the ephemeral default; migrating it is owed, and needs a read-both /
+  write-tree transition so an existing install does not lose its layout.
 - **A DERIVED RUNTIME INDEX over a persistent store must be rebuilt at open, and nothing in the
   read path will tell you it wasn't** (D26, AP62). `subscription.Engine.Load` rebuilds the
   engine's `pathIndex` from `system/subscription/{id}` entities; its doc comment says it "must be
@@ -555,6 +689,50 @@ one — name the recurring cycle first, then let each step own one lever of it.
   `404 no_mount_for_uri` — a mount that listed as healthy and had silently stopped producing
   documents. `Mount` writes it, `Unmount` removes it (or the unmount undoes itself at the next
   launch), and every failure path in between unwinds it.
+- **A SUBSCRIPTION IS A FUTURE TENSE — `sync` now BACKFILLS, and before it did the share
+  transferred every file except the ones in the folder** (AP65). `Sync` subscribed on
+  `created`/`updated` only, so a folder that already had files in it delivered **nothing**: no
+  file in it ever changed again. The operator gesture the product is named after produced an empty
+  folder, no error on either side, and a healthy-looking `syncs` row. **It survived because it was
+  documented** — `USAGE-SHARE-A-FOLDER.md` listed it under known limitations, the verb printed the
+  same sentence, and `sync_e2e_test.go` writes its file *after* the sync **on purpose**, so the
+  suite encoded the defect as a premise. `shellcmd/sync_backfill.go` closes it by synthesizing the
+  notification the engine would have delivered and dispatching it at the same
+  `workbench/blob-resolve:receive` handler via `Executor.ExecuteWithIncluded` — **do not add a
+  second materialization path**; mount lookup, the F9 already-current short-circuit, the blob
+  closure pull and `local/files:write` are shared by construction. Subscribe **then** backfill, so
+  a write during catch-up is carried by the subscription. Gate:
+  `shellboot/sync_backfill_e2e_test.go` **plus its control arm**, which runs the same scenario
+  with `SkipBackfill` and asserts the folder stays empty — without that arm the positive test
+  could be satisfied by anything else replaying history.
+  **A first transfer needs NO dial from the publisher.** The backfill runs on authority the
+  receiver holds (`share` grants it the listing and the closure), so `accept`'s old line — *"until
+  they dial you this folder stays empty"* — was telling operators their files had not arrived
+  while the files were on disk. The publisher's dial is for **future change notifications** only.
+- **`resync` and `forget` exist for TESTABILITY, and that is a product requirement not a
+  convenience.** `resync <peer> <root>` re-runs the catch-up without touching the subscription;
+  run it twice and the second pass reports everything **already current**, which is the only
+  positive confirmation this flow offers — otherwise "no errors" and "nothing happened" render
+  identically. `forget <peer>` / `forget --all` drops syncs, offers, authorization and the
+  connection. It exists because everything the flow establishes is deliberately durable, and the
+  sum of that is a flow that **cannot be re-tested**: a second run is indistinguishable from a
+  stale grant, and that failure presents as a *success nobody can trust*. It **deletes no files
+  and unmounts nothing** — received bytes are the operator's — and it does not touch identity.
+  Run it on **both** machines; a peer cannot reach into another peer's tree. GUI: **Pull now** and
+  **Forget peer** per received folder, **Forget all peers** in *This peer*.
+- **`accept` TAKES A DIRECTORY, and a received folder therefore has TWO root names.**
+  `accept <peer> <root> [<directory>] [-anyway]` creates the directory, mounts it, authorizes,
+  subscribes and backfills in one action (`prepareReceivingMount` in `shellcmd/share_op.go`); the
+  GUI asks on the offer row, pre-filled with a fresh `~/entity-shared/{root}`. It **refuses a
+  non-empty directory** — their writes overwrite yours and their deletes remove yours — as a typed
+  `NonEmptyDirectory` so a panel can offer the override instead of printing prose. **The trap is
+  the two names:** the subscription and the sync binding are keyed on the SENDER's root, the mount
+  is named after the directory the operator picked, and before this they had to be identical with
+  nothing saying so — pick a sensible local name and you got a relationship that established
+  cleanly and delivered nothing. `FolderData.LocalRoot` records ours; **read it through
+  `ReceivingRoot()`, never `Root` directly**, because `Root` is right in the symmetric case and
+  silently wrong in exactly the case the field exists for, which survives every test whose two
+  peers happen to agree on a name.
 - **`mount` bridges a local directory; `sync` attaches to a REMOTE peer's mount** (M2,
   2026-09-02). `shellcmd/sync_op.go` holds `ShellWorkspace.Sync`/`Unsync`/`Syncs`; the verbs are
   `sync <peer> <root> [-as <local-root>]`, `unsync`, `syncs`. The receiving chain is

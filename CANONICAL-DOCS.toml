@@ -194,6 +194,18 @@ title = "Share a Folder Between Two Devices — Usage"
 blurb = "The discover, share, authorize, mount, sync flow across two peers, in the order that works, with the reason for each step that is not obvious."
 group = "Usage guides"
 
+# Declared because AGENTS.md — which publishes — sends the reader here, and a
+# published document that points at an undeclared path ships a broken
+# instruction (the rule this manifest already carries about adding a doc being
+# part of declaring it). It is also the one document in this repo written by
+# transcription from a real two-peer session rather than from the code, which
+# is what makes its limitations section trustworthy.
+[[doc]]
+path  = "avalonia/README-SHARING.md"
+title = "Sharing a Folder — Run It, Test It, Validate It"
+blurb = "A walkthrough of the two-machine folder share driven end to end on real peers, with the commands, the output they actually print, how to verify that files moved, how to get back to a clean slate for a second attempt, and a frank account of what does not yet work."
+group = "Usage guides"
+
 [[doc]]
 path  = "docs/architecture/USAGE-CROSS-IMPL-VALIDATION.md"
 title = "Cross-Impl Validation — Usage"
@@ -274,6 +286,12 @@ group = "Direction"
 path  = "docs/architecture/DIAGNOSTIC-DIRECTION.md"
 title = "Diagnostic direction"
 blurb = "The 'observe, don't theorize' inspect doctrine for diagnosing the running application."
+group = "Direction"
+
+[[doc]]
+path  = "docs/architecture/SHARING-DIRECTION.md"
+title = "Sharing direction: the relationship is the object"
+blurb = "Why sharing a folder between two peers is a control loop over declared state rather than a sequence of steps, what a peer-to-peer relationship model looks like when the reference point is Syncthing rather than Dropbox, where the boundary between on-disk configuration and tree-resident state falls, and how the same layer carries a shared revision project or document without being rewritten."
 group = "Direction"
 
 [[doc]]

@@ -109,9 +109,22 @@ func cmdShare(sh *Shell, args []string) (Result, error) {
 		// The other half. A sync is mutual authorization and the operator
 		// on the far side has to run this, or their folder stays empty
 		// with no error anywhere.
+		//
+		// ONE command, and it names a DIRECTORY. Until 2026-09-03 this
+		// printed a `mount` line first and an `accept` with no directory
+		// after it — the pre-S3 flow, still being handed to operators
+		// after `accept` had learned to create the mount itself. Worse
+		// than merely stale: an `accept` with no directory falls back to
+		// a mount named after OUR folder, which is exactly the unwritten
+		// coupling S3 removed, so following this text reintroduced the
+		// defect the release fixed.
 		"they now run:",
-		fmt.Sprintf("    mount <a-local-dir> archives/%s/", out.Root),
-		fmt.Sprintf("    accept %s %s", sh.Local.Peer.PeerID(), out.Root),
+		fmt.Sprintf("    accept %s %s <a-directory-on-their-disk>",
+			sh.Local.Peer.PeerID(), out.Root),
+		"",
+		"  That one command creates the directory, bridges it, authorizes",
+		"  our deliveries, subscribes, and pulls across whatever is already",
+		"  in the folder. They do not need to mount anything first.",
 	)
 	return LinesResult(lines), nil
 }
@@ -188,11 +201,35 @@ func cmdOffers(sh *Shell, args []string) (Result, error) {
 }
 
 func cmdAccept(sh *Shell, args []string) (Result, error) {
-	if len(args) < 2 {
-		return Result{}, fmt.Errorf("usage: accept <peer> <root>")
+	var positional []string
+	allowNonEmpty := false
+	for _, a := range args {
+		switch a {
+		case "-anyway", "--anyway":
+			allowNonEmpty = true
+		default:
+			positional = append(positional, a)
+		}
 	}
-	out, err := sh.Accept(args[0], args[1])
+	if len(positional) < 2 {
+		return Result{}, fmt.Errorf("usage: accept <peer> <root> [<directory>] [-anyway]")
+	}
+	rest := positional
+	dir := ""
+	if len(rest) > 2 {
+		dir = rest[2]
+	}
+	out, err := sh.Accept(AcceptRequest{
+		Peer: rest[0], Root: rest[1], Directory: dir, AllowNonEmpty: allowNonEmpty,
+	})
 	if err != nil {
+		// A non-empty target is the one refusal here an operator is
+		// expected to overrule, so name the flag that does it rather than
+		// leaving them to find it in the usage line.
+		if ne, ok := AsNonEmptyDirectory(err); ok {
+			return Result{}, fmt.Errorf("%w\nre-run with -anyway to accept into %s regardless",
+				ne, ne.Path)
+		}
 		return Result{}, err
 	}
 	who := out.PeerID
@@ -201,28 +238,48 @@ func cmdAccept(sh *Shell, args []string) (Result, error) {
 	}
 	lines := []string{
 		fmt.Sprintf("accepted %s from %s", out.Root, who),
+	}
+	// State the mount FIRST when this accept made one: it is the only
+	// part of the operation that touched the operator's disk, and it is
+	// the answer to "where did my files go".
+	if out.Mounted != nil {
+		lines = append(lines,
+			fmt.Sprintf("  files land in: %s  (mounted as %q)",
+				out.Mounted.FilesystemRoot, out.Mounted.RootName))
+	} else if out.LocalRoot != "" {
+		lines = append(lines, fmt.Sprintf("  files land in: the existing mount %q", out.LocalRoot))
+	}
+	lines = append(lines,
 		fmt.Sprintf("  granted them: %s", out.GrantSummary),
 		fmt.Sprintf("  policy:       %s", out.PolicyPath),
 		fmt.Sprintf("  their prefix: %s", out.Sync.SourcePrefix),
 		fmt.Sprintf("  our prefix:   %s", out.Sync.TargetPrefix),
 		fmt.Sprintf("  subscription: %s", out.Sync.SubscriptionID),
-	}
+	)
 	lines = append(lines, grantEffectLines(out.Reconnected, out.ReconnectNote)...)
+	lines = append(lines, backfillLines(out.Sync.Backfill, out.Sync.BackfillSkipped)...)
+
+	// The dial requirement is about FUTURE changes only, and saying so
+	// is not a softening — it is the correction of a real error in this
+	// output. The backfill above runs entirely on authority WE hold:
+	// we dispatch to them for the listing and the blob closure, which
+	// their `share` grant covers. Nothing in it needs them to dial us.
+	//
+	// What needs their dial is DELIVERY — they dispatch to us to say "a
+	// file changed" — so the previous version of this text, which told
+	// the operator the folder would stay empty until they dialled, was
+	// describing a product that could not do a first transfer at all.
+	// It is the sentence an operator reads while their files are
+	// already on disk, and it taught them not to believe the surface.
 	lines = append(lines, "",
-		// The step neither side can finish alone. A dial-by-address grants
-		// authority in ONE direction — the dialer's — so accepting gives us
-		// the right to subscribe and gives them nothing, and delivery runs
-		// their way. Without this the folder stays empty and no error
-		// appears on this side at all.
 		"ONE STEP LEFT, AND IT IS ON THEIR MACHINE:",
 		"    "+out.PublisherMustDial,
 		"",
-		"  A dial-by-address authorizes the DIALER only, so they must dial you",
-		"  once now that this grant exists. Until they do, their deliveries are",
-		"  refused and this folder stays empty with no error on your side.",
-		"",
-		"files they change after that will appear in your mount. Files already",
-		"in their folder arrive when they next change, or when that peer remounts.")
+		"  This is for CHANGES FROM NOW ON, not for the files above. A",
+		"  dial-by-address authorizes the DIALER only, so they must dial you",
+		"  once now that this grant exists. Until they do, their change",
+		"  notifications are refused with no error on your side — and you can",
+		"  always pull their current state yourself with `resync`.")
 	return LinesResult(lines), nil
 }
 

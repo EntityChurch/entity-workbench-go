@@ -96,6 +96,16 @@ func main() {
 	}
 	defer app.Close()
 
+	// State the listener outcome before anything else runs. `-listen` bound
+	// nothing at all until 2026-09-03 and printed nothing either way, so the
+	// only way to discover the peer was unreachable was for a second machine
+	// to fail to connect to it. A peer that came up on a different port than
+	// asked for, or that bound but could not publish a dialable profile, says
+	// so here.
+	if li := app.Listener(); li != nil {
+		fmt.Fprintln(os.Stderr, "entity-shell: "+li.Summary())
+	}
+
 	args := flag.Args()
 	if len(args) == 0 {
 		if err := app.RunREPL(os.Stdin, os.Stdout, os.Stderr); err != nil {

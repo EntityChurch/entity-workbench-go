@@ -28,6 +28,18 @@ func (a *App) RunREPL(in io.Reader, out, errOut io.Writer) error {
 	}
 	fmt.Fprintf(out, "Local peer: %s (peer-id %s)\n", a.sh.Local.Alias, shortID(a.sh.Local.PeerID))
 
+	// Re-establish what this peer declared, before the first prompt.
+	//
+	// Only in the REPL, never for a one-shot: a session that stays open
+	// wants its relationships live, and `entity-shell mounts` has no
+	// business spending a dial budget on a peer it will not use before it
+	// exits. Synchronous here, unlike the GUI's background pass, because
+	// a CLI user is looking at the terminal and the answer to "is my
+	// share working" is worth two seconds of their attention — and
+	// because a prompt that appears before the peer is connected invites
+	// exactly the manual `connect` this removes.
+	a.reconcileForREPL(out)
+
 	if useLiner(in) {
 		return a.runLiner(out, errOut)
 	}

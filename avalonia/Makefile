@@ -15,6 +15,21 @@ IMAGE    := entity-avalonia:dev
 # below is fenced with $(PODMAN_BUILD_CAPS) / $(PODMAN_RUN_CAPS).
 include $(WB_DIR)/caps.mk
 
+# BUILD_STAMP — what the running app prints so you can tell two machines
+# apart. `git describe` alone is not enough: during a debugging session the
+# tree is dirty for hours and every build would carry the same string, which
+# is exactly the situation that cost a day on 2026-09-03 (a landed fix read
+# as "still broken" against a six-day-old binary). So the stamp appends a
+# short hash over the working-tree diff AND the untracked/staged status, and
+# a new file counts — `git diff HEAD` alone does not see one.
+#
+# Deterministic for an unchanged tree, so a no-op `make build` still hits
+# the podman layer cache; distinct for any edit, so a rebuild always
+# produces a stamp you can compare across machines.
+WB_STAMP_BASE := $(shell cd $(WB_DIR) && git describe --tags --always --dirty 2>/dev/null || echo no-git)
+WB_STAMP_TREE := $(shell cd $(WB_DIR) && { git diff HEAD 2>/dev/null; git status --porcelain 2>/dev/null; } | sha256sum | cut -c1-8)
+BUILD_STAMP   := $(WB_STAMP_BASE)+$(WB_STAMP_TREE)
+
 .PHONY: help build run extract host-run up test smoke-xvfb smoke-xvfb-driver smoke-xvfb-site smoke-xvfb-connections smoke-xvfb-handlers smoke-xvfb-program smoke-xvfb-window smoke-xvfb-click crash-hunt crash clean
 
 help:
@@ -57,9 +72,9 @@ help:
 # context root, hence the copy. Without this, every build invalidates
 # the COPY layer (dist-native lives inside the workbench subtree).
 build:
-	@echo "==> building $(IMAGE) (context=$(CTX_DIR))"
+	@echo "==> building $(IMAGE) (context=$(CTX_DIR)) stamp=$(BUILD_STAMP)"
 	@cp $(APP_DIR)/containerignore $(CTX_DIR)/.containerignore
-	podman build $(PODMAN_BUILD_CAPS) -t $(IMAGE) -f $(APP_DIR)/Containerfile $(CTX_DIR)
+	podman build $(PODMAN_BUILD_CAPS) --build-arg BUILD_STAMP=$(BUILD_STAMP) -t $(IMAGE) -f $(APP_DIR)/Containerfile $(CTX_DIR)
 
 run:
 	@echo "==> running $(IMAGE) with DISPLAY=$$DISPLAY"
@@ -93,7 +108,7 @@ test:
 	@# --no-cache to force the dotnet test step to actually re-run.
 	@# Build artifacts inside earlier stages are still cached via
 	@# layer hashes; only the final test invocation is forced.
-	podman build $(PODMAN_BUILD_CAPS) --target tester --no-cache -f $(APP_DIR)/Containerfile $(CTX_DIR)
+	podman build $(PODMAN_BUILD_CAPS) --build-arg BUILD_STAMP=$(BUILD_STAMP) --target tester --no-cache -f $(APP_DIR)/Containerfile $(CTX_DIR)
 
 # ARGS forwards the app's own flags (--identity / --storage / --listen;
 # `./entity-avalonia --help` lists them). Without it the only reachable

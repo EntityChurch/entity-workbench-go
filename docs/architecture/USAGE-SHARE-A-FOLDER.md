@@ -4,6 +4,36 @@ The whole flow, in the order it works, with the reason for each step that
 is not obvious. Everything below is exercised end to end by
 `shellboot/flow_e2e_test.go` with **no wildcard grants on either side**.
 
+> **Two things changed on 2026-09-03 and this page has not been rewritten
+> around them yet.**
+>
+> **`-listen` now binds a socket.** It did not, in any version of
+> `entity-shell` before that date: the flag was accepted, the address was
+> stored on the peer, and nothing ever called `Peer.Listen` (AP67). If you
+> followed this page before and step 1 appeared to do nothing, it did
+> nothing. The shell now prints what it bound and what it advertised as
+> its first line, so you can see it.
+>
+> **The relationship is durable and re-establishes itself.** `share` and
+> `accept` now also record a declaration
+> (`app/workbench/devices/…`, `app/workbench/folders/…`), and the shell
+> re-establishes everything declared before its first prompt. So the
+> `connect` steps below are needed for the FIRST contact and not on any
+> later run — a restart no longer costs you the relationship. The new
+> **`status`** verb shows what is declared, whether it is actually
+> established, and what is stopping it; run it first when something looks
+> wrong. See `docs/architecture/SHARING-DIRECTION.md`.
+>
+> **Accept takes a directory, so the receiver no longer mounts first.**
+> `accept <peer> <root> <directory>` creates that directory, mounts it,
+> authorizes their deliveries, subscribes and pulls what is already
+> there. Two steps of the flow below are gone with it — the separate
+> `mount` on the receiving side, and the unwritten rule that the
+> receiving directory had to be *named* the same as the sender's folder.
+> It refuses a directory that already has files in it, because their
+> writes overwrite yours and their deletes remove yours; `-anyway`
+> overrules that.
+
 ---
 
 ## The short version
@@ -21,9 +51,16 @@ On the machine that wants it (**B**):
 peers                                  # find A, note its peer-id + address
 connect a <A's host:port>
 offers <A's peer-id>                   # see what A is offering you
-mount ~/notes-from-a archives/notes/   # a sync writes INTO a mount
-accept <A's peer-id> notes
+accept <A's peer-id> notes ~/notes-from-a
 ```
+
+`accept` creates `~/notes-from-a`, mounts it, and receives into it. The
+directory may be called anything — it is not required to match what A
+called their folder, which it used to be, silently.
+
+**B now has A's files.** `accept` pulls whatever is already in the folder
+before it returns, and reports how many files came across. That transfer
+runs entirely on authority B holds, so it needs nothing further from A.
 
 Back on **A**, once B has accepted:
 
@@ -31,8 +68,93 @@ Back on **A**, once B has accepted:
 connect b <B's host:port>
 ```
 
-That last step is the one people miss, and the rest of this page is
-mostly about why it exists.
+That last step is the one people miss. It is **not** needed for the files
+above — it is what lets A tell B about *future* changes, and the rest of
+this page is mostly about why it exists.
+
+---
+
+## Two-way: both machines edit, both converge
+
+Everything above is **one direction** — B receives A's folder. The
+Dropbox-shaped thing, where either machine can edit and both converge, is
+that same flow run **once in each direction**. There is no separate
+bidirectional verb, and there deliberately is not one: each direction is
+an independent grant, and a single verb that established both would be
+minting authority in a direction the operator did not name.
+
+On **A**:
+
+```
+mount ~/notes archives/notes/
+share notes with <B's peer-id>
+```
+
+On **B**:
+
+```
+mount ~/notes archives/notes/     # same folder NAME — see below
+share notes with <A's peer-id>    # the second direction
+connect a <A's host:port>
+accept a notes                    # into the mount above; B now has A's files
+```
+
+Here the mount comes first *on purpose*: two-way means B publishes the
+same directory back, and only `mount` establishes the publishing half.
+Giving `accept` a directory is the one-way shape.
+
+Back on **A**:
+
+```
+connect b <B's host:port>
+accept b notes                    # A now has B's files
+```
+
+Both `accept`s report what came across. After the second one, both
+folders hold the union of what each had.
+
+**This is gated**, end to end through the verbs, with files seeded on
+*both* sides before either sync existed:
+`shellboot/sync_twoway_e2e_test.go`.
+
+### One counter-intuitive thing you will see, which is correct
+
+The second `accept` usually reports **more files than the other machine
+started with**. By the time A accepts, B has already pulled A's files
+into B's folder — so A enumerates B's folder and legitimately sees both
+sets. The report reads like:
+
+```
+existing files: 4 file(s) found, 2 transferred, 2 already current
+```
+
+The *already current* half is A recognising its own bytes by content hash
+and declining to pull them back. That short-circuit is what stops the two
+subscriptions from feeding each other in a loop, and seeing it in the
+count is the loop guard working, not a double transfer.
+
+### Several shared folders
+
+One mount per folder, and **the root name is the directory's basename**
+(`shellcmd/mount_op.go`, `filepath.Base`). So `~/notes` is root `notes`
+and `~/photos` is root `photos`, and each is shared, accepted and synced
+by that name independently. Two consequences worth knowing before you
+lay out directories:
+
+- **The two machines should use the same folder name**, because `sync` /
+  `accept` name one root and default to the same name on both sides. If
+  the names differ, say so once: `sync a notes -as my-notes`.
+- **Two different directories with the same basename collide** on one
+  machine — `~/work/notes` and `~/personal/notes` are both root `notes`.
+  The mount is refused rather than silently merged.
+
+### What is not handled
+
+**Concurrent edits to the same file on both machines.** The substrate is
+last-arrival-wins and does not merge, so simultaneous edits lose one
+side. That is milestone M3 and needs `ext/revision` composed in. Deletes
+propagate while a sync is live; a delete that happens while the other
+machine is offline does not replay when it returns.
 
 ---
 
@@ -41,6 +163,11 @@ mostly about why it exists.
 Every verb above is also a button, in the **Shared Folders (share and
 receive)** panel — add it from *+ Add panel → Network*. The sections are
 numbered in the order you perform them.
+
+**Including the catch-up and the clean slate.** Each received folder's row
+has a **Pull now** button (`resync`) and a **Forget peer** button; the
+*This peer* section has **Forget all peers**. Accept reports how many
+existing files it brought across, in the panel, on the way through.
 
 **Including the last dial.** The step that reads as `connect b <B's
 addr>` above is a **Complete connection** button on the share's row, on
@@ -68,15 +195,43 @@ Two things the GUI needs that the shell does not:
   Discovery is off in that configuration and the Peer Connections panel
   says so rather than hiding the section.
 
-- **Mount on the receiving side too, before you press Accept.** A sync
-  writes into a mount and does not create one — same refusal as `sync`,
-  for the reason in the next section. Use a *Local Files (manage mounts)*
-  panel; Accept names that panel in its error when the mount is missing.
+- **Nothing else.** The receiver used to have to create a mount first,
+  named exactly what the sender happened to call their folder. Accept now
+  asks for a directory on its own row — pre-filled with a fresh path under
+  `~/entity-shared/` — and creates it, mounts it and receives into it. It
+  refuses a directory that already has files in it, because their writes
+  overwrite yours and their deletes remove yours, and offers to proceed
+  anyway with that consequence stated.
 
 The panel is a thin surface over `ShellWorkspace.Share`/`Accept`/`Sync` —
 the same methods the verbs call (`shellcmd/share_op.go`,
 `shellcmd/sync_op.go`). There is no second implementation of the flow, so
 the rest of this page describes both routes.
+
+**When it does not work, the panel to open is *Sharing Status (declared
+vs. actual)*** — the `status` verb's question, in the same Network
+category. It lists every peer and folder you have declared beside what is
+actually established, and names what is stopping the rest. Two things on
+it are worth knowing before you need them:
+
+- **"Re-check now" is not "Refresh".** Re-check runs one pass of the
+  control loop: it reconnects to declared peers, writes any authorization
+  your declarations require, and subscribes to accepted folders that have
+  a mount. Refresh only re-reads. The panel captions which of the two you
+  are looking at, because "these are the records" and "this is what a pass
+  established" are different claims.
+- **It tells you what you grant a peer, and it will not pretend to know
+  what they grant you.** Your side is your own capability row, so it is
+  printed exactly. Their side is in *their* table, which your machine
+  cannot read — so instead of a green light you get the only evidence that
+  exists: how many files have actually arrived in the folder. If that
+  number is zero and everything else looks established, the missing step
+  is almost always on the other machine.
+
+A folder whose mount has gone gets a **Remount** button there, which
+bridges the directory the declaration remembers. The control loop
+deliberately will not do that for you: creating a mount writes to a
+directory on your disk, and that stays your decision.
 
 ---
 
@@ -136,6 +291,17 @@ Two consequences:
 | `accept` | `app/workbench/syncs/{A}.{root}` | the sync binding, restored at startup |
 | `mount` | `system/config/local/files/{root}` + `app/workbench/mounts/{root}` | the folder bridge, both halves |
 
+`accept` and `sync` also run a **catch-up pass** before returning: every
+file already under A's `local/files/{root}/` is pulled across and written
+into B's mount. It goes through the same
+`workbench/blob-resolve:receive` handler the live deliveries use — the
+notification is synthesized, nothing downstream is duplicated — so the
+subscription and the catch-up cannot drift apart.
+
+Without it, sharing a folder that already had files in it transferred
+nothing at all and reported success, because a subscription is a future
+tense and no file in that folder ever "changed" again.
+
 The offer record is a **label, not an authority** —
 `APP-CONVENTION-SHARE` §2.2 is explicit that a consumer must not infer
 authorization from it. If you see an offer and still get a 403, that is
@@ -149,8 +315,27 @@ the two things being correctly separate, not a bug.
 access          # every peer authorized on this machine, and for what
 shares          # folders this machine offers, and to whom
 syncs           # folders this machine is receiving
+resync a notes  # pull their current folder NOW, without waiting for a change
 unshare notes <B's peer-id>
+forget a        # drop every relationship with one peer
+forget --all    # ... with every peer
 ```
+
+`resync` is also the answer to *"did it actually work?"*. Run it twice:
+the second pass reports everything as **already current**, which is a
+positive confirmation. Without it, "no errors" and "nothing happened"
+render identically, which is the state this flow spent a week in.
+
+`forget` exists because everything the flow establishes is deliberately
+durable — the policy survives a restart, the sync binding is restored at
+startup, the alias and the discovered candidate persist. That is correct
+individually and it makes the flow impossible to re-test: a second run
+cannot be told apart from a stale grant that was already in place, and
+that failure presents as a **success you cannot trust**. It drops
+relationships only: **no file is ever deleted and nothing is unmounted**,
+and it does not change this peer's identity. Run it on **both** machines
+— a peer cannot reach into another peer's tree, so one side forgetting
+leaves the other still remembering.
 
 `access` lists one row that is **this peer itself** — a wildcard entry the
 kernel seeds at construction (V7 v7.74 §6.9a). It is marked as such. It is
@@ -166,8 +351,14 @@ is — those are the other machine's files now.
 
 ## When it does not work
 
-**B's folder is empty and nothing is wrong on B.** Almost always the last
-step: A has not dialled B since B accepted. Run `connect` on A.
+**B's folder is empty and nothing is wrong on B.** First run `resync b
+<root>` on B — that pulls A's current folder on B's own authority and
+needs nothing from A. If files appear, the relationship is fine and only
+*change notification* is missing: A has not dialled B since B accepted,
+so run `connect` on A.
+
+If `resync` also brings nothing, the grant has not reached B — see the
+403 row below.
 
 **`offers` shows nothing.** The offer names a specific audience. Check A's
 `share` used B's peer-id, and that B is connected.
@@ -193,6 +384,5 @@ peers on different networks never appear and must be reached with
   safe to assume: the substrate is last-arrival-wins and does not merge.
   That is milestone M3 in `FILE-REPLICATION-LANDSCAPE.md`, and it is the
   one that needs `ext/revision` composed in.
-- **History replay.** A sync delivers changes from the moment it is
-  established. Files already sitting in A's folder arrive when they next
-  change, or when A remounts.
+- **Concurrent edits, still.** See the row above — that is the one that
+  is genuinely not covered.

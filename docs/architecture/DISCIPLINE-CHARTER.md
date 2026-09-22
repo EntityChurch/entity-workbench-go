@@ -668,7 +668,7 @@ Short enough to run on every change. Six inherited, four substrate-native.
 
 ---
 
-## 4. The anti-pattern catalog (AP1-AP64)
+## 4. The anti-pattern catalog (AP1-AP71)
 
 Each a real defect that shipped or a claim that was routed, diagnosed, and
 is now pinned by a regression test.
@@ -920,6 +920,126 @@ one mount and silently static for every one chosen afterwards.
 | AP63 | the whole cross-peer surface, from the first Stage-3 test until 2026-09-02 — every sync this repo has ever run ran under a wildcard | **Twenty-four cross-peer tests establish that the transport works and none of them tested permission, because all twenty-four run under `peer.OpenAccessGrants()`.** A wildcard authorizes everything, so a green cross-peer suite says the bytes move and says nothing about the stage an operator actually performs. The kernel's per-peer mechanism — the V7 v7.62 §8 handshake policy table at `system/capability/policy/{peer}`, unioned into the grant set by `AssembleInboundGrants` — had **zero uses in this repo**; what we had instead was `shellboot.Config.OpenAccess`, whose own doc says development-only. Turning the wildcard off surfaced four facts in one afternoon, none of them guessable and each one a wasted day if met on real hardware. **(1) A sync is MUTUAL authorization.** The receiver dispatches into the publisher to subscribe and fetch; the publisher's subscription engine dispatches the notification back into the receiver's `blob-resolve`. Grant one direction and the subscription is ACCEPTED and no file ever arrives — indistinguishable from a working share until someone opens the folder. Every prior test hid this because the receiver was always wildcard, *including the one written specifically to close the capability-delegation gap*, which scopes the sender and leaves the receiver open on purpose. **(2) The grant is assembled at HANDSHAKE**, so a policy written on a live connection is inert until the connection is re-established. **(3) The peer that DISPATCHES is the peer that must reconnect** — a reconnect by the grantER refreshes nothing the grantEE dispatches over, because the grantee uses its own pooled outbound connection. **(4) Over a dial-by-address, authorization is ONE-DIRECTIONAL by design**: `Connection.sendReciprocalGrant` is gated on `EstablishedViaRendezvousKey()`, and the kernel says why — *"a dial-by-address is asymmetric — one party requested service"*. So a working two-way sync needs BOTH peers to dial, each after the other's policy exists, and the final dial is a step neither verb can perform for the other. The generalisation: **a permissive test fixture does not weaken a test, it deletes a stage of the product from the suite** — and the deleted stage is invisible, because everything downstream of it passes. When a fixture disables a mechanism wholesale (a wildcard grant, a disabled verifier, a bypassed check), that mechanism has no coverage at all, and the count of tests over it is zero however many tests run through it. | D26, D10, D19, D23 |
 
 | AP64 | `avalonia/frontend/Panels/*` — every panel but one, from the multi-panel stack landing until 2026-09-02 | **An opt-in sizing contract that only one implementer opted into, so the layout was correct and the app was unusable.** `PanelStack` sizes its Grid to `max(viewport, sum-of-slot-minimums)` and a slot's minimum is whatever its panel declares through `IPanelPreferredHeight`. The interface's own doc said *"implement it only when the default slot height genuinely does not work — most panels are text or lists, they reflow"*, which is false of every panel in this app: the cheapest one has ~320px of fixed chrome and `PeerConnectionsPanel` has ~540px. `ProgramPanel` was the sole implementer, so three ordinary panels summed to 608px against a ~900px viewport, the Grid was pinned to the viewport, each row got ~297px, and content below the fold was **clipped with nothing to scroll** — while the stack's scrollbar rendered permanently (`Visible` + `AllowAutoHide=false`) and inert. The operator's report was *"the GUI doesn't scroll, so I have to close every panel and have only one"*, which is the exact and only workaround. Three things to carry. **A default that is wrong for every caller is not a default, it is a bug with a docstring** — and prose telling implementers to skip a contract is how it stays unimplemented. **A test that pins a proxy for an invariant fails when the invariant is fixed**: `Slot_Rows_Have_MinHeight_And_MaxHeight_Pinned` asserted `MinHeight == SlotMinHeight` to protect a zero-collapse SIGSEGV mitigation whose real requirement is `0 < MinHeight <= SlotMaxHeight`, so the two tests guarding the crash class went red on the fix and read momentarily like a regression. **And nothing in the suite could see any of this**, because every layout test mounted one panel or asserted on row definitions rather than on whether a scroll viewer's extent exceeded its viewport — the one measurement that distinguishes a scrollbar from a picture of a scrollbar. | D23, D20 |
+
+| AP65 | `shellcmd/sync_op.go`, from M2 landing until 2026-09-02 — reported by the operator, not by any suite | **A subscription is a FUTURE TENSE, so a folder share transferred every file except the ones that were in the folder.** `Sync` subscribed with `Events{"created","updated"}` and nothing else. Files already present when the sync was established never changed again, so they were never delivered — and the gesture the product is named after (pick a directory, share it with a peer) produced an empty folder, no error on either side, and a `syncs` row reporting the relationship as healthy. **The reason it survived is that it was documented.** `USAGE-SHARE-A-FOLDER.md` listed "history replay" under what-this-does-not-cover, the `sync` verb printed the same sentence to the operator, and `sync_e2e_test.go` writes its file *after* the sync with a comment explaining that the subscription does not replay history — so the suite encoded the defect as a premise and could never fail on it. Every artifact was accurate about the implementation and every one described a product that does not do the thing it is named after. Two things to carry. **A known-limitations entry is not a substitute for a feature**, and it converts a defect into a decision in the reader's mind. **And when a relationship is established over a change feed, ask what happens to the state that already exists** — the answer is nothing, always, and the surface will report success. The fix must reuse the live path rather than parallel it: synthesize the notification the engine would have sent and dispatch it at the same handler (`Executor.ExecuteWithIncluded` presents the entity exactly as a delivery does), so catch-up and steady state cannot drift. Subscribe BEFORE backfilling, so a write during the catch-up is carried by the subscription; the overlap is harmless if the handler is idempotent on content hash. | D23, D19, D10 |
+| AP66 | `avalonia/frontend/CrashDiagnostics.cs`, predicted in its own header 2026-09-01, crashed 2026-09-02 | **A per-thread mitigation installed on one thread, described accurately as insufficient, and left that way — the crash then landed on exactly the uncovered thread.** `sigaltstack` is per-thread; `Install()` runs on the UI thread; the render thread kept the PAL's stock 16 KB, a size already measured insufficient for this process's handler chain (6/8 seeds crashed at 16 KB, 0/8 at 1 MB). The header said so and concluded *"Nothing in this file fixes that"*. On 2026-09-02 a SIGSEGV on the render thread overflowed that stack and the process died with no minidump, no crash log, and a truncated breadcrumb trail. **The kernel had already named it** — `signal: entity-avalonia[3746566] overflowed sigaltstack`, one `journalctl` line — which also retired, as a measurement, the hypothesis §0J had recorded as untested ("createdump produces nothing for this fault class because there is no stack left to run it on"). Three things. **A property that is per-thread must be enumerated per thread**; "we install it at startup" is a statement about one thread. **When no tidy hook exists, take the untidy one that provably runs in the right place** — Avalonia 11.2 exposes no public render-thread callback (`IRenderTimer.Tick` is internal, `Compositor` callbacks run on the UI thread, `AvaloniaLocator.Current` is gone), but an `ICustomDrawOperation` is executed by the compositor during the render pass, i.e. in the same call stack the crash was taken in. **And read the system journal before theorising about a signal**: it is free, it is already written, and it answers questions no in-process instrument can. | D25, D19, D10 |
+
+| AP67 | `shell/app.go` + `shellboot/peer_manager.go`, found 2026-09-03 while pricing the share redesign | **A configuration field that nothing reads is a feature that does not exist, and a help string is not an implementation.** `entity-shell -listen ADDR` was documented as *"TCP listener for inbound peer connections"*, is step 1 of `USAGE-SHARE-A-FOLDER.md`, was plumbed through `shell.Config` → `shellboot.Config` → `entitysdk.PeerConfig` → `peer.WithListenAddr` — and **bound no socket at all**, because core-go reads `listenAddr` in exactly one place (`Peer.Listen`) and nothing on the shell's startup path called it. Only `PeerManager.Create` did, and `entity-shell` does not use the manager. So half of every two-machine flow was impossible from the CLI, for months, while **every e2e suite passed** — each one stands its own listener up with a local helper (`bringUpListener`) instead of going through the frontend's own startup. Two rules. **When you add a config field, grep the dependency for what READS it and name the call site in the doc comment**; a field that is only ever written is indistinguishable from one that works. **And a fixture that reimplements a step of the product's startup deletes that step from the suite** — the same shape as AP63's wildcard and AP58's un-namespaced store: the test constructs the world differently from the way the product does, so it cannot fail on the difference. | D23, D19, D26 |
+| AP68 | `shellcmd/share_op.go`, found 2026-09-03 by writing the reconciler | **One record, two writers, different intents — so the second silently revokes the first.** `system/capability/policy/{peer}` is ONE row per peer. `Share` writes `SyncSenderGrants` to it; `Accept` writes `SyncReceiverGrants` to the same path; `SaveAccessPolicy` replaces rather than merges — **correctly, by its own documented contract**, which reasons explicitly from "one caller, one statement of intent". With two callers that reasoning is false, and a peer you both share a folder TO and accept one FROM ends up authorized in one direction only: two-way sharing between one pair of machines, which is the first thing anyone with a laptop and a desktop asks for. Invisible because `shellboot/sync_twoway_e2e_test.go` — written specifically for two-way — bootstraps with `OpenAccess: true` and says so in its own header, and under a wildcard the policy row is never consulted (**AP63 one instance on from the one that named AP63**). The fix is not a merge; it is that **a shared row must have exactly one writer, which computes it as a function of all the declarations that contribute to it** — `shellcmd/reconcile.go`'s `desiredGrantsByPeer`. When you find a record written from two places, the question is not "how do we combine these writes" but "what is the single thing this row is derived from". | D26, D19 |
+
+| AP69 | the whole declared-state layer (`workbench/desired_state.go` + `shellcmd/reconcile.go`), from S2 landing 2026-09-03 until S4 the same day — `make reachability` green throughout | **The D23 sweep only asks about `workbench/*_model.go`, so a layer that lives anywhere else can be complete, correct and unreachable from every frontend while the sweep says everything has a surface.** S2 landed two declared records and an idempotent control loop; `grep '^//export ' avalonia/bridge/*.go` for devices, folders, declarations or the reconciler returned **nothing**. The sweep passed and was right to: the reconciler is `shellcmd`'s and it has a verb (`status`), so the question of whether the *GUI* could reach it was never put. Worse than merely absent — the GUI **runs** a reconcile pass at every startup (`shellboot.reconcileAtStartup`) and reports its Actions and Problems to **stderr**, which for a desktop app is a file under `avalonia/run-logs/` that nobody has a reason to open. So an operator whose accepted folder had lost its mount was told so, correctly and in detail, somewhere they would never look, while every panel on screen looked fine. **This is the second instance in a different shape**: the first was `BlobResolveHandler`, built and tested with twelve test files and no registration outside them, i.e. D23 at the HANDLER layer. Same blind spot, one layer over. The question the sweep will not ask for you, and which belongs in the scoping of any non-model layer: **which shipped binary reaches this, and by pressing what.** Two corollaries earned building the answer. **A read and a pass are different operations and the reading must say which one made it** — `Reconcile` dials, `StatusSnapshot` does not, and `Reconciled` is carried in the outcome rather than remembered by the caller, because a surface that recalls which function it called in order to caption its table will eventually caption it wrong in the confident direction. And **outbound authority is exactly knowable while inbound is not**: our policy row is ours, their capability table is unreadable from here, so inbound renders as an observation of what has actually arrived and never as a health dot — which would be wrong in exactly the case that matters, they revoked us and we have not tried since. | D23, D19, D24 |
+
+| AP70 | `avalonia/tests/.../SharingStatusPanelTests.cs`, written and caught 2026-09-03 in the same session — by the suite, on the first run | **A shared test fixture accumulates other tests' REAL state, so an assertion over a whole surface can be satisfied by a row this test did not create.** Every panel test in this assembly runs against `BridgeFixture.DefaultPeer`, one peer for the whole run — and `SharePanelAcceptDirectoryTests` *accepts a folder into a temp directory* on it. So `SharingStatusPanel`, which reads the declarations on construction, legitimately renders a real received folder beside whatever a test seeded. Both directions of that bit at once. The **negative** assertion (*"a folder with no mount must not print a confident 0"*) failed on the real row, which looked like a defect in the panel and was not. The **positive** one was worse and silent: `A_Received_Folder_Names_Both_Roots_When_They_Differ` seeded both roots blank — the seed helper did not take them — so it could not exercise the clause it is named after, while the string it *did* assert on (`"received from"`) was being produced by the contaminating row anyway. **It would have passed with the feature deleted.** Two rules. **Scope a seeded assertion to the seeded row**, not to the panel: find the row, assert inside it. And **when a seed helper cannot express the distinction the test is named after, that is the defect** — the helper takes the parameters, or the test is decoration. Note what did the catching: the negative assertion. A suite of positive assertions over a shared surface has no way to notice any of this, because contamination only ever *adds* matching rows. | D24, D19 |
+
+| AP71 | `shellcmd/cmd_share.go`'s post-share instructions, from S3 landing 2026-09-03 until the same day — found by RUNNING the flow, not by reading it | **A verb's printed guidance is a surface, it goes stale exactly like a doc, and no test reads it.** S3 taught `accept` to take a directory and create the mount itself, deleting the receiver's separate `mount` step and the unwritten rule that the receiving directory had to be named after the sender's folder. The `share` verb went on printing the pre-S3 instructions — *"they now run: `mount <a-local-dir> archives/{root}/` / `accept {peer} {root}`"* — to the operator on the machine that had to act on them. So the shipped binary was **instructing an operator to reintroduce the coupling the release had just removed**, and an `accept` with no directory silently falls back to a mount named after the sender's folder, which is precisely the defect. Everything was green: the panel gates, the e2e tests, the operator doc (which was corrected in the same session the program was not). Two rules. **When you delete a step, grep the PROGRAM's output for it**, not only `docs/` — printed guidance is what operators actually follow, and it is the one surface with no reader in the test suite. And **the way to find this class is to run the flow end to end and read what it says**, which is what an operator does and what no assertion does; this was found in the first thirty seconds of doing that, having survived a full green sweep. | D23, D19, D24 |
+
+*Enforcement (AP71):* none automated, and that is the finding rather than
+an omission — a test that asserted on the instruction text would have been
+written from the same stale understanding that produced it. The
+enforcement is procedural and is now in `AGENTS.md`: **a change that
+removes or adds an operator step is not done until the flow has been run
+end to end and its own output read.** `avalonia/README-SHARING.md` is the
+artifact that forces it, because it is written by transcription from a
+real session rather than from the code.
+
+*Enforcement (AP70):* the seeded rows are named with an `s4-` prefix and
+every assertion goes through `RowTextsFor` / `FindButtonInRow`, which
+resolve the one row and assert inside it. `SeedFolderForTests` now takes
+`root` and `localRoot` as parameters, so the test named after their
+difference can express one. No sweep catches the general class — the tell
+to carry instead is that **a fixture shared across an assembly is
+mutable**, and a panel that reads real state will render it, so any
+assertion phrased over "the panel" is really phrased over "everything
+every other test in this assembly has ever done to this peer".
+
+*Enforcement (AP69):* `make reachability` still cannot see this class, and
+saying so is the point of the entry — the sweep would have to learn about
+layers that are not `workbench/*_model.go`, and that is not built. What
+exists instead is a per-claim gate.
+`SharingStatusPanelTests.The_Panel_Is_Registered_With_A_Category_And_A_Blurb`
+pins the edge the sweep would have caught if it looked here; the two
+corollaries have gates that were each verified red with the behaviour
+removed. `shellcmd/status_test.go`'s
+`TestStatusSnapshot_ReadsWithoutWritingPolicy` runs **the reconcile pass as
+its control arm on the same fixture**, because the assertion "the snapshot
+wrote no policy row" is satisfied completely by a function that does
+nothing — the vacuous shape this area has already produced twice (AP43).
+`Inbound_Authority_Is_Stated_As_Unknowable_Not_Drawn_As_A_State` is the
+standing guard on the claim the panel may not make: **if it ever fails
+because someone added an inbound status field, the fix is to delete the
+field, not to update the test.**
+
+*Enforcement (AP67):* `shell/listen_test.go` —
+`TestShellListenIsActuallyDialable` stands a second peer up and **dials
+the address the shell reports**, because every cheaper assertion passes
+against the broken build: `Listener() != nil` passes against a bring-up
+that binds nothing, and reading the configured address back passes
+trivially, since the config was always right and was simply never acted
+on. Both control arms were run — bring-up removed, and bring-up replaced
+by a struct with a plausible address and no bind — and each fails at a
+different assertion.
+
+*Enforcement (AP68):* `shellcmd/reconcile_test.go` —
+`TestReconcile_PolicyIsTheUnionOfBothDirections` seeds the row exactly as
+`share`-then-`accept` leaves it, **guards the premise** (it fails loudly
+if `SaveAccessPolicy` ever starts merging, rather than staying green
+while measuring nothing), and asserts both halves survive.
+
+**And the verbs themselves, which the first fix left writing their own
+half.** For a day, `Share` and `Accept` still called `SaveAccessPolicy`
+directly and the reconciler *healed* the clobber on its next pass — at the
+following `status`, or the next launch. That is a real window, entered by
+performing the product's two gestures in one session, and it is worth
+naming as its own lesson: **a control loop that corrects a bad write is
+not the same as removing the writer**, and the difference is invisible in
+any test that runs the loop. `shellcmd.ApplyDeclaredPolicy` is now the one
+writer; the verbs derive. Gated at the verbs by
+`shellboot/share_union_e2e_test.go`, which drives the two shipped verbs
+and reads the row they leave — asserting the reconciler's output instead
+would have tested the healer, not the fix.
+`shellcmd/declare_test.go` covers the edge the union creates: a failed
+share must unwind its own grant **without** deleting the row, which now
+also carries a folder accepted from the same peer. **Its first version
+was vacuous** — it drove `Share` with an unmounted root, which is refused
+before anything is declared, so the unwind never ran and the control arm
+stayed green. That green control arm is the only thing that caught it.
+
+**The loop also creates a defect of its own, and `unshare` had it.** A
+verb that changes the substrate without changing the declaration is
+undone by the next pass: `Unshare` removed the policy row, left the
+folder record saying `offered`, and the next reconcile wrote the grant
+straight back — so the withdrawal held until the operator restarted and
+then silently reversed itself. **Once a reconciler exists, the
+declaration is the only durable statement, and every verb that changes
+what the operator wants must write one.** Its removal test was the second
+half of the same bug: it dropped the row whenever the peer was in no
+remaining OFFER, and offers describe only the outgoing direction, so
+unsharing the last folder from a peer we also RECEIVE one from deleted
+their delivery grant too. Gate:
+`TestUnshare_IsNotResurrectedByTheNextReconcile`, which asserts *after
+running the loop* — reading the row straight after `Unshare` passes
+against the defect. Control arm run with the declaration write removed;
+it fails at the premise guard, because without it the withdrawal is not
+merely reversible, it is a no-op.
+`TestReconcile_IsIdempotent` is the other half: the union is built from
+map iteration, so an order-sensitive comparison reports a difference on
+most passes, rewrites the row, and **reconnects every peer every time** —
+a loop that generates outages while reporting that everything is settled.
+Control verified by forcing the comparison to always report "different".
+
+*Enforcement (AP65):* `shellboot/sync_backfill_e2e_test.go`, with the
+`TestBackfill_ControlArm_WithoutItNothingArrives` arm — the control is
+load-bearing, because without it the positive test could be satisfied by
+any other mechanism that happened to replay history, which is exactly the
+vacuity the sibling e2e test had.
+
+*Enforcement (AP66):* `avalonia/run-xvfb-smoke.sh` fails (exit 3) when the
+render thread's enlargement is absent from the run log. It is the only
+harness that can check it — the headless suite has no render thread, and
+there is no cross-thread query for another thread's alt stack, so the
+install having run there is the only obtainable evidence. Control
+verified: the same grep against the crashed build's own log finds
+nothing.
 
 *Enforcement (AP64):* `avalonia/tests/.../PanelStackScrollTests.cs`.
 `Every_Registered_Panel_Declares_A_Height_Floor` walks `PanelRegistry.All()` and **collects**
@@ -1284,6 +1404,36 @@ session regardless of who it is addressed to* is the only reason this was found 
 a user, and it was found on the session-start step rather than by feature work tripping over it.
 
 ---
+
+**D27 — AN EXPLANATION THAT CLOSES A QUESTION IS A CLAIM WITH NO EXPIRY
+DATE.** Prose explaining why something cannot, need not, or will not be
+done removes it from review permanently. A `TODO` invites work; a
+well-written rationale ends the discussion, and nothing in any process
+re-opens it.
+
+*Earned on three instances in three shapes.* AP45: a doc comment
+recording that `entity-deployment.json` held nothing worth reading, which
+stood while we opened the wrong front page on a domain that declares one.
+AP66: `CrashDiagnostics.cs`'s header stating that the render thread was on
+an insufficient alternate signal stack and *"nothing in this file fixes
+that"* — accurate, unactioned, and the thread the next crash landed on.
+AP65: `USAGE-SHARE-A-FOLDER.md`'s known-limitations bullet explaining that
+existing files do not replay, which read as a decision rather than as the
+core feature being absent, and was mirrored into the verb's output and
+into a test's premise.
+
+The rule: **when you write down why an absence is correct, you are
+choosing that nobody will look again.** Prefer a flag that says *unknown*
+over prose that says *unknowable* (AP45); prefer a failing test over a
+paragraph; and when a limitation is genuinely accepted, state what would
+change the answer and what it would cost, so a later reader can price it
+instead of re-deriving the reasoning that dismissed it.
+
+*Enforcement:* the periodic audit's process review greps this repo's own
+canonical docs and header comments for the dismissal shapes — "nothing
+here fixes", "not covered", "does not yet", "no way to know" — and each
+hit is re-measured rather than re-read. Both defects found on 2026-09-02
+were sitting in that grep, in-tree, accurate, and unexamined.
 
 ## 5. Promotion criteria — when does something become a discipline?
 

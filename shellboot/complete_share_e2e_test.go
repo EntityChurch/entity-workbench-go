@@ -91,7 +91,9 @@ func TestCompleteShare_ResolvesOrAsks_AndDeliversAfterwards(t *testing.T) {
 			"cannot work instead of asking for an address", addr, src)
 	}
 
-	if _, err := bob.ws.Accept(alice.ap.PeerID(), root); err != nil {
+	if _, err := bob.ws.Accept(shellcmd.AcceptRequest{
+		Peer: alice.ap.PeerID(), Root: root,
+	}); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
 

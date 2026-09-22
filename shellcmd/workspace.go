@@ -40,6 +40,12 @@ type ShellWorkspace struct {
 	// paths to connections.
 	peerMap map[string]string
 
+	// dialedThisProcess is the set of peers WE have opened an outbound
+	// connection to since this process started. See reconcile.go — it is
+	// what makes "our own connection is derived runtime state, rebuilt at
+	// open" expressible, and it is deliberately not persisted.
+	dialedThisProcess map[string]bool
+
 	// Identity is the active identity name. Empty means ephemeral.
 	// One identity per workspace in v1; multi-identity is deferred
 	// (SHELL-DIRECTION §4.8).

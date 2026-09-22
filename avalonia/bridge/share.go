@@ -489,25 +489,72 @@ type shareAcceptReplyDTO struct {
 	// stays empty and there is no error on this side to see. The panel
 	// renders this as an instruction, not a footnote.
 	PublisherMustDial string `json:"publisherMustDial"`
+
+	// Backfill is the catch-up over files that were ALREADY in the
+	// remote folder. It is the operator's actual question — "did my
+	// files come across" — and before it existed the honest answer on
+	// this surface was "no, and nothing will tell you".
+	Backfill backfillDTO `json:"backfill"`
+
+	// LocalRoot / MountedDir / CreatedMount describe WHERE THE FILES
+	// WENT, which is the operator's first question and had no answer on
+	// this surface at all.
+	//
+	// CreatedMount distinguishes "this accept bridged a directory on
+	// your disk" from "it used one you had already bridged". They are
+	// different events and a panel that renders them identically is
+	// hiding the one that needs confirming.
+	LocalRoot    string `json:"localRoot"`
+	MountedDir   string `json:"mountedDir"`
+	CreatedMount bool   `json:"createdMount"`
+
+	// NonEmpty is set when the accept was REFUSED because the chosen
+	// directory already had files in it, with the count, so the panel
+	// can say "this folder has 12 items" beside a button that proceeds.
+	// Declared here because an undeclared field crosses this boundary
+	// and is discarded in silence (AP49).
+	NonEmpty        bool   `json:"nonEmpty"`
+	NonEmptyPath    string `json:"nonEmptyPath"`
+	NonEmptyEntries int    `json:"nonEmptyEntries"`
 }
 
 //export ShareAccept
-func ShareAccept(peerHandle C.int64_t, peer *C.char, root *C.char) (result *C.char) {
+func ShareAccept(peerHandle C.int64_t, peer *C.char, root *C.char, directory *C.char,
+	allowNonEmpty C.int) (result *C.char) {
 	defer recoverToErrorEnvelope("ShareAccept", &result)
 	ws, _, errEnv := shareWorkspace(peerHandle)
 	if errEnv != "" {
 		return C.CString(errEnv)
 	}
 
-	out, err := ws.Accept(strings.TrimSpace(C.GoString(peer)), strings.TrimSpace(C.GoString(root)))
+	out, err := ws.Accept(shellcmd.AcceptRequest{
+		Peer:          strings.TrimSpace(C.GoString(peer)),
+		Root:          strings.TrimSpace(C.GoString(root)),
+		Directory:     strings.TrimSpace(C.GoString(directory)),
+		AllowNonEmpty: allowNonEmpty != 0,
+	})
 	if err != nil {
-		// Accept's error text is load-bearing — the common failure is "no
-		// local mount to receive into", and the operation deliberately
-		// leaves the delivery grant in place and says so. Passed through
-		// verbatim rather than summarized.
+		// A non-empty target is the one refusal the operator is expected
+		// to be able to overrule, so it crosses as STRUCTURE rather than
+		// as prose a panel would have to parse.
+		if ne, ok := shellcmd.AsNonEmptyDirectory(err); ok {
+			return marshalReply(shareAcceptReplyDTO{
+				Er:              ne.Error(),
+				NonEmpty:        true,
+				NonEmptyPath:    ne.Path,
+				NonEmptyEntries: ne.Entries,
+			}, "share accept")
+		}
+		// Accept's error text is load-bearing — it deliberately leaves the
+		// delivery grant in place and says so. Passed through verbatim
+		// rather than summarized.
 		return marshalReply(shareAcceptReplyDTO{Er: err.Error()}, "share accept")
 	}
 
+	mountedDir := ""
+	if out.Mounted != nil {
+		mountedDir = out.Mounted.FilesystemRoot
+	}
 	return marshalReply(shareAcceptReplyDTO{
 		OK:                true,
 		PeerID:            out.PeerID,
@@ -522,6 +569,10 @@ func ShareAccept(peerHandle C.int64_t, peer *C.char, root *C.char) (result *C.ch
 		Reconnected:       out.Reconnected,
 		ReconnectNote:     out.ReconnectNote,
 		PublisherMustDial: out.PublisherMustDial,
+		Backfill:          backfillToDTO(out.Sync.Backfill, out.Sync.BackfillSkipped),
+		LocalRoot:         out.LocalRoot,
+		MountedDir:        mountedDir,
+		CreatedMount:      out.Mounted != nil,
 	}, "share accept")
 }
 
@@ -565,6 +616,176 @@ func ShareUnsync(peerHandle C.int64_t, peer *C.char, root *C.char) (result *C.ch
 		Note: "the local mount and every document already received are left in place; " +
 			"this stops further deliveries only.",
 	}, "share unsync")
+}
+
+// --- Resync ------------------------------------------------------------
+
+// backfillDTO mirrors shellcmd.BackfillResult across the boundary.
+//
+// Every count is carried separately rather than pre-rendered into one
+// string, because the panel distinguishes them: "transferred" is
+// progress, "already current" is the confirmation an operator re-runs
+// the pull to obtain, and "failed" must never be summarized away. The
+// Summary field is a convenience for a one-line slot, not the source of
+// truth — a surface that renders only Summary loses the failure count's
+// separability, which is the thing this whole area got wrong before.
+type backfillDTO struct {
+	Scanned        int      `json:"scanned"`
+	Materialized   int      `json:"materialized"`
+	AlreadyCurrent int      `json:"alreadyCurrent"`
+	Skipped        int      `json:"skipped"`
+	Failed         int      `json:"failed"`
+	Truncated      bool     `json:"truncated"`
+	Unreachable    bool     `json:"unreachable"`
+	ListError      string   `json:"listError"`
+	Errors         []string `json:"errors"`
+	Summary        string   `json:"summary"`
+	Ran            bool     `json:"ran"`
+}
+
+func backfillToDTO(res shellcmd.BackfillResult, skipped bool) backfillDTO {
+	errs := res.Errors
+	if errs == nil {
+		errs = []string{}
+	}
+	return backfillDTO{
+		Scanned:        res.Scanned,
+		Materialized:   res.Materialized,
+		AlreadyCurrent: res.AlreadyCurrent,
+		Skipped:        res.Skipped,
+		Failed:         res.Failed,
+		Truncated:      res.Truncated,
+		Unreachable:    res.Unreachable,
+		ListError:      res.ListError,
+		Errors:         errs,
+		Summary:        res.Summary(),
+		Ran:            !skipped,
+	}
+}
+
+type shareResyncReplyDTO struct {
+	OK       bool        `json:"ok"`
+	Er       string      `json:"error"`
+	PeerID   string      `json:"peerId"`
+	Root     string      `json:"root"`
+	Backfill backfillDTO `json:"backfill"`
+}
+
+// ShareResync re-pulls everything currently in a synced folder, without
+// touching the subscription.
+//
+// The panel needs this as its own verb rather than as a re-Accept: a
+// re-Accept rewrites policy and re-establishes a connection, which are
+// side effects an operator asking "is my folder up to date?" did not ask
+// for and cannot undo.
+//
+//export ShareResync
+func ShareResync(peerHandle C.int64_t, peer *C.char, root *C.char) (result *C.char) {
+	defer recoverToErrorEnvelope("ShareResync", &result)
+	ws, _, errEnv := shareWorkspace(peerHandle)
+	if errEnv != "" {
+		return C.CString(errEnv)
+	}
+	p := strings.TrimSpace(C.GoString(peer))
+	r := strings.TrimSpace(C.GoString(root))
+	res, err := ws.Resync(p, r)
+	if err != nil {
+		return marshalReply(shareResyncReplyDTO{Er: err.Error()}, "share resync")
+	}
+	return marshalReply(shareResyncReplyDTO{
+		OK:       true,
+		PeerID:   p,
+		Root:     r,
+		Backfill: backfillToDTO(res, false),
+	}, "share resync")
+}
+
+// --- Forget ------------------------------------------------------------
+
+type shareForgetOneDTO struct {
+	PeerID          string   `json:"peerId"`
+	PeerAlias       string   `json:"peerAlias"`
+	SyncsStopped    []string `json:"syncsStopped"`
+	OffersWithdrawn []string `json:"offersWithdrawn"`
+	PolicyRemoved   bool     `json:"policyRemoved"`
+	Disconnected    bool     `json:"disconnected"`
+	Problems        []string `json:"problems"`
+	Summary         string   `json:"summary"`
+}
+
+type shareForgetReplyDTO struct {
+	OK      bool                `json:"ok"`
+	Er      string              `json:"error"`
+	Peers   []shareForgetOneDTO `json:"peers"`
+	Caveat  string              `json:"caveat"`
+	AllMode bool                `json:"allMode"`
+}
+
+func forgetToDTO(o shellcmd.ForgetOutcome) shareForgetOneDTO {
+	nz := func(in []string) []string {
+		if in == nil {
+			return []string{}
+		}
+		return in
+	}
+	return shareForgetOneDTO{
+		PeerID:          o.PeerID,
+		PeerAlias:       o.PeerAlias,
+		SyncsStopped:    nz(o.SyncsStopped),
+		OffersWithdrawn: nz(o.OffersWithdrawn),
+		PolicyRemoved:   o.PolicyRemoved,
+		Disconnected:    o.Disconnected,
+		Problems:        nz(o.Problems),
+		Summary:         o.Summary(),
+	}
+}
+
+// forgetCaveatText is the sentence the panel MUST render. Both halves
+// of it look like a bug to an operator who just asked for a clean slate:
+// their files are still there (correct — they are the operator's files),
+// and the OTHER machine still remembers this one (correct — a peer
+// cannot reach into another peer's tree, which is the whole security
+// model). Left unsaid, the second one makes the next "clean" test
+// silently dirty on one side.
+const forgetCaveatText = "Files already received are untouched. The other peer still remembers " +
+	"YOU — run Forget on that machine too before treating the next run as a clean test."
+
+// ShareForget drops what this peer remembers about another peer.
+//
+// Pass an empty peer to forget every remote peer.
+//
+//export ShareForget
+func ShareForget(peerHandle C.int64_t, peer *C.char) (result *C.char) {
+	defer recoverToErrorEnvelope("ShareForget", &result)
+	ws, _, errEnv := shareWorkspace(peerHandle)
+	if errEnv != "" {
+		return C.CString(errEnv)
+	}
+	target := strings.TrimSpace(C.GoString(peer))
+
+	if target == "" {
+		outs, err := ws.ForgetAll()
+		if err != nil {
+			return marshalReply(shareForgetReplyDTO{Er: err.Error()}, "share forget")
+		}
+		peers := make([]shareForgetOneDTO, 0, len(outs))
+		for _, o := range outs {
+			peers = append(peers, forgetToDTO(o))
+		}
+		return marshalReply(shareForgetReplyDTO{
+			OK: true, Peers: peers, Caveat: forgetCaveatText, AllMode: true,
+		}, "share forget")
+	}
+
+	out, err := ws.Forget(target)
+	if err != nil {
+		return marshalReply(shareForgetReplyDTO{Er: err.Error()}, "share forget")
+	}
+	return marshalReply(shareForgetReplyDTO{
+		OK:     true,
+		Peers:  []shareForgetOneDTO{forgetToDTO(out)},
+		Caveat: forgetCaveatText,
+	}, "share forget")
 }
 
 // --- internals ---------------------------------------------------------

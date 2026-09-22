@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -151,6 +152,27 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
             new List<string> { peerId },
             new List<AudienceVm> { new(peerId, alias, true, address, "connection-table") }));
         _sharesEmpty.IsVisible = false;
+    }
+
+    // SeedOfferForTests puts an incoming offer into the panel without a
+    // second live peer, so the ACCEPT row — which now carries the
+    // directory the files will land in — can be gated on the real
+    // ItemTemplate rather than on a view model.
+    internal void SeedOfferForTests(string root, string title, string targetPrefix)
+    {
+        _offers.Add(new OfferVm(root, title, targetPrefix));
+        _offersEmpty.IsVisible = false;
+    }
+
+    // SeedPeerForTests puts a peer in the picker so a test can select one
+    // and drive a real Accept all the way through the bridge. Without it
+    // every accept refuses at "pick a peer first", which passes whatever
+    // the rest of the operation does — and the rest of the operation is
+    // the part worth gating.
+    internal void SeedPeerForTests(string peerId, string alias)
+    {
+        _peers.Add(new PeerVm(peerId, alias, "", false, "discovery", "", ""));
+        _peersEmpty.IsVisible = false;
     }
 
     // Test/driver surface. Headless tests set the pickers and call the
@@ -315,6 +337,11 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
         var root = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(_status, Dock.Bottom);
         root.Children.Add(_status);
+        // The confirm strip sits directly above the status line, docked
+        // for the same reason it is: a question the operator has to
+        // answer must not be somewhere they have to scroll to find.
+        DockPanel.SetDock(_prompt, Dock.Bottom);
+        root.Children.Add(_prompt);
         root.Children.Add(new ScrollViewer
         {
             Content = body,
@@ -334,6 +361,26 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
         var stack = Section("This peer");
         stack.Children.Add(_identityLine);
         stack.Children.Add(_dialHint);
+
+        // The clean-slate control, next to this peer's identity because
+        // that is what it is scoped to: it drops what THIS peer
+        // remembers, and cannot reach the other machine. Everything the
+        // flow establishes is deliberately durable, and the sum of that
+        // is a flow which cannot be re-tested — a second run cannot be
+        // told apart from a stale grant that was already in place, and
+        // that failure presents as a SUCCESS the operator cannot trust.
+        var reset = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+        reset.Children.Add(RowButton("Forget all peers",
+            "Drop every sync, offer, authorization and connection this peer holds, so the "
+            + "next run is a clean test. Deletes no files and changes no identity. "
+            + "Run it on the other machine too.",
+            () => _ = PerformForgetAsync("")));
+        stack.Children.Add(reset);
         return stack;
     }
 
@@ -529,6 +576,37 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
             Brushes.DimGray));
 
         var root = vm.Root;
+
+        // WHERE THE FILES GO, asked here, on the row, at the moment the
+        // operator decides to take the folder.
+        //
+        // This field is step 6 of the old nine-step flow. Before it, the
+        // panel could only accept into a mount that already existed AND
+        // was named the same as the sender's folder, and its refusal told
+        // the operator to go to a different panel, make a mount, and come
+        // back — an instruction, not a surface.
+        //
+        // Pre-filled with a NEW directory under the home folder, never an
+        // existing one. Incoming files overwrite same-named local files
+        // and their deletes propagate, so a default that points anywhere
+        // an operator already keeps things is a default that can destroy
+        // their work on a single click. The model refuses a non-empty
+        // directory for the same reason and this panel offers the
+        // override explicitly rather than pre-authorizing it.
+        var dirBox = new TextBox
+        {
+            // The peer whose offers these are — the offers list is fetched
+            // for one selected peer, so that is the sender by construction.
+            Text = DefaultReceiveDirectory(SelectedPeerLabel, root),
+            Watermark = "/absolute/path/to/an/empty/directory",
+            FontSize = 12,
+            MinWidth = 260,
+            Margin = new Thickness(0, 3, 0, 0),
+        };
+        _acceptDirBoxes[root] = dirBox;
+        stack.Children.Add(Line("receive into:", Brushes.Gainsboro));
+        stack.Children.Add(dirBox);
+
         var verbs = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -536,12 +614,85 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
             Margin = new Thickness(0, 3, 0, 0),
         };
         verbs.Children.Add(RowButton("Accept",
-            "Authorize their deliveries, reconnect, and start receiving into your local mount "
-            + "of the same name. You need that mount first.",
+            "Create and mount that directory if needed, authorize their deliveries, "
+            + "reconnect, and pull everything already in the folder.",
             () => _ = PerformAcceptAsync(root)));
         stack.Children.Add(verbs);
         return stack;
     }
+
+    // _acceptDirBoxes maps an offer's root to the directory field on its
+    // row, so PerformAcceptAsync can read what the operator typed without
+    // the click handler capturing a control that a later Refresh has
+    // already replaced.
+    private readonly Dictionary<string, TextBox> _acceptDirBoxes = new();
+
+    // DefaultReceiveDirectory proposes ~/entity-shared/{peer}/{root}.
+    //
+    // A NEW path under a directory of ours, not an existing one of
+    // theirs: the accept refuses a folder that already has files in it,
+    // and a default that trips that refusal on every first use would
+    // teach operators to click past it. Nested under one parent so a
+    // machine receiving several folders does not scatter them across the
+    // home directory.
+    //
+    // **Qualified by the SENDING PEER**, which is the 2026-09-04
+    // correction. Unqualified, a peer sharing a folder called `downloads`
+    // proposed `~/entity-shared/downloads` — a second thing called
+    // "downloads" on a machine that already has one, presented at the
+    // moment the operator is least equipped to reason about which is
+    // which. The operator's report was that they had to invent a name to
+    // tell them apart. It also collides outright: two peers each sharing
+    // a `photos` land on the same path, and the second accept then
+    // refuses as non-empty for a reason that looks like a bug.
+    internal static string DefaultReceiveDirectory(string peerLabel, string root)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (string.IsNullOrEmpty(home)) home = "/tmp";
+        var who = PathSegment(peerLabel);
+        return who.Length == 0
+            ? System.IO.Path.Combine(home, "entity-shared", root)
+            : System.IO.Path.Combine(home, "entity-shared", who, root);
+    }
+
+    // PathSegment reduces a peer label or alias to something safe to put
+    // in a path. A refusal-by-omission rather than an escape: anything
+    // that is not plainly a name is dropped, and an empty result falls
+    // back to the unqualified path rather than producing `~/entity-shared//x`.
+    private static string PathSegment(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        var sb = new System.Text.StringBuilder(raw.Length);
+        foreach (var c in raw.Trim())
+        {
+            if (char.IsLetterOrDigit(c) || c == '-' || c == '_') sb.Append(c);
+            else if (c == ' ' || c == '.') sb.Append('-');
+        }
+        var outp = sb.ToString().Trim('-');
+        return outp.Length > 40 ? outp[..40] : outp;
+    }
+
+    // SelectedPeerLabel is the human name of the peer whose offers are on
+    // screen, for the receive-directory default. The alias when there is
+    // one, else a short peer-id — never the empty string when a peer is
+    // selected, because that would silently drop the qualification the
+    // default exists to carry.
+    private string SelectedPeerLabel
+    {
+        get
+        {
+            if (_peerPicker.SelectedItem is not PeerVm vm) return "";
+            return string.IsNullOrWhiteSpace(vm.Alias) ? Short(vm.PeerId) : vm.Alias;
+        }
+    }
+
+    // AcceptDirectoryForTests exposes what the row is proposing, so a
+    // headless test can assert the default is a fresh path rather than
+    // somewhere the operator keeps things. Reading the rendered control
+    // and not recomputing the string, because the defect this guards is
+    // the field not being WIRED, which recomputation cannot see.
+    internal string? AcceptDirectoryForTests(string root)
+        => _acceptDirBoxes.TryGetValue(root, out var b) ? b.Text : null;
 
     private Control BuildSyncRow(SyncVm vm)
     {
@@ -569,9 +720,22 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
             Spacing = 6,
             Margin = new Thickness(0, 3, 0, 0),
         };
+        // "Pull now" is the verb an operator reaches for when they
+        // cannot tell whether the flow worked. Running it twice is the
+        // only positive confirmation available: the second pass reports
+        // everything as already-current, where "no errors" and "nothing
+        // happened" otherwise render identically.
+        verbs.Children.Add(RowButton("Pull now",
+            "Fetch everything currently in their folder, without waiting for them to change "
+            + "a file. Safe to run repeatedly — unchanged files are not re-transferred.",
+            () => _ = PerformResyncAsync(peer, root)));
         verbs.Children.Add(RowButton("Stop receiving",
             "Cancel the subscription. The mount and everything already received stay.",
             () => PerformUnsync(peer, root)));
+        verbs.Children.Add(RowButton("Forget peer",
+            "Drop this peer's syncs, offers, authorization and connection, so the next run "
+            + "is a clean test. Deletes no files.",
+            () => _ = PerformForgetAsync(peer)));
         stack.Children.Add(verbs);
         return stack;
     }
@@ -789,6 +953,11 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
                 Bridge.TakeString(Bridge.ShareOffers(_peerHandle, peer)));
             var dto = Decode<OffersReply>(reply, out var err);
             _offers.Clear();
+            // The rows are about to be rebuilt, so every directory field
+            // captured from the old ones is stale. Left behind, Accept would
+            // read a control that is no longer on screen.
+            _acceptDirBoxes.Clear();
+            HideAcceptAnywayPrompt();
             if (dto == null || !dto.Ok)
             {
                 _offersEmpty.Text = "could not read their offers — see the status line";
@@ -819,31 +988,37 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
 
     // PerformAcceptAsync takes an offer: writes the delivery grant,
     // reconnects, and syncs. Network-bound, hence async.
-    public async Task PerformAcceptAsync(string root)
+    public async Task PerformAcceptAsync(string root, bool allowNonEmpty = false)
     {
         var peer = SelectedPeerId;
         if (string.IsNullOrEmpty(peer)) { SetStatus("pick a peer first", Brushes.Orange); return; }
 
-        SetStatus($"accepting \"{root}\" from {Short(peer)}…", Brushes.Gainsboro);
+        var dir = (AcceptDirectoryForTests(root) ?? "").Trim();
+        if (dir.Length == 0)
+        {
+            SetStatus("say which directory the files should go into", Brushes.Orange);
+            return;
+        }
+
+        SetStatus($"accepting \"{root}\" from {Short(peer)} into {dir}…", Brushes.Gainsboro);
         var reply = await Task.Run(() =>
-            Bridge.TakeString(Bridge.ShareAccept(_peerHandle, peer, root)));
+            Bridge.TakeString(Bridge.ShareAccept(_peerHandle, peer, root, dir, allowNonEmpty ? 1 : 0)));
         var dto = Decode<AcceptReply>(reply, out var err);
         if (dto == null || !dto.Ok)
         {
-            // The common failure is "no local mount to receive into", and
-            // Accept deliberately leaves the delivery grant in place and
-            // says so in its error. Passed through verbatim...
             var message = dto?.Error is { Length: > 0 } e ? e : err;
-            // ...but the operation's own remedy is phrased for the shell
-            // ("run `mount <dir> <prefix>`"), which is not something an
-            // operator can do from this panel. A refusal whose fix names
-            // a surface you are not on is a dead end, so the GUI adds the
-            // GUI route. The wording of the refusal stays the model's —
-            // this appends, it does not paraphrase.
-            if (message.Contains("no local mount named"))
-                message += $"\n\nIn the GUI: open a \"Local Files (manage mounts)\" panel and mount "
-                    + $"a directory with the tree prefix ending in \"{root}\", then press Accept again. "
-                    + "A sync writes into a mount; it does not create one.";
+
+            // A non-empty directory is the one refusal here the operator
+            // is entitled to overrule, and it arrives as STRUCTURE rather
+            // than prose precisely so this can be a button. Rendering it
+            // as a plain failure would leave the only route forward being
+            // to go and empty a folder by hand.
+            if (dto is { NonEmpty: true })
+            {
+                SetStatus(message, Brushes.Orange);
+                ShowAcceptAnywayPrompt(root, dto.NonEmptyPath, dto.NonEmptyEntries);
+                return;
+            }
             SetStatus($"accept failed: {message}", Brushes.IndianRed);
             return;
         }
@@ -851,9 +1026,15 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
         var lines = new List<string>
         {
             $"accepted \"{dto.Root}\" from {Short(dto.PeerId)}",
-            $"receiving into {dto.TargetPrefix}",
-            $"granted: {dto.GrantSummary}",
         };
+        // Where the bytes landed, first and in the operator's terms — a
+        // tree prefix is not an answer to "where are my files".
+        if (dto.CreatedMount && dto.MountedDir.Length > 0)
+            lines.Add($"files land in {dto.MountedDir}  (newly mounted as \"{dto.LocalRoot}\")");
+        else if (dto.LocalRoot.Length > 0)
+            lines.Add($"files land in your existing mount \"{dto.LocalRoot}\"");
+        lines.Add($"tree prefix: {dto.TargetPrefix}");
+        lines.Add($"granted: {dto.GrantSummary}");
         if (!dto.Reconnected)
             lines.Add("connection NOT re-established, so your grant is not yet in force: "
                 + (string.IsNullOrEmpty(dto.ReconnectNote) ? "reconnect to this peer" : dto.ReconnectNote));
@@ -871,11 +1052,111 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
         // machine, in this same panel, on the row for this folder. Name
         // the button, not the command. The field stays in the DTO because
         // the shell renders it and the two share one operation.
+        // What actually came across. This goes ABOVE the dial
+        // instruction on purpose: it is the operator's real question,
+        // and the previous version of this block answered a different
+        // one and then told them the folder would stay empty — while
+        // their files were, by then, already on disk.
+        var bf = dto.Backfill;
+        var failed = bf is { Failed: > 0 } or { Unreachable: true };
+        if (bf is { Ran: true })
+        {
+            lines.Add("");
+            lines.Add("existing files: " + bf.Summary);
+            foreach (var e in bf.Errors ?? new List<string>())
+                lines.Add("  ! " + e);
+            if (failed)
+                lines.Add("  a failure here is usually their grant not having reached this "
+                    + "peer yet — press \"Pull now\" on the folder's row to retry.");
+        }
+
         lines.Add("");
         lines.Add("Last step, on THEIR machine: open Shared Folders and press "
-            + "\"Complete connection\" on this folder's row. Until they do, their "
-            + "deliveries to you are refused and this folder stays empty.");
-        SetStatus(string.Join("\n", lines), Brushes.PaleGreen);
+            + "\"Complete connection\" on this folder's row. That is for CHANGES "
+            + "FROM NOW ON — the files above are already here. Until they do it, their "
+            + "change notifications to you are refused, and you can always press "
+            + "\"Pull now\" to fetch their current state yourself.");
+        SetStatus(string.Join("\n", lines), failed ? Brushes.Khaki : Brushes.PaleGreen);
+        Refresh();
+    }
+
+    // PerformResyncAsync re-pulls a folder. Off the UI thread because it
+    // lists a remote prefix and pulls blob closures — the same shape as
+    // Accept and Offers, and for the same reason: a network round trip
+    // on the dispatcher freezes every panel in the window.
+    public async Task PerformResyncAsync(string peer, string root)
+    {
+        SetStatus($"pulling {root} from {Short(peer)}…", Brushes.Gainsboro);
+        var reply = await Task.Run(() =>
+            Bridge.TakeString(Bridge.ShareResync(_peerHandle, peer, root)));
+        var dto = Decode<ResyncReply>(reply, out var err);
+        if (dto == null || !dto.Ok)
+        {
+            SetStatus($"pull failed: {(dto?.Error is { Length: > 0 } e ? e : err)}",
+                Brushes.IndianRed);
+            return;
+        }
+        var bf = dto.Backfill;
+        if (bf == null)
+        {
+            SetStatus("pull returned no result", Brushes.IndianRed);
+            return;
+        }
+        var lines = new List<string> { $"pulled {root} from {Short(peer)}", bf.Summary };
+        foreach (var e in bf.Errors ?? new List<string>())
+            lines.Add("  ! " + e);
+        if (bf.Failed == 0 && bf.Materialized == 0 && bf.AlreadyCurrent > 0)
+            lines.Add("everything in their folder is already here — this sync is current.");
+        SetStatus(string.Join("\n", lines),
+            bf.Failed > 0 || bf.Unreachable ? Brushes.Khaki : Brushes.PaleGreen);
+        Refresh();
+    }
+
+    // PerformForgetAsync drops what this peer remembers about another.
+    //
+    // Off-thread for AP60's reason rather than the network's: Forget
+    // calls Unsync, and closing a subscription waits for the store's
+    // delivery goroutine to exit.
+    public async Task PerformForgetAsync(string peer)
+    {
+        var reply = await Task.Run(() =>
+            Bridge.TakeString(Bridge.ShareForget(_peerHandle, peer)));
+        var dto = Decode<ForgetReply>(reply, out var err);
+        if (dto == null || !dto.Ok)
+        {
+            SetStatus($"forget failed: {(dto?.Error is { Length: > 0 } e ? e : err)}",
+                Brushes.IndianRed);
+            return;
+        }
+        var peers = dto.Peers ?? new List<ForgetOneDto>();
+        var lines = new List<string>();
+        var problems = 0;
+        if (peers.Count == 0)
+        {
+            lines.Add("nothing was remembered about any peer — already clean");
+        }
+        else
+        {
+            lines.Add(dto.AllMode ? $"forgot {peers.Count} peer(s):" : $"forgot {Short(peer)}");
+            foreach (var one in peers)
+            {
+                var who = string.IsNullOrEmpty(one.PeerAlias)
+                    ? Short(one.PeerId)
+                    : $"{one.PeerAlias} ({Short(one.PeerId)})";
+                lines.Add($"  {who} — {one.Summary}");
+                foreach (var pr in one.Problems ?? new List<string>())
+                {
+                    problems++;
+                    lines.Add("      ! " + pr);
+                }
+            }
+        }
+        if (!string.IsNullOrEmpty(dto.Caveat))
+        {
+            lines.Add("");
+            lines.Add(dto.Caveat);
+        }
+        SetStatus(string.Join("\n", lines), problems > 0 ? Brushes.Khaki : Brushes.PaleGreen);
         Refresh();
     }
 
@@ -1055,6 +1336,60 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
         _status.Text = text;
         _status.Foreground = brush;
     }
+
+    // _prompt is the confirm strip: hidden until the model refuses
+    // something the operator is entitled to overrule.
+    private readonly StackPanel _prompt = new()
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 8,
+        IsVisible = false,
+        Margin = new Thickness(12, 4, 12, 0),
+    };
+
+    // ShowAcceptAnywayPrompt renders the one overrulable refusal in this
+    // panel as a choice rather than a dead end.
+    //
+    // It states the CONSEQUENCE, not just the condition. "This folder is
+    // not empty" is a fact the operator can see for themselves; that
+    // their files can be overwritten and deleted by the other machine is
+    // the thing they are actually agreeing to, and it is the reason the
+    // model refuses rather than warns.
+    private void ShowAcceptAnywayPrompt(string root, string path, int entries)
+    {
+        _prompt.Children.Clear();
+        _prompt.Children.Add(new TextBlock
+        {
+            Text = $"{path} already has {entries} item(s). Files they send can overwrite "
+                 + "yours, and files they delete can remove yours.",
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brushes.Orange,
+            MaxWidth = 420,
+        });
+        _prompt.Children.Add(RowButton("Accept anyway",
+            "Receive into that folder despite its contents.",
+            () => { HideAcceptAnywayPrompt(); _ = PerformAcceptAsync(root, allowNonEmpty: true); }));
+        _prompt.Children.Add(RowButton("Cancel",
+            "Leave the folder alone and pick a different directory.",
+            HideAcceptAnywayPrompt));
+        _prompt.IsVisible = true;
+    }
+
+    private void HideAcceptAnywayPrompt()
+    {
+        _prompt.Children.Clear();
+        _prompt.IsVisible = false;
+    }
+
+    // AcceptAnywayPromptText is what the confirm strip is currently
+    // asking, or "" when it is hidden. For the headless gate: a prompt
+    // that renders no text is indistinguishable from one that never
+    // appeared, and this panel's whole job here is to say the
+    // consequence out loud.
+    internal string AcceptAnywayPromptText =>
+        !_prompt.IsVisible ? "" :
+        string.Join(" ", _prompt.Children.OfType<TextBlock>().Select(t => t.Text ?? ""));
 
     private static string Short(string peerId)
         => string.IsNullOrEmpty(peerId) || peerId.Length <= 12 ? peerId : peerId[..12] + "…";
@@ -1328,6 +1663,85 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
         [JsonPropertyName("reconnected")] public bool Reconnected { get; set; }
         [JsonPropertyName("reconnectNote")] public string ReconnectNote { get; set; } = "";
         [JsonPropertyName("publisherMustDial")] public string PublisherMustDial { get; set; } = "";
+
+        // AP49: a field the DTO does not declare is dropped by
+        // System.Text.Json in silence. This one carries the answer to
+        // "did my files come across", so a drop here reproduces exactly
+        // the symptom the backfill was written to fix — an empty folder
+        // and a surface saying nothing about it.
+        [JsonPropertyName("backfill")] public BackfillDto? Backfill { get; set; }
+
+        // Where the files went. LocalRoot/MountedDir/CreatedMount are the
+        // answer to the operator's first question, and CreatedMount is
+        // what separates "this just bridged a directory on your disk"
+        // from "it used one you had already bridged" — different events,
+        // and only one of them needs confirming.
+        [JsonPropertyName("localRoot")] public string LocalRoot { get; set; } = "";
+        [JsonPropertyName("mountedDir")] public string MountedDir { get; set; } = "";
+        [JsonPropertyName("createdMount")] public bool CreatedMount { get; set; }
+
+        // The one refusal an operator may overrule, carried as structure
+        // so the panel can offer a button instead of printing prose at
+        // them. Undeclared here it would be dropped in silence (AP49) and
+        // the refusal would degrade to an unexplained failure.
+        [JsonPropertyName("nonEmpty")] public bool NonEmpty { get; set; }
+        [JsonPropertyName("nonEmptyPath")] public string NonEmptyPath { get; set; } = "";
+        [JsonPropertyName("nonEmptyEntries")] public int NonEmptyEntries { get; set; }
+    }
+
+    // BackfillDto mirrors the bridge's backfillDTO. The counts stay
+    // separate rather than collapsing into Summary because the panel
+    // needs to colour on Failed and confirm on AlreadyCurrent, and a
+    // pre-rendered string can do neither.
+    public sealed class BackfillDto
+    {
+        [JsonPropertyName("scanned")] public int Scanned { get; set; }
+        [JsonPropertyName("materialized")] public int Materialized { get; set; }
+        [JsonPropertyName("alreadyCurrent")] public int AlreadyCurrent { get; set; }
+        [JsonPropertyName("skipped")] public int Skipped { get; set; }
+        [JsonPropertyName("failed")] public int Failed { get; set; }
+        [JsonPropertyName("truncated")] public bool Truncated { get; set; }
+
+        // "We could not ask" is not "there is nothing there". Rendering
+        // them the same turns an unknown into a confident claim about
+        // the other machine, and the usual cause — their grant has not
+        // reached us yet — is one the operator can fix and will never
+        // think to if the panel says the folder is empty.
+        [JsonPropertyName("unreachable")] public bool Unreachable { get; set; }
+        [JsonPropertyName("listError")] public string ListError { get; set; } = "";
+        [JsonPropertyName("errors")] public List<string>? Errors { get; set; }
+        [JsonPropertyName("summary")] public string Summary { get; set; } = "";
+        [JsonPropertyName("ran")] public bool Ran { get; set; }
+    }
+
+    public sealed class ResyncReply
+    {
+        [JsonPropertyName("ok")] public bool Ok { get; set; }
+        [JsonPropertyName("error")] public string Error { get; set; } = "";
+        [JsonPropertyName("peerId")] public string PeerId { get; set; } = "";
+        [JsonPropertyName("root")] public string Root { get; set; } = "";
+        [JsonPropertyName("backfill")] public BackfillDto? Backfill { get; set; }
+    }
+
+    public sealed class ForgetOneDto
+    {
+        [JsonPropertyName("peerId")] public string PeerId { get; set; } = "";
+        [JsonPropertyName("peerAlias")] public string PeerAlias { get; set; } = "";
+        [JsonPropertyName("syncsStopped")] public List<string>? SyncsStopped { get; set; }
+        [JsonPropertyName("offersWithdrawn")] public List<string>? OffersWithdrawn { get; set; }
+        [JsonPropertyName("policyRemoved")] public bool PolicyRemoved { get; set; }
+        [JsonPropertyName("disconnected")] public bool Disconnected { get; set; }
+        [JsonPropertyName("problems")] public List<string>? Problems { get; set; }
+        [JsonPropertyName("summary")] public string Summary { get; set; } = "";
+    }
+
+    public sealed class ForgetReply
+    {
+        [JsonPropertyName("ok")] public bool Ok { get; set; }
+        [JsonPropertyName("error")] public string Error { get; set; } = "";
+        [JsonPropertyName("peers")] public List<ForgetOneDto>? Peers { get; set; }
+        [JsonPropertyName("caveat")] public string Caveat { get; set; } = "";
+        [JsonPropertyName("allMode")] public bool AllMode { get; set; }
     }
 
     public sealed class UnsyncReply

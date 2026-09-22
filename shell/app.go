@@ -9,6 +9,8 @@ package shell
 import (
 	"context"
 	"fmt"
+	"io"
+	"time"
 
 	"entity-workbench-go/entitysdk"
 	"entity-workbench-go/shellboot"
@@ -42,10 +44,11 @@ type Config struct {
 // App is a configured shell instance: a local AppPeer plus the
 // shellcmd.Shell that drives commands.
 type App struct {
-	cfg   Config
-	local *entitysdk.AppPeer
-	sh    *shellcmd.Shell
-	reg   *shellcmd.Registry
+	cfg      Config
+	local    *entitysdk.AppPeer
+	sh       *shellcmd.Shell
+	reg      *shellcmd.Registry
+	listener *shellboot.ListenerInfo
 }
 
 // New bootstraps a local AppPeer and a fresh Shell session ready for
@@ -81,6 +84,25 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Bind the listener. Bootstrap does NOT do this — it constructs the
+	// peer, and core-go only reads the configured address inside
+	// Peer.Listen. Nothing here called Listen until 2026-09-03, so
+	// `entity-shell -listen 0.0.0.0:9100` published a help string, stored
+	// an address, and bound no socket: the shell could dial out and could
+	// never be dialled, which is half of every two-machine share flow, and
+	// step 1 of the operator recipe. Every e2e suite passed throughout,
+	// because each one stands up its own listener with a local helper.
+	//
+	// A listen failure IS fatal here. The operator named an address on the
+	// command line; continuing without it produces a peer that looks
+	// started and cannot do the thing it was started for.
+	listener, lerr := shellboot.BringUpListener(context.Background(), peer, bootCfg)
+	if lerr != nil {
+		_ = peer.Close()
+		return nil, lerr
+	}
+
 	drainTreeEvents(peer)
 	// Shared shell↔workspace integration. The standalone REPL has no
 	// presentation context to publish into, so OnWDChanged stays nil;
@@ -89,12 +111,63 @@ func New(cfg Config) (*App, error) {
 	ws.PersistAliases(state)
 	sh := shellcmd.NewShellInWorkspace(ws)
 	return &App{
-		cfg:   cfg,
-		local: peer,
-		sh:    sh,
-		reg:   shellcmd.Default(),
+		cfg:      cfg,
+		local:    peer,
+		sh:       sh,
+		reg:      shellcmd.Default(),
+		listener: listener,
 	}, nil
 }
+
+// Listener reports how the inbound listener came up, or nil when the
+// shell is outbound-only. main() prints Summary() so the first line of a
+// session states whether this peer can be reached and at what address —
+// the fact every two-machine flow starts from, and the one nothing used
+// to say.
+func (a *App) Listener() *shellboot.ListenerInfo { return a.listener }
+
+// reconcileForREPL runs one reconcile pass and reports it, quietly when
+// there is nothing declared.
+//
+// Silent on a peer with no declarations, deliberately: most shell
+// sessions are on a peer that shares nothing, and a startup banner about
+// a subsystem they are not using is noise that teaches people to skip
+// startup output — which is where the listener line now lives too.
+func (a *App) reconcileForREPL(out io.Writer) {
+	if a.sh == nil || a.sh.ShellWorkspace == nil {
+		return
+	}
+	res, err := a.sh.ReconcileWithTimeout(replReconcileTimeout)
+	if err != nil {
+		fmt.Fprintf(out, "warning: could not re-establish declared peers: %v\n", err)
+		return
+	}
+	if len(res.Devices) == 0 && len(res.Folders) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "Declared: %d peer(s), %d folder(s)\n", len(res.Devices), len(res.Folders))
+	// Actions as well as problems. The pass RE-ESTABLISHES things at
+	// every start — that is the entire point of the control loop — and
+	// printing only the failures made its successes invisible, so an
+	// operator had no way to tell "it reconnected me" from "it did
+	// nothing", which are the two states they most need to distinguish
+	// after a restart.
+	for _, a := range res.Actions {
+		fmt.Fprintf(out, "  + %s\n", a)
+	}
+	for _, p := range res.Problems {
+		fmt.Fprintf(out, "  ! %s\n", p)
+	}
+	if len(res.Problems) > 0 {
+		fmt.Fprintln(out, "  (`status` re-runs this and explains each line)")
+	}
+}
+
+// replReconcileTimeout bounds the pre-prompt pass. Short: a prompt that
+// takes half a minute to appear because a laptop is asleep is a worse
+// outcome than a relationship that establishes a few seconds later, and
+// the kernel's reconnect graph keeps trying either way.
+const replReconcileTimeout = 8 * time.Second
 
 // drainTreeEvents starts a no-op goroutine that pulls events off
 // peer.TreeEvents() and discards them. peer.New always wires
@@ -164,6 +237,11 @@ func newFromPeerConfig(cfg Config) (*App, error) {
 
 // Close releases the local peer's resources.
 func (a *App) Close() error {
+	// Listener first: its goroutine is parented on a context this App
+	// owns, not on the peer, so AppPeer.Close alone leaves it running.
+	if a.listener != nil && a.listener.Cancel != nil {
+		a.listener.Cancel()
+	}
 	if a.local == nil {
 		return nil
 	}

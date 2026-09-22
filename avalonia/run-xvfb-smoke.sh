@@ -321,6 +321,39 @@ if [ "$EXIT_CODE" -ne 0 ]; then
     exit 2
 fi
 
+# The render thread's alternate signal stack — asserted, not hoped for.
+#
+# This is the ONLY place in the repo that can check it. sigaltstack is
+# per-thread, the headless suite has no render thread at all, and there
+# is no cross-thread query for the current alt stack — so the sole
+# available evidence is that the install ran there, and the sole harness
+# with a real compositor is this one.
+#
+# It matters because of what a regression here looks like: nothing. The
+# app boots, renders, clicks, exits 0, and the render thread is silently
+# back on the PAL's stock 16 KB — the configuration that produced the
+# 2026-09-02 SIGSEGV, where the kernel logged "overflowed sigaltstack"
+# and the process died with no minidump, no crash log and a breadcrumb
+# trail that just stops. A green smoke run would say nothing about it.
+#
+# WB_ALTSTACK_BYTES=0 is the documented A/B control arm and legitimately
+# disables the install, so it is exempted rather than allowed to fail.
+if [ "${WB_ALTSTACK_BYTES:-}" != "0" ]; then
+    if grep -q "render thread: enlarge -> installed" "$LOG"; then
+        echo "    render-thread altstack: $(grep -m1 "render thread: enlarge ->" "$LOG" | sed 's/.*enlarge -> //')"
+    else
+        echo "==> FAIL: the render thread's alternate signal stack was never enlarged."
+        echo "    The app ran and exited cleanly, so nothing else in this run reports it."
+        echo "    The render thread is on the PAL stock 16 KB, which is the configuration"
+        echo "    that crashed on 2026-09-02 (kernel: 'overflowed sigaltstack')."
+        echo "    Look at AltStackProbe: it reaches the render thread through an"
+        echo "    ICustomDrawOperation, and a custom draw op that is culled, never"
+        echo "    scheduled, or attached outside the visual tree runs zero times."
+        grep -i "altstack" "$LOG" | tail -10 || true
+        exit 3
+    fi
+fi
+
 echo "==> smoke run complete"
 echo "    log:        $LOG"
 echo "    screenshot: $SHOT"

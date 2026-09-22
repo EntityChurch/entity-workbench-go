@@ -67,14 +67,39 @@ namespace EntityAvalonia;
 // a claim about a code path; trace the path before writing the
 // sentence.**
 //
-// SECOND LIMIT, still open: everything here is per-thread where it
-// matters, and Install() runs on the UI thread. EnlargeAltStack
-// therefore covers the UI thread ONLY. The 2026-09-01 fault landed on a
-// background thread, which still has the PAL's stock 16 KB alternate
-// signal stack — the size measured to be insufficient for this
-// process's handler chain. Nothing in this file fixes that; the
-// external createdump path (run-with-dump.sh) is what covers it, which
-// is another reason that script is no longer optional.
+// SECOND LIMIT, CLOSED 2026-09-02 — and it took a real crash to close,
+// because the sentence that used to sit here described the bug
+// correctly and then declined to fix it.
+//
+// sigaltstack is PER-THREAD and must be called ON the thread it
+// covers. Install() runs on the UI thread, so EnlargeAltStack covered
+// the UI thread ONLY; Avalonia's render thread kept the PAL's stock
+// 16 KB — the size already measured insufficient for this process's
+// handler chain (click fuzz: 6/8 seeds crashed at 16 KB, 0/8 at 1 MB).
+//
+// On 2026-09-02 that thread took a SIGSEGV inside the compositor's
+// visual walk and the kernel said what happened in one line:
+//
+//     kernel: signal: entity-avalonia[3746566] overflowed sigaltstack
+//
+// LWP 3746566 is not the process pid (3746552) — it is a secondary
+// thread carrying ServerCompositionContainerVisual::Update and
+// libSkiaSharp frames, i.e. the render thread. The handler chain ran
+// off the end of 16 KB and the process died unrecoverably: no
+// minidump, no crash log, and a breadcrumb trail that just stops.
+//
+// That also settles the question this file's own header had left open
+// as a hypothesis — "createdump is on and produces nothing for this
+// fault class", explained as "there is no stack left for createdump to
+// run on". The kernel line is the measurement. It was never tested
+// because nobody read the journal.
+//
+// InstallRenderThreadAltStack() closes it: a one-shot hook on
+// IRenderTimer.Tick, which is raised ON the render thread, so the
+// sigaltstack call lands where it has to. The external createdump path
+// (run-with-dump.sh) stays armed regardless — it covers every thread
+// this hook cannot reach, and "one thread is covered now" is not
+// "every thread is".
 public static class CrashDiagnostics
 {
     private const int RingCapacity = 96;
@@ -201,9 +226,7 @@ public static class CrashDiagnostics
         // restores the stock behaviour, which is what the A/B control
         // arm uses. Keep that escape hatch: it is the only way to
         // re-measure the bug once this is in.
-        long want = 1L << 20;
-        var overrideBytes = Environment.GetEnvironmentVariable("WB_ALTSTACK_BYTES");
-        if (!string.IsNullOrEmpty(overrideBytes) && long.TryParse(overrideBytes, out var n)) want = n;
+        long want = AltStackWantBytes();
         string outcome;
         if (want > 0)
         {
@@ -230,6 +253,102 @@ public static class CrashDiagnostics
         }
         catch { }
     }
+
+    // AltStackWantBytes is the one place the size is decided, so the UI
+    // thread and the render thread cannot drift apart — and so
+    // WB_ALTSTACK_BYTES=0 still disables BOTH, which is what makes the
+    // A/B control arm meaningful. If the two install sites read the
+    // knob separately, "restore stock behaviour" would only half work
+    // and the re-measurement would quietly be of a third configuration.
+    private static long AltStackWantBytes()
+    {
+        long want = 1L << 20;
+        var overrideBytes = Environment.GetEnvironmentVariable("WB_ALTSTACK_BYTES");
+        if (!string.IsNullOrEmpty(overrideBytes) && long.TryParse(overrideBytes, out var n)) want = n;
+        return want;
+    }
+
+    // Threads whose alternate signal stack this process has enlarged.
+    // Exposed because a test asserting "the render thread is covered"
+    // has nothing else to read: sigaltstack has no cross-thread query,
+    // so the only evidence available is that the install ran there.
+    private static int _altStackThreadsEnlarged;
+    private static int _renderAltStackInstalled;
+
+    public static int AltStackThreadsEnlarged => Volatile.Read(ref _altStackThreadsEnlarged);
+
+    // RenderAltStackOutcome is the render thread's install result, or
+    // null while it has not run yet. A surface that wants to say
+    // whether this process is actually covered reads this, not a
+    // hopeful sentence in a doc.
+    public static string? RenderAltStackOutcome { get; private set; }
+
+    // EnlargeAltStackHere enlarges the CALLING thread's alternate signal
+    // stack, and is the render thread's entry point.
+    //
+    // sigaltstack is per-thread and must be called ON the thread it
+    // covers, so there is no way to do this for the render thread from
+    // here — something has to run there. `AltStackProbe` is that
+    // something: a zero-size control whose custom draw operation is
+    // executed by the compositor during the render pass, which is
+    // precisely the call stack the 2026-09-02 SIGSEGV was taken in.
+    //
+    // Why not the render timer: IRenderTimer.Tick is internal in
+    // Avalonia 11.2. Why not a hook on Compositor: its update callbacks
+    // run on the UI thread. A custom draw operation is the only public
+    // surface in this version that is guaranteed to execute on the
+    // render thread.
+    //
+    // Idempotent and cheap to call repeatedly — it returns immediately
+    // once a thread has been covered — because the draw path invokes it
+    // per frame and a P/Invoke per frame on the render thread is a cost
+    // with no second answer at the end of it.
+    public static void EnlargeAltStackHere(string who)
+    {
+        if (Volatile.Read(ref _renderAltStackInstalled) != 0) return;
+        long want = AltStackWantBytes();
+        if (want <= 0)
+        {
+            if (Interlocked.Exchange(ref _renderAltStackInstalled, 1) != 0) return;
+            RenderAltStackOutcome = "DISABLED by WB_ALTSTACK_BYTES=0 (stock 16 KB — the crashing config)";
+            Panels.PanelLog.Write("altstack", who + ": " + RenderAltStackOutcome);
+            return;
+        }
+        if (Interlocked.Exchange(ref _renderAltStackInstalled, 1) != 0) return;
+
+        string before, installed, after;
+        try
+        {
+            before = ReportAltStack();
+            installed = EnlargeAltStack(want);
+            after = ReportAltStack();
+            Interlocked.Increment(ref _altStackThreadsEnlarged);
+        }
+        catch (Exception ex)
+        {
+            RenderAltStackOutcome = who + " install threw: " + ex.Message;
+            Panels.PanelLog.Write("altstack", RenderAltStackOutcome);
+            return;
+        }
+
+        RenderAltStackOutcome = installed;
+        Panels.PanelLog.Write("altstack",
+            $"{who} (managed tid {Environment.CurrentManagedThreadId}): before: {before}");
+        Panels.PanelLog.Write("altstack", $"{who}: enlarge -> {installed}");
+        Panels.PanelLog.Write("altstack", $"{who}: after: {after}");
+        try
+        {
+            Console.Error.WriteLine("entity-avalonia: render-thread alt signal stack = " + installed);
+        }
+        catch { }
+    }
+
+    // RenderThreadAltStackInstalled reports whether the render thread has
+    // actually been covered yet. It is false until the first frame is
+    // drawn, which is a real state and not an error — a surface or a test
+    // that treats "not yet" as "never" would be asserting on a race.
+    public static bool RenderThreadAltStackInstalled =>
+        Volatile.Read(ref _renderAltStackInstalled) != 0 && RenderAltStackOutcome != null;
 
     // How many distinct UI-thread faults we contain before we stop
     // containing. See InstallDispatcher for the reasoning.

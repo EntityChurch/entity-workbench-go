@@ -543,6 +543,15 @@ test-each: preflight
 
 test-each-native:
 	@mkdir -p $(TEST_LOG_DIR)
+	@# Clear the logs FIRST. Each suite's log is written when that suite
+	@# finishes, so without this a run in progress — or one that was
+	@# interrupted — leaves $(TEST_LOG_DIR) holding a mixture of this run
+	@# and the last one, with nothing to tell them apart. Read mid-sweep,
+	@# a stale FAIL from a defect that was fixed hours ago is
+	@# indistinguishable from a live one, and it is the more alarming
+	@# reading, so it wins. Same rule as `bin/` — build output is not the
+	@# tree. (Cost paid 2026-09-03, reviewing a sweep against stale logs.)
+	@rm -f $(TEST_LOG_DIR)/*.log
 	@echo "running $(words $(TEST_SUITES)) suites to completion (logs: $(TEST_LOG_DIR)/)"
 	@echo
 	@failed=""; \

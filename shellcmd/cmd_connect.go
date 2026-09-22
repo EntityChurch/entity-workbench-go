@@ -55,6 +55,24 @@ func cmdConnect(sh *Shell, args []string) (Result, error) {
 	}
 	sh.addConn(pc)
 
+	// Persist the address onto the peer's DECLARATION, if it has one.
+	//
+	// The address an operator types is the one fact about a peer that
+	// nothing else can supply, and until this line it lived only in
+	// process memory: restart the peer and the reconciler had nothing to
+	// dial, so a working share silently stopped delivering while `status`
+	// still reported it settled. Measured, two peers, 2026-09-03.
+	//
+	// Updates only — connecting is not a relationship. See
+	// ShellWorkspace.RememberDeviceAddress.
+	sh.RememberDeviceAddress(peerID, addr)
+	// And tell the loop we have already opened our own route to them, so
+	// the next pass does not tear a working connection down and rebuild
+	// it just to satisfy its once-per-process rule — which showed up as
+	// `status` reporting an action, and never "settled", immediately
+	// after the operator had connected by hand.
+	sh.markDialed(peerID)
+
 	short := peerID
 	if len(short) > 12 {
 		short = short[:12] + "..."
