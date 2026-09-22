@@ -2,7 +2,11 @@
 
 _Updated: 2026-09-07 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
-> **Start here:** **§19 — the growth guard, the machinery that reached no pixel, and the
+> **Start here:** **§21 — the first real two-machine session: the app diagnosed itself and
+> three surfaces hid it**, then
+> **§20 — the audit before live testing: what a stranger reading our docs
+> would have been told wrong, and why `Mode: both` never worked**, then
+> **§19 — the growth guard, the machinery that reached no pixel, and the
 > conflict detector that flagged every file**, then
 > **§18 — a file costs eight queue slots, two of our own numbers were wrong,
 > and the bound we were about to build on turned out to be a no-op**, then
@@ -38,7 +42,262 @@ _Updated: 2026-09-07 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
 
-## §19 NEW (2026-09-07) — the growth we could not bound, the machinery nobody could see, and a conflict detector that flagged every file
+## §21 NEW (2026-09-08) — the first real two-machine run, and the app was right the whole time
+
+Two machines, one LAN, no harness. It found more than the previous three sessions of gate work,
+every gate stayed green throughout, and none of it is exotic.
+
+**What happened:** a file created on one machine arrived; an edit made on the other never did;
+the panel said **connected** the whole time. The operator's reading was *"it's one way"*, which
+is reasonable and wrong.
+
+### 1. The cause was a refused TCP connection, and the app said so at startup
+
+```
+warning: could not open our own connection to 192.168.68.160:9000
+  (connection refused) — until it succeeds, anything we write to a
+  shared folder will not reach them
+```
+
+Zero occurrences of "connected" or "established" in the whole 4,700-line log. Inbound worked —
+they dial us, we listen, their file lands. Outbound was dead, so nothing we wrote ever left.
+Not `Mode: both`, not stale tree state, and nothing to do with the change being an edit.
+
+**The product diagnosed itself correctly, in plain language, and three surfaces stopped anyone
+reading it.** That is the finding.
+
+### 2. Discovery cannot correct a stale address — and that is the whole point of discovery
+
+The operator asked the right question: *"why aren't they transferring the port? Isn't that what
+discovery is supposed to do?"*
+
+`dialableAddressFor` consults, in order: this session's connections, **the stored declaration**,
+then discovery. So once an address is recorded, a live announcement can never override it — we
+dial a months-old address forever while the peer announces its real one on the LAN. The reconcile
+path is stricter still: it reads the stored declaration **only**, with discovery nowhere in it.
+
+The intent is sound — a stored address is the only source that survives a restart. **The error is
+treating "durable" as "authoritative". A remembered address is a HYPOTHESIS about where a peer
+is; an announcement is an observation, and when the hypothesis has just been refused the
+observation should win.** Worth reaching for anywhere a cached fact outranks a live one.
+
+### 3. "Connected" is rendered for a peer we cannot dispatch to
+
+`st.Connected` comes from the connection **pool**, and `AGENTS.md` already warns in our own words
+that a pooled session *"says connected over a route we cannot dispatch on"*. An inbound-only
+session — they dialled us, we never dialled them — renders as plain connected. It is the exact
+state where sharing is half-broken, and the most likely one, since a dial-by-address authorizes
+only the dialer.
+
+**The panel and the log contradicted each other in the same session, and the reassuring one was
+on screen.** Direction has to be on the reading, the way inbound authority already is.
+
+### 4. Fixed: 95% of the log was four render breadcrumbs
+
+`peer-connections: NearbyRender h=1` alone was 2,383 lines, one every 1.2 s, carrying a handle
+that never changes; with three siblings, 4,489 of 4,700. The bounded crash ring was being evicted
+by it too, which every crash investigation here has depended on.
+
+**The obvious fix was written, measured against the operator's actual file, and deleted:**
+collapsing consecutive duplicates saves 14%, because the four offenders interleave and nothing
+repeats back to back. What shipped is per-key suppression on a power-of-two ladder — 4,700 → 251,
+no clock, and a rare event is never suppressed. AP43 applies to fixes exactly as it does to
+refutations: a change that does not reproduce the failing shape fixes nothing.
+
+### 5. A peer being switched off grows your tree forever
+
+188 chain-error markers in 45 minutes, one every ~15 s, coincident with the refused dial —
+~5,700 overnight, ~40,000 for a laptop shut for a week. Established. **Why they carry
+`failed_uri=system/network status=404` is NOT established**, and it is not being routed until
+somebody instruments it.
+
+### 6. What an operator cannot do: start over
+
+"Clear this peer and start fresh" has no answer that does not require a mental model of the tree,
+and the easiest-to-reach form (`rm -rf ~/.entity`) changes the peer-id and invalidates every
+grant on every other machine. That is a missing feature, not a documentation gap.
+
+---
+
+## §20 (2026-09-08) — the audit before live testing, and the reason `Mode: both` never worked
+
+No feature work. An audit ahead of putting the app on real machines, plus one measurement that
+closes an open cause. Sweep: **10/10 green.**
+
+### 1. `Mode: both` — the cause is that the owner never learns the receiver accepted
+
+Open since 2026-09-06 and measured three ways over a real network with no cause. It is now
+measured (`shellboot/mode_both_cause_test.go`):
+
+```
+folder id — the same string on both peers:   {owner}.photos
+  the receiver's record for it says:         accepted
+  the OWNER's record for it says:            offered
+  the owner's reverse leg admits only:       accepted
+  owner's sync binding after mode=both
+    plus a full reconcile:                   none
+```
+
+Acceptance is recorded by the receiver **in the receiver's own tree**, and there is no message
+back. So the owner's filter cannot match, no reverse subscription is created, and the receiver's
+writes have nothing to travel on — while the declaration takes and the owner truthfully reports
+`mode=both`, which is why it read as a delivery problem. The probe runs with authorization out
+of the picture, so it is not the grant stage; and it carries a control arm that fails if the
+accept did not happen, without which *"the owner does not see accepted"* passes on a fixture
+where nobody accepted anything.
+
+**The consequence that changes planning: this and conflict propagation are ONE piece of work.**
+Whatever carries *"I accepted your folder"* back to the owner is the same channel that carries
+*"your change landed on my edit"*. Building either alone builds it twice, or wrong.
+
+**Two-way sharing is not blocked by this** — it is the flow run once in each direction, which is
+supported, gated end to end, and the documented way. The `direction … both` verb is the thing
+that does nothing, and the operator doc now says so.
+
+### 2. What our published docs would have told a stranger, and what was wrong with it
+
+The audit's actual yield. **Six published claims across four declared documents** had gone false,
+and none of them would have been caught by a test, because they are prose:
+
+- **"Concurrent edits: not handled, that is milestone M3."** Shipped the previous day. The
+  operator guide described the state of the world before the feature and named no verb for it —
+  AP71's shape exactly, one document over: we corrected the doc when we shipped the *flow* and
+  did not re-read the guide when we shipped the *feature*.
+- **"A GUI surface: these are shell verbs."** There have been three sharing panels for a week.
+- **"The provenance discriminator exists on every transition at zero cost."** The refuted claim
+  from §19, still stated as fact in the replication landscape, in the section a reader goes to
+  for what M3 *is*.
+- **The M3 plan's step 3, "write a keep-both copy on conflict", read as the shipped design.** It
+  is not: keep-both is opt-in and converge-and-record is the default, for a reason that is
+  invisible in a two-way folder and decisive in a one-way one.
+- **"A concurrent edit still loses a write, silently" — twice**, in the sharing walkthrough and
+  in the direction doc, one of them in a section comparing us honestly against Syncthing. Those
+  two were found only by *running* the rule this section is about, after the first four had
+  already been fixed. A fresh anti-pattern rarely gets to prove itself in the same session.
+
+**The generalisation, and it is a discipline candidate rather than a note.** Every one of these
+was written by a session that shipped the thing correctly and updated the document *it* had open.
+A feature lands in code, in one guide, and in a plan that now describes the past — and the plan
+is the one a stranger reads to find out what the product does. **When a feature ships, grep the
+published set for the sentence that used to be true**, not just the file you were editing.
+
+### 3. The conflict-propagation question, answered as options rather than a work item
+
+*"If I have four or five peers and a conflict with one, and then a conflict with another — these
+should be propagated somehow."* Right, and the shape it wants is *put it in the tree and let
+replication carry it*. Written up with the trade-offs rather than picked:
+
+- **One form already works.** A `keep-both` sibling is a real file in the shared folder, so in a
+  two-way folder it replicates by the path that already exists — no new namespace, grant or wire
+  change. That is exactly how Syncthing, Dropbox, OneDrive and iCloud tell you, and the classifier
+  already knows a sibling is an ordinary file. What it cannot do is carry metadata, or reach the
+  owner of a one-way share.
+- **The disciplined version needs a grant widening that is not small.** Today a receiver grants
+  the publisher exactly one operation. For the owner to subscribe to the receiver's conflict
+  prefix, the receiver must grant subscription and tree-read rights — and the publisher's own
+  grant set does that with `Resources: ["*"]`, i.e. the whole namespace, in exchange for a
+  conflict notice. A scoped form is the only acceptable one and has not been measured.
+- **The spec's own home for this is priced out**, on our own numbers: revision auto-versioning is
+  ~4.5 entities per write with latency growing 15× over 5,000 writes, which is why it must never
+  be a per-folder toggle.
+- **Recommendation: not yet.** The case this product ships — drop a file here, pick it up there —
+  does not generate conflicts, and the receipt-plus-undo that shipped is the right amount of
+  machinery for the rare one.
+
+### 4. The GUI gate went red, and it was the instrument again — but only the *reporting* is fixed
+
+`make twopeer-gui` came back **9 of 74 failed**, on checks that all read
+`…/received/<file> never appeared`. It looked like the share had stopped working. It had not:
+the panel reported *"4 of 4 files readable"* the whole time, at
+`/data/entity-shared/a/photos` — the pre-filled default — while every assertion was pointed at
+`/received`, the directory the harness had typed.
+
+The transcript could not settle it, and that is the finding. `type` returned
+`{"typed":"/received","realInput":true}`, which is **a receipt for the keystrokes leaving
+xdotool** and says nothing about where they landed. So two very different faults — *the app
+ignored the operator's directory* and *the operator's directory never reached the box* — produced
+an identical log line, and the first evidence of either was nine failures about files at a path
+nobody had ever accepted into. **D25's third instance: a field that prints is not a field that
+answers**, now in the harness rather than in a coredump or a status surface.
+
+`type` now reads the control back and returns what it actually holds, and the scenario asserts
+that **before pressing Accept**. The re-run is **74 · 0 failed · 1 known-open** — the phase-12
+waiver, reproducing exactly as documented.
+
+**Say the uncomfortable half plainly: nothing was fixed that would change whether the keystrokes
+land.** The change is to the reporting, and the two runs differed. So there is an intermittent
+input-delivery failure in this harness — observed once in two runs — and it is now *legible*
+rather than *absent*. A future red run of this shape should be read as the harness first.
+
+### 5. "The first change after a restart is LOST" was wrong for five days — it is a DELAY
+
+The scariest open item in this repo, quoted in six documents including two published ones and a
+packet to another team, said the change was *gone* and that *only `resync` recovers it*.
+
+**Measured** (`make twopeer-gui` PHASE 13, receiver restarts while the sender stays up):
+
+```
+asym1.txt, written just after the receiver came back
+  absent at 90s   ← every gate this project has ever had asked exactly this
+  present at ~107s ← no resync, nobody touching anything
+```
+
+**The characterisation was written on 2026-09-03. The catch-up supervisor landed on 2026-09-07.
+Nothing re-measured it in between**, and in the meantime the sentence was copied forward into
+five more documents.
+
+**The number was inside the instrument's blind spot the whole time, and that is the part to
+carry.** The supervisor doubles its interval after every pass that recovers nothing, so from a
+restart the passes fall at roughly t=0, t≈120 s, t≈360 s — and **every harness here waits 90
+seconds.** That window expires between the first two passes *by construction*.
+**A test window shorter than the recovery mechanism's period turns a latency into a loss**, and
+the write-up is then confidently about the wrong defect, at the wrong severity, routed to the
+wrong people.
+
+Still open and unchanged: live delivery of that one change misses, cause unknown, and nobody has
+instrumented whether the miss is on the send side or the receive side. What changed is that this
+is a latency defect in a flow that heals itself, not a data-loss defect — so it does not
+disqualify unattended use. No bound is promised: the interval grows with idle time to a ten-minute
+ceiling, and `resync` / **Pull now** forces it.
+
+### 6. Where conflict detection lives, since it was reasonable to ask
+
+It is **entirely ours** — `blob_resolve.go`'s hash comparison plus a walk of `system/history`
+transitions — and `ext/revision` is not involved at any point. Three reasons, and the third is
+the one worth knowing:
+
+1. The spec's conflict entity requires `version_local` / `version_remote` and a project prefix
+   hash. A mounted folder commits no versions, so there is no place to put one and no values to
+   fill it with.
+2. `DOMAIN-LOCAL-FILES` §1.1a rules concurrent same-path writes explicitly *not* a CRDT case for
+   the domain, and points at the revision extension for merge semantics. Detection over a mount
+   is application-tier by construction.
+3. **`EXTENSION-REVISION` §2.2 rules that conflict entities do NOT sync** — *"peer-local… NOT
+   included in version snapshots and NOT synced to other peers"*. So the intuition that putting
+   a conflict in the revision namespace would make it replicate is refuted by the spec, and our
+   unreplicated record is **aligned with the specified model** rather than a departure from it.
+
+Where we did have a choice we spent it on compatibility: the keep-both sibling name is
+byte-identical to the kernel's and gated against its vectors. One alignment item is owed — our
+record's field names should move toward the spec's (`local`/`remote`/`base`) while nothing depends
+on them.
+
+**And a coverage gap surfaced by the question: every conflict test runs the ONE-WAY topology.**
+Nothing covers both peers publishing the same folder and both editing, which is what an operator
+gets from the two-way recipe — and it is the case where whether *both* sides notice depends on
+which delivery lands after which edit. Not measured, and worth more than any propagation design.
+
+### 7. Also corrected: a review whose headline finding was withdrawn and did not say so
+
+The 2026-09-06 conflict-semantics landscape still led with *"the receiving peer binds no file
+entity at all"* — the `podman cp` of a WAL store, withdrawn on 2026-09-07 (AP76) — with four
+conclusions resting on it and no banner. The rolling log had recorded the withdrawal; the
+document a session would actually open on this topic had not. **A supersession recorded only in
+the status log has not been recorded**, because nobody arrives at a topic through the status log.
+
+---
+
+## §19 (2026-09-07) — the growth we could not bound, the machinery nobody could see, and a conflict detector that flagged every file
 
 §18 left three things at the top of the list: bound the unbounded change recording, put the
 catch-up machinery somewhere an operator can see it, and finish M3. All three are done. The

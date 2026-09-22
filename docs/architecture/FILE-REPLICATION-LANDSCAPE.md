@@ -330,29 +330,50 @@ overwritten bytes byte-recoverable from the chain:
 [2] created  local/files:write   ← the seed
 ```
 
-Two things follow. **The tree-side guarantee is already met by the substrate** — it had simply
-never been switched on, because history recording is opt-in per path
-(`ext/history/config.go`, `configCache.find`) and nothing in the mount / sync / share path
-installs a config. With none, a query returns empty *and no error*, which reads as "the tree
-kept nothing". And **the provenance discriminator conflict detection needs already exists on
-every transition**: a local edit arrives through the WATCHER (`local/files:watch`), a
-delivered one through `blob_resolve`'s dispatch (`local/files:write`), so "they edited this"
-and "I am behind" are distinguishable today at zero cost.
+**The tree-side guarantee is already met by the substrate** — it had simply never been switched
+on, because history recording is opt-in per path (`ext/history/config.go`, `configCache.find`)
+and nothing in the mount / sync / share path installed a config. With none, a query returns
+empty *and no error*, which reads as "the tree kept nothing".
 
-So M3 is not "build a merge engine". In order: **(1)** install a history config for a mount
-prefix at mount time, so the chain exists for the namespace whose whole point it is;
-**(2)** branch at `blob_resolve.go`'s existing F9 *different* arm — equal means current,
-different plus a local `:watch` position since the last delivery means conflict; **(3)** write
-a keep-both copy on conflict under the spec's own `{path}.keep-both-{hash8}` naming, which is
-what Syncthing / Dropbox / OneDrive / iCloud all do; **(4)** layer `EXTENSION-REVISION` for
-real three-way merge, whose commit/log/status half is already proven to work over a
-`local/files` prefix. Each strategy has a distinct observable outcome, so gate each on bytes
-on disk **plus** `revision status`'s conflict count, with an anti-vacuity arm distinguishing a
-strategy that resolves from one that degrades.
+**M3 SHIPPED 2026-09-07**, and one sentence of the rescoping above was wrong in a way that
+matters, so it is corrected here rather than deleted. The paragraph that used to follow said
+the provenance discriminator *"already exists on every transition … at zero cost"*: a local
+edit arrives through the watcher (`local/files:watch`), a delivered one through
+`blob_resolve`'s dispatch (`local/files:write`). That is true of the transitions and **false of
+the head**, which is where a detector naturally reads it. Every delivered file acquires a
+`watch` head a second or so later — the receiver's own watcher ingests the file `blob_resolve`
+just wrote, and a file entity carries an mtime the watcher reads from the filesystem rather
+than from the write. Same bytes, different entity, real transition. The first detector built on
+the head flagged **every file in the folder**. The baseline block quoted above still passes,
+because it reads within a second of the delivery — *a fact established by reading a mutable
+structure once is a fact about that instant.*
 
-**The paper-worthy claim survives the rescoping** — a content-addressed tree makes both
-parents of a conflict permanently addressable with no side-car format, which is the thing no
-comparable product offers. What changed is that we are wiring it up rather than inventing it.
+What survives is *who last changed the BYTES*: walk the run of consecutive transitions carrying
+the current content hash and read the oldest member's operation. An mtime-only echo lengthens
+the run and cannot move its oldest member.
+
+What shipped, against the four steps this page listed: **(1)** the history config is installed
+by the reconciler for every folder that *receives*, not at mount time (`shellcmd/folder_history.go`);
+**(2)** as described, at `blob_resolve.go`'s F9 *different* arm, on the corrected discriminator;
+**(3) not as written** — a keep-both copy is **not** the default. It is right for a two-way
+folder and wrong for a one-way one, where it keeps the local version at the path and leaves the
+owner holding theirs with nothing to tell them, so the two peers diverge permanently and
+silently. The default converges and writes a durable record of what it replaced, which stays
+recoverable from the chain; `keep-both` is a per-folder declaration
+(`FolderData.Conflict`). **(4)** unstarted, and correctly so: `EXTENSION-REVISION`'s
+auto-versioning costs ~4.5 entities per write with latency growing 15× over 5,000 writes
+(`SYNC-LIMITS` §2), which prices it out at mount scale and is why it must never be a per-folder
+toggle.
+
+**The paper-worthy claim survives** — a content-addressed tree makes both parents of a conflict
+permanently addressable with no side-car format, which is the thing no comparable product
+offers. Ours is now the only entry in §3's table whose "keeps both" is *recoverable without
+putting a second file in the folder*, and the operator chooses which.
+
+**What M3 did not deliver: nothing propagates a conflict to the other peer.** Both sides notice
+only what landed on their own edit; there is no wire message and no shared record. It is not a
+small local edit: it needs a receiver→owner channel that does not exist, which is the same
+missing piece that stops `Mode: both` working.
 
 **M4 — the product.** Daemon/service install, per-OS packaging, ignore patterns matching user
 expectation, and the filesystem edge cases enumerated rather than discovered.

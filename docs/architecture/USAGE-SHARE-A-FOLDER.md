@@ -148,13 +148,67 @@ lay out directories:
   machine — `~/work/notes` and `~/personal/notes` are both root `notes`.
   The mount is refused rather than silently merged.
 
-### What is not handled
+### Do NOT use `direction <folder-id> both` to get two-way
 
-**Concurrent edits to the same file on both machines.** The substrate is
-last-arrival-wins and does not merge, so simultaneous edits lose one
-side. That is milestone M3 and needs `ext/revision` composed in. Deletes
-propagate while a sync is live; a delete that happens while the other
-machine is offline does not replay when it returns.
+Two-way is the flow above run **once in each direction**, and that is the
+only shape that works. There is also a `direction` verb that sets a single
+folder record to `both`, and **it does not carry the receiver's writes back
+to the owner** — measured three ways over a real network (`make
+threepeer-sync` PHASE 5). The declaration takes, the owner reports
+`mode=both`, and no reverse leg is ever established. Setting it is not
+harmful; it simply does nothing in that direction, which is worse than an
+error because everything reports healthy. Use two shares.
+
+### Concurrent edits to the same file on both machines
+
+**Since 2026-09-07 this is noticed, recorded and undoable.** It used to be
+silent, which is what this section said.
+
+The substrate is last-arrival-wins and does not merge — `DOMAIN-LOCAL-FILES`
+§1.1a rules that deliberately, and it is the rsync/git-checkout model. What
+changed is that the version being replaced is no longer lost to you:
+
+```
+conflicts                          # what a delivery replaced, and when
+resolve <key> -keep mine           # put your version back
+resolve <key> -keep theirs         # record that you looked and chose theirs
+resolve <key> -keep both           # keep yours beside it as a second file
+resolve --all -keep mine           # or the whole list at once
+```
+
+**The default converges and does not put a second file in your folder.**
+The arriving version wins on disk, as it always has, and a durable record
+names the version it replaced; `-keep mine` writes yours back and declines
+that one delivery, so a catch-up pass will not undo your choice.
+
+If you would rather have both versions **present** — the Dropbox /
+Syncthing "conflicted copy" behaviour — declare it per folder:
+
+```
+conflicts -folder <folder-id> -policy keep-both
+```
+
+The replaced version is then written beside the original as
+`{name}.keep-both-{8 hex}`. It is opt-in rather than the default because in
+a **one-way** share it stops that folder converging and the owner is never
+told: they still hold their version, you now hold both, and nothing brings
+the two back together. In a two-way folder it is the better choice.
+
+Two limits worth knowing before you rely on this:
+
+- **Recovery rests on change recording**, which a receiving folder turns on
+  automatically. A folder shared before 2026-09-07, or a path whose
+  recording hit its growth budget, is reported as **not recoverable** on the
+  record rather than silently offering a restore that would fail.
+- **The other machine is not told.** Each side notices only what landed on
+  its own edit. There is no message back to the sender, so if you and
+  someone else edit the same file, only the receiving side sees a conflict
+  row.
+
+### Deletes
+
+Deletes propagate while a sync is live; a delete that happens while the
+other machine is offline does not replay when it returns.
 
 ---
 
@@ -183,17 +237,22 @@ written on a live connection is inert until the next handshake.
 
 Two things the GUI needs that the shell does not:
 
-- **Launch both peers with a listener**, or there is nothing to dial and
-  no mDNS announcement:
+- **Just launch it.** Corrected 2026-09-08: this step used to prescribe
+  `make gui ARGS="--identity me --storage sqlite --listen 0.0.0.0:9000"`
+  and claimed the no-flag default could not share. Both halves are wrong
+  now — the default has been a persistent, listening, mDNS-announcing peer
+  with an on-disk store since 2026-09-03, and `--identity me` makes startup
+  **fail** on any machine that has no identity called `me` (it loads an
+  existing one; `--new-identity` creates).
 
   ```
-  make gui ARGS="--identity me --storage sqlite --listen 0.0.0.0:9000"
+  make gui
   ```
 
-  With no `--listen` the app is an outbound-only, in-memory peer. It is a
-  fine default for looking around and cannot participate in a share.
-  Discovery is off in that configuration and the Peer Connections panel
-  says so rather than hiding the section.
+  Use `--listen` only to choose a different port — two peers on ONE machine
+  need two ports. `--ephemeral` asks for the old outbound-only in-memory
+  peer on purpose; in that configuration discovery is off and the Peer
+  Connections panel says so rather than hiding the section.
 
 - **Nothing else.** The receiver used to have to create a mount first,
   named exactly what the sender happened to call their folder. Accept now
@@ -378,11 +437,17 @@ peers on different networks never appear and must be reached with
 
 - **Cross-network.** mDNS is link-local and `ext/relay` is unlanded
   upstream, so today this is one LAN or manual addressing.
-- **A GUI surface.** These are shell verbs. The Local Files panel manages
-  mounts and says nothing about shares or syncs.
-- **Concurrent edits to one file on two machines.** Not covered, and not
-  safe to assume: the substrate is last-arrival-wins and does not merge.
-  That is milestone M3 in `FILE-REPLICATION-LANDSCAPE.md`, and it is the
-  one that needs `ext/revision` composed in.
-- **Concurrent edits, still.** See the row above — that is the one that
-  is genuinely not covered.
+- **A merge.** A concurrent edit is detected, recorded and undoable (above),
+  and it is never three-way merged. `EXTENSION-REVISION` is where merge
+  semantics belong and nothing at this tier attempts them.
+- **Telling the other machine a conflict happened.** Each side sees only
+  what landed on its own edit.
+- **Two-way on one folder record** (`direction … both`). Run the share
+  twice instead — see above.
+- **More than three machines**, and any topology with a cycle. Three is the
+  most that has been run (`make threepeer-sync`: one folder to two
+  receivers, and a two-hop chain).
+
+The GUI covers all of this now — the **Sync** panel is the two-gesture front
+door, and *Shared Folders* / *Sharing Status* are the diagnostics. That row
+used to say there was no GUI surface at all.

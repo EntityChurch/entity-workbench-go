@@ -632,6 +632,25 @@ public static class UiDriver
         });
     }
 
+    // Type REPORTS WHAT THE CONTROL HOLDS, not what was sent — and the
+    // distinction is not academic (D25, AP55: a field that prints is not a
+    // field that answers).
+    //
+    // It used to return `{"typed": "<what we sent>", "realInput": true}`,
+    // which is a receipt for the keystrokes leaving xdotool and says
+    // nothing about where they landed. On 2026-09-08 a two-peer GUI run
+    // typed a receiving directory into an offer card, reported
+    // `"typed":"/received"`, and the app accepted into its pre-filled
+    // default — nine downstream checks failed on files that were never
+    // going to be at the asserted path, and the transcript contained no
+    // way to tell "the app ignored the operator's input" from "the input
+    // never reached the box". Two very different bugs, one indistinguishable
+    // log line.
+    //
+    // So the read-back is the return value. `mismatch` is advisory rather
+    // than an error, because a control may legitimately transform what it
+    // is given (a mask, a trim, a numeric parse) and a driver that refused
+    // on that would block scenarios that are working. The CALLER asserts.
     private static string Type(string sel, string text)
     {
         var clicked = Click(sel);
@@ -648,7 +667,21 @@ public static class UiDriver
         if (run is not null) return Err(run);
 
         Settle();
-        return Ok(new Dictionary<string, object?> { ["typed"] = text, ["realInput"] = true });
+
+        var actual = OnUiValue(() =>
+        {
+            var m = Match(sel);
+            return m.Count == 1 ? TextOf(m[0]) : null;
+        });
+
+        return Ok(new Dictionary<string, object?>
+        {
+            ["typed"] = text,
+            ["text"] = actual ?? "",
+            ["mismatch"] = actual is not null && actual != text,
+            ["readable"] = actual is not null,
+            ["realInput"] = true,
+        });
     }
 
     private static string Key(string keys)

@@ -286,17 +286,40 @@ conversation, not a workbench change.
 
 ---
 
-## 4. FAILURE MODE 2 — the first change after a restart is lost
+## 4. FAILURE MODE 2 — the first change after a restart is DELAYED, not lost
 
-Restart either peer; the next file changed never arrives, while every one after it does. Not a
-delay — the change is gone. Documented at
-`docs/architecture/reviews/FIRST-CHANGE-AFTER-RESTART-IS-LOST-2026-09-03.md`; two hypotheses
-already refuted there.
+**Corrected 2026-09-08, and the correction is the important part.** This section used to open
+*"Not a delay — the change is gone"*, and every other document in this repo repeated it. That
+claim was made on 2026-09-03, **before the catch-up supervisor existed**, and nobody re-measured
+it afterwards.
 
-**Mitigated but not fixed.** The catch-up supervisor runs a pass immediately at startup, so
-the lost change is recovered within one pass. The underlying defect is still open, and the
-first question — whether the loss is on the send side or the receive side — is still
-uninstrumented.
+Measured (`make twopeer-gui` PHASE 13, two containers, real TCP, receiver restarts while the
+sender stays up):
+
+```
+asym1.txt written on the sender, receiver just restarted
+  not on the receiver's disk at 90s      ← what every gate had ever asked
+  ON the receiver's disk at ~107s        ← no resync, no operator action
+```
+
+**So it converges on its own.** The mechanism predicts the number: the supervisor takes a pass
+immediately at startup, then **doubles** its interval after any pass that recovers nothing
+(`nextCatchUpInterval`), so from a restart the passes fall at roughly t=0, t≈120s, t≈360s — and a
+90-second assertion window expires between the first two *by construction*. Every harness in this
+repo waited 90 seconds and concluded the file was gone.
+
+**What is still open, stated exactly:** live delivery of that one change does not happen, and the
+cause is still unknown — the first question, whether the miss is on the send side or the receive
+side, is still uninstrumented. What is **closed** is the characterisation. This is a latency
+defect, not a data-loss defect, and the difference decides whether the product is usable
+unattended.
+
+**No bound is promised.** 107s is one measurement on one machine, and the recovery interval grows
+with how long the peer has been idle (up to the 10-minute ceiling). `resync` / **Pull now** forces
+it immediately and is the answer if you do not want to wait.
+
+Background: `reviews/FIRST-CHANGE-AFTER-RESTART-IS-LOST-2026-09-03.md`, whose title is now wrong
+and which carries a correction banner; two hypotheses are refuted there and remain refuted.
 
 ---
 
@@ -408,7 +431,17 @@ silent.
 ### Still open here
 
 - **Nothing propagates a conflict to the other peer.** They do not know their change landed on
-  your edit, and there is no wire message for it. Both sides notice only their own.
+  your edit, and there is no wire message for it. Both sides notice only their own. It is not a
+  small local fix: a conflict record lives at `app/workbench/conflicts/…`, which nothing
+  replicates, and telling the *owner* of a one-way share needs a **receiver→owner channel that
+  does not exist** — the same missing piece that stops `Mode: both` working, so the two are one
+  piece of work rather than two.
+
+  **One form of it does already work, and it is the one every comparable product uses.** A
+  `keep-both` sibling is a real file in the shared folder, so in a **two-way** folder it
+  replicates to the other machine by the path that already exists — no new namespace, no new
+  grant, no wire change. It carries no metadata beyond the content hash in its name, and in a
+  one-way share it goes nowhere, which is exactly the case where the owner most needs to hear.
 - **A conflict is per file, not per folder.** Ten files edited on both sides are ten rows.
 - **`resolve` does not merge.** There is no three-way merge and none is planned at this tier;
   `EXTENSION-REVISION` is where merge semantics belong.
@@ -424,11 +457,11 @@ silent.
 | The substrate's `max_depth` bound is a no-op | **Open upstream, measured, routed 2026-09-07.** `prune` walks and mutates nothing; there is no GC. Setting it costs a walk per write and bounds nothing. |
 | No backpressure; the sender drops under burst | **Open upstream.** Mitigated by catch-up and by a bigger ring; neither removes it. |
 | A subscriber cannot discover the publisher's ring size, or see its drop counter | **Open upstream.** It is why the catch-up rate is a heuristic rather than a feedback loop. Routed 2026-09-07. |
-| First change after a restart is lost | **Open.** Mitigated by catch-up. |
-| Catch-up rate adapts to whether it is finding anything | Not to folder SIZE — a 100k-file folder uses the same ladder as a 10-file one. |
+| First change after a restart | **Characterisation corrected 2026-09-08: it is a DELAY, not a loss** (§4). Measured converging on its own in ~107 s with no operator action. Live delivery of that one change still misses, cause unknown; the recovery is the supervisor, and `resync` forces it. |
+| Catch-up rate adapts to whether it is finding anything | **And, since 2026-09-08, to folder SIZE.** The ladder still doubles; what it may climb TO is now derived from what a pass costs (`settledCeiling`, ~1% duty), so a ~1,000-file folder rests at the 60 s base rate instead of climbing to a ten-minute blind spot, while a 100k-file folder still backs off to the 10-minute hard cap. Before it, four empty passes — about fourteen minutes of quiet — put every folder on a ten-minute check, whatever it cost to look. |
 | A catch-up pass over a very large folder is O(files) | 0.24 ms/file — ~24 s for 100,000 files. Not bounded or chunked. |
 | Concurrent-edit conflicts | **Detected, recorded, listable and resolvable 2026-09-07** (§5). Not propagated to the other peer, and not merged. |
-| `Mode: both` does not sync receiver → owner | **Open.** |
+| `Mode: both` does not sync receiver → owner | **Open, cause measured 2026-09-08.** The owner never learns the receiver accepted — acceptance is recorded in the receiver's own tree and never travels, and the owner's reverse leg admits only an `accepted` state its record can never reach. Use two one-way shares, which is the supported and gated way to get two-way. |
 | Four or more peers, and triangles | **Untested.** |
 
 ---

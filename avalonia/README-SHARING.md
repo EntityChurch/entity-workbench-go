@@ -143,27 +143,102 @@ content, into a directory named nothing like the sender's.
 ## 2. The same thing in the desktop app
 
 ```bash
-make gui ARGS="--identity me --storage sqlite --listen 0.0.0.0:9110"
+make gui
 ```
 
+**That is the whole command. Corrected 2026-09-08 — this line used to read
+`make gui ARGS="--identity me --storage sqlite --listen 0.0.0.0:9110"`, and
+the first of those three flags makes startup FAIL.**
+
+`--identity NAME` means *use the EXISTING identity called NAME*, and it
+refuses if there is none — deliberately, because a peer-id is what every
+grant, mount and offer on the other machine names, so a typo must not
+quietly become a different peer. On a machine that has never run this,
+there is no identity called `me`, so the documented first command could not
+work on a first run. `--new-identity NAME` is the flag that creates one.
+
+The other two flags were noise: `sqlite` is already the default storage,
+and `0.0.0.0:9110` is already the default listen address. The program's own
+`--help` says so plainly — *"By default this is a PERSISTENT, REACHABLE
+peer: the same peer-id every launch, an on-disk store, an inbound listener,
+and an mDNS announcement so peers on your LAN can find it without being
+told an address"* — and this file spent that sentence's whole meaning on
+three flags that re-stated two defaults and broke the third.
+
 `make gui` rebuilds the image (do this after any code change);
-`make gui-run` launches what is already extracted. **With no `--listen`
-nothing can dial you**, and a share is a dial.
+`make gui-run` launches what is already extracted. Use `--new-identity
+NAME` only if you deliberately want a *second, different* peer on the same
+machine.
 
-Add panels with **+ Add panel → Network**:
+Add panels with **+ Add panel**. Only two of them are under **Network**,
+and that is deliberate — the rest were demoted to **Diagnostics** because
+five panels had grown around this one job and the sum was unusable.
 
-| Panel | The question it answers |
-|---|---|
-| **Peer Connections** | who am I connected to right now |
-| **Shared Folders (share and receive)** | the flow: offer, see offers, accept |
-| **Sharing Status (declared vs. actual)** | is what I declared actually working, and what is stopping it |
+| Panel | Where | The question it answers |
+|---|---|---|
+| **Sync — share a folder with a peer** | Network | **the flow. Start here.** |
+| **Peer Connections** | Network | who am I connected to right now |
+| **Sharing Status (declared vs. actual)** | Diagnostics | is what I declared actually working, and what is stopping it |
+| **Shared Folders (every control, one stage at a time)** | Diagnostics | the per-stage controls — resync, forget, unsync |
 
-The flow lives in **Shared Folders**, whose sections are numbered in the
-order you perform them. Accept asks for a directory on the offer row,
-pre-filled with a fresh path under `~/entity-shared/`; it refuses a
-directory that already has files in it, and offers to proceed anyway with
-the consequence stated (their writes overwrite yours, their deletes
-remove yours).
+**Corrected 2026-09-08: this table used to send you to Shared Folders and
+did not mention Sync at all.** Sync is the front door and has been since
+2026-09-04; Shared Folders is what you open when a share will not
+establish and you need to drive one stage at a time.
+
+**Sync is two gestures and nothing else.** *Pick a folder → pick a peer →
+Share.* And, when a card appears: *pick a directory → Accept.* Share
+creates the mount for you — you never say "mount", because that is
+mechanism and it had leaked into the UI.
+
+Accept asks for a directory on the offer row, pre-filled with a fresh path
+under `~/entity-shared/`. **Check that box actually holds what you typed
+before you press Accept** — a harness run on 2026-09-08 typed a path,
+reported success, and the app accepted into the pre-filled default; the
+driver could not tell whether the app ignored the input or the input never
+arrived, and the same ambiguity is available to you at a keyboard. Accept
+refuses a directory that already has files in it, and offers to proceed
+anyway with the consequence stated (their writes overwrite yours, their
+deletes remove yours).
+
+### The flow on a real LAN, and what you do NOT have to do
+
+**You do not type an address.** The peer picker in Share is the *reachable*
+peers — the connection pool **unioned with mDNS discovery** — and each row
+says which of the two it came from, because a connection is a fact and an
+announcement is an advertisement. On one LAN, with both machines launched
+as above, the other machine appears by itself.
+
+**You do not reconnect after sharing, either.** A grant is assembled at the
+handshake, so a policy written on a live connection is inert until that
+connection is replaced — but replacing it is the **reconciler's** job, not
+yours: it tracks which peers had a policy change on this pass and re-dials
+exactly those (`shellcmd/reconcile.go`, `refreshGrantConnection`), and it
+opens this peer's own outbound route to every declared device. Earlier
+versions of this guide told you to press Connect again afterwards. That was
+this project describing its own test harness, which dials explicitly for
+determinism, as though it were the operator's flow.
+
+That the *mechanism* costs a reconnect at all is a design smell and is
+routed as such (`reviews/LIVE-GRANT-REFRESH-2026-09-08.md`): a permission
+change should not require destroying a working connection, and it should
+certainly never surface as an instruction.
+
+**Two things here are genuinely NOT measured, and you are the first person
+in a position to measure them.** Every automated gate types an address and
+presses Connect explicitly, and the two-peer harness says so in its own
+header — mDNS across a podman bridge is not a product claim. So:
+
+- whether **discovery alone** carries the whole flow, with no address ever
+  typed, is unverified on a real LAN;
+- whether the publisher's dial is still needed at all, or whether the
+  reconciler's outbound route covers it, is unverified **because every
+  harness performs that dial** — a stage a fixture always performs is a
+  stage with no coverage, the same shape as a fixture that always disables
+  one.
+
+If the flow works for you without touching Peer Connections at all, that is
+the answer to both, and it is worth writing down.
 
 **Sharing Status** is where you go when something is wrong. Two things
 about it are worth knowing before you need them:
@@ -316,11 +391,14 @@ make -C avalonia test        # SharingStatusPanelTests is in here
 
 ## 6. What is still wrong — read this before you conclude it is broken
 
-### 6.1 The first change after a restart is lost
+### 6.1 The first change after a restart is late — not lost
 
-**Measured, reproducible, and the one that will bite you.** After either
-peer restarts, the **first** file you change is not delivered. Every
-change after it is:
+**Corrected 2026-09-08. This section used to say the change was lost and
+that only `resync` recovered it. Both halves were wrong**, and they were
+written before the catch-up supervisor existed.
+
+**What is true:** after either peer restarts, the **first** file you change
+is not delivered *live*. Every change after it is:
 
 ```
 restart peer A
@@ -333,16 +411,29 @@ Four single-write restart cycles alternated fail / pass / fail / pass,
 which is the same fact seen once per cycle. It happens on a **receiver**
 restart too, identically.
 
-Two hypotheses were tested and **both refuted by measurement**: it is not
-a missing outbound dial (the loop now opens one at every start and says
-so), and it is not a stale entry in our own connection pool (evicting
-before dialing changed nothing, so that change was reverted rather than
-kept as a plausible-looking no-op). The cause is not yet known and is
-being routed rather than guessed at.
+**And then it arrives by itself.** Measured: **~107 seconds** after it was
+written, with no `resync` and nobody touching anything. The catch-up
+supervisor takes a pass at startup and then doubles its wait after every
+pass that finds nothing, so from a restart the passes land at roughly
+t=0, t≈120s, t≈360s — and every test window in this project was 90
+seconds, which expires between the first two. That is how a delay got
+written down as a loss, in this file and five others.
 
-**The workaround is reliable:** `resync <peer> <root>` on the receiver, or
-**Pull now** on the folder's row in the GUI. It re-pulls the current
-state and reports what it moved.
+**No bound is promised.** The interval grows with idle time to a ten-minute
+ceiling, so "a couple of minutes" is what you should expect and not what
+you are owed.
+
+**If you do not want to wait:** `resync <peer> <root>` on the receiver, or
+**Pull now** on the folder's row in the GUI. It re-pulls the current state
+and reports what it moved. This is now a way to *hurry* recovery rather
+than the only route to it.
+
+Two hypotheses for the live miss were tested and **both refuted by
+measurement**: it is not a missing outbound dial (the loop now opens one at
+every start and says so), and it is not a stale entry in our own connection
+pool (evicting before dialing changed nothing, so that change was reverted
+rather than kept as a plausible-looking no-op). The cause is not yet known
+and is being routed rather than guessed at.
 
 ### 6.2 A folder can be mounted and publish nothing openable
 
@@ -377,12 +468,32 @@ on you now". On a LAN with discovery the addresses resolve themselves and
 this mostly disappears; on loopback or across subnets it does not, and the
 symptom is a folder that received its existing files and then went quiet.
 
-### 6.4 A concurrent edit still loses a write, silently
+### 6.4 A concurrent edit is not merged, and the other machine is not told
 
-Two peers editing the same file at the same time is not merged and not
-reported. `../docs/architecture/FILE-REPLICATION-LANDSCAPE.md` §3 is the
-discussion. This is the gap that decides whether this becomes a tool
-people install, and nothing here improves it.
+**Corrected 2026-09-08. This section used to say a concurrent edit loses a
+write silently, and since 2026-09-07 that is no longer true.** A delivery
+that lands on a file you edited is detected, the version it replaced is
+recorded, and the *Sharing Status* panel lists it with **Restore mine** /
+**Keep theirs** / **Keep both** on the row. The shell verbs are `conflicts`
+and `resolve`.
+
+What is still true, and is the remaining gap:
+
+- **Nothing is merged.** The arriving version wins on disk and yours is
+  recoverable; there is no three-way merge and none is planned at this tier.
+- **The other machine is not told.** Each side notices only what landed on
+  its own edit. In a one-way share the owner never learns their change
+  replaced somebody's work.
+- **A folder can be declared `keep-both`** (`conflicts -folder <id> -policy
+  keep-both`), which writes your version beside theirs as
+  `{name}.keep-both-{8 hex}` — the Syncthing/Dropbox shape. It is opt-in
+  rather than the default because in a one-way share it stops that folder
+  converging and the owner is never told, so the two machines diverge
+  permanently. In a two-way folder it is the better setting, and the sibling
+  is an ordinary file so it replicates to the other machine by itself.
+
+`../docs/architecture/SYNC-LIMITS-AND-FAILURE-MODES.md` §5 is the full
+discussion.
 
 ### 6.5 Offers are pulled, not pushed
 
@@ -404,17 +515,25 @@ Files already in the folder come across. Both sides approve once, and the
 approval is durable. `status` answers *"is it working"* in one command,
 which is more than Syncthing's UI gives you in one place.
 
-**Where it does not, yet.** §6.1 is disqualifying for unattended use: a
-sync tool whose first post-restart change is silently dropped is not
-something to trust a directory to, and Syncthing's answer here — a scan
-plus a rescan interval — means it converges without anyone asking. We
-converge only when someone runs `resync`. §6.4 is the deeper one:
-Syncthing detects conflicts and keeps both sides as
-`.sync-conflict-…` files; we lose a write with no record. And Dropbox's
-whole advantage — a third party that is always up, so two devices never
-have to be awake together — is not available to us by construction, which
-is a design choice rather than a defect but changes what "it just works"
-can mean.
+**Where it does not, yet.** §6.1 is the one you will notice: the first
+change after a restart misses live delivery, cause still unknown.
+Syncthing's answer — a scan plus a rescan interval — converges without
+anyone asking; **we have the same shape** in the catch-up supervisor, and
+it is now measured doing exactly that (~107s, unattended). So the gap
+against Syncthing here is latency, not durability. And Dropbox's whole advantage — a third party that is always up,
+so two devices never have to be awake together — is not available to us by
+construction, which is a design choice rather than a defect but changes
+what "it just works" can mean.
+
+**§6.4 has moved, and it is worth being precise about where.** Syncthing
+detects a conflict and keeps both sides as `.sync-conflict-…` files. We
+detect it, keep both — one on disk and one addressable on the chain — and
+will write the sibling too if the folder asks for it, using the same naming
+the revision extension specifies. Where Syncthing is still ahead is that
+**both peers find out**; ours is a local notice. That is now the gap, and it
+is a smaller one than "we lose a write with no record", which is what this
+section said until 2026-09-08.
 
 **So: good enough to use deliberately, not yet good enough to forget
-about.** Drive it, watch `status`, and use `resync` after a restart.
+about.** Drive it, watch `status`, and run `resync` after a restart rather
+than waiting for the supervisor.

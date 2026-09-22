@@ -44,12 +44,18 @@ extracted `dist-native/` is a self-contained native binary. Do not
 Both launch targets forward `ARGS` to the binary:
 
 ```bash
-make gui-run ARGS="--identity me --storage sqlite"
+make gui-run ARGS="--new-identity second-peer"
 make -C avalonia host-run ARGS="--listen 127.0.0.1:9000"
 ```
 
-With no flags the GUI runs as an **ephemeral in-memory peer and loses
-everything on exit** — fine for a look, wrong for real use. Pair
+**With no flags the GUI is a persistent, reachable peer** — same peer-id
+every launch, on-disk SQLite, a listener on `0.0.0.0:9110`, and an mDNS
+announcement. That is the configuration you want, and it has been the
+default since 2026-09-03; `--ephemeral` asks for the old throwaway peer
+deliberately. Use `--new-identity NAME` only to bring a *second, different*
+peer into being on the same machine — `--identity NAME` loads an existing
+one and fails if there is none, which is what makes it wrong in a
+copy-pasted example. Pair
 `--storage sqlite` with `--identity NAME`: without a named identity each
 run generates a fresh keypair, so every launch writes into a different
 namespace of the same database and nothing you wrote last time is

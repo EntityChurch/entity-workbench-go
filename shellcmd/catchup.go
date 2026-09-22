@@ -126,17 +126,73 @@ const DefaultCatchUpInterval = 60 * time.Second
 const (
 	// MinCatchUpInterval is the floor while actively recovering.
 	MinCatchUpInterval = 5 * time.Second
-	// MaxCatchUpInterval is the ceiling once settled.
+	// MaxCatchUpInterval is the HARD ceiling — the longest this loop will
+	// ever wait, whatever a pass costs. It is not the resting rate; see
+	// settledCeiling, which is usually much lower.
 	MaxCatchUpInterval = 10 * time.Minute
 	// catchUpBackoffFactor is how fast a settled loop backs off.
 	catchUpBackoffFactor = 2
+	// catchUpIdleDutyDivisor bounds what an IDLE folder is allowed to
+	// cost: the resting interval is at least this many times the duration
+	// of a pass, i.e. a settled folder occupies at most 1/N of the wall
+	// clock. 100 → 1%.
+	catchUpIdleDutyDivisor = 100
 )
+
+// settledCeiling is how far this loop is allowed to back off for a folder
+// whose passes cost `passDuration` — DERIVED, where it used to be the flat
+// MaxCatchUpInterval constant.
+//
+// # Why a constant ceiling was wrong, and it is the operator who said so
+//
+// The intervals double, so the PASSES land at t=0, 2 min, 6 min, 14 min,
+// 24 min, and every 10 minutes after that. Four empty passes — about
+// fourteen minutes of quiet — and the worst-case time to notice a change
+// that missed live delivery is TEN MINUTES. On a folder where a pass costs
+// a quarter of a second. The operator's words were *"doubling exponentially
+// is not the right frequency, it grows too quickly"*, and the numbers agree:
+// the back-off was buying a saving that was not needed and paying for it in
+// the one currency this product is judged in.
+//
+// `SYNC-LIMITS` already named the underlying flaw as a known limitation —
+// *"the catch-up rate adapts to whether it is finding anything, NOT to
+// folder SIZE; a 100k-file folder uses the same ladder as a 10-file one"*.
+// This is that limitation closed from the other end: the ladder is
+// unchanged, and what it may climb TO is now a function of measured cost.
+//
+// An idle pass costs ~0.24 ms/file (SYNC-LIMITS §1), so:
+//
+//	     files   pass    ceiling  steady-state duty
+//	       10    ~0 s      60 s   negligible
+//	    1,000   0.24 s     60 s   0.4 %
+//	   10,000   2.4 s       4 min 1 %
+//	  100,000    24 s      10 min 4 %   (hard cap)
+//
+// So an ordinary folder now rests at the base rate — which is also
+// Syncthing's default rescan interval, and that is not a coincidence: it is
+// the rate this class of tool has already converged on — while a folder big
+// enough for a pass to actually cost something still backs away from it.
+//
+// The floor is DefaultCatchUpInterval and not something smaller because
+// below that the loop stops being a safety net and starts being a poller.
+func settledCeiling(passDuration time.Duration) time.Duration {
+	ceiling := passDuration * catchUpIdleDutyDivisor
+	if ceiling < DefaultCatchUpInterval {
+		ceiling = DefaultCatchUpInterval
+	}
+	if ceiling > MaxCatchUpInterval {
+		ceiling = MaxCatchUpInterval
+	}
+	return ceiling
+}
 
 // nextCatchUpInterval is the adaptive rule, as a pure function so it can
 // be tested without a clock.
 //
 // recovered > 0  → drop to the floor: we are behind and more is coming.
-// recovered == 0 → back off geometrically toward the ceiling.
+// recovered == 0 → back off geometrically toward the ceiling, where the
+//                  ceiling is DERIVED from what a pass costs
+//                  (settledCeiling), not a flat constant.
 //
 // The ramp is a GRADIENT and the configured rate is only where it starts,
 // not a floor it snaps back to. An earlier version clamped the way up at
@@ -163,8 +219,11 @@ func nextCatchUpInterval(current, passDuration time.Duration, recovered int) tim
 		if next < MinCatchUpInterval {
 			next = MinCatchUpInterval
 		}
-		if next > MaxCatchUpInterval {
-			next = MaxCatchUpInterval
+		// The ceiling is DERIVED from what a pass costs, not a flat ten
+		// minutes — see settledCeiling. A cheap folder rests at the base
+		// rate instead of climbing to a ten-minute blind spot.
+		if ceiling := settledCeiling(passDuration); next > ceiling {
+			next = ceiling
 		}
 	}
 	// Never spend more than half the wall clock catching up.

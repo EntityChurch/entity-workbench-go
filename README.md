@@ -35,10 +35,18 @@ make gui-run             # ...launch it again later without rebuilding
 > Go or C# change (podman caches unchanged stages, but the first build
 > pulls the .NET SDK and takes minutes); use `gui-run` when you just want
 > the app you already built. Both forward app flags:
-> `make gui-run ARGS="--identity me --storage sqlite"`. With no flags the
-> GUI is an **ephemeral in-memory peer and loses everything on exit** —
-> see [Identity and storage](#identity-and-storage). `avalonia/README.md`
+> `make gui-run ARGS="--new-identity second-peer"`. **With no flags the GUI
+> is a persistent, reachable peer** — same peer-id every launch, an on-disk
+> SQLite store, a listener on `0.0.0.0:9110` and an mDNS announcement — so
+> no flags is the right way to run it. `--ephemeral` restores the old
+> throwaway behaviour deliberately. See
+> [Identity and storage](#identity-and-storage); `avalonia/README.md`
 > covers the crash-log path, render modes, and the X11 smoke drivers.
+>
+> **Note `--new-identity` and not `--identity`.** `--identity NAME` loads an
+> EXISTING named identity and *fails* if there is none, on purpose: a
+> peer-id is what every grant and share on the other machine names, so a
+> typo must not silently become a different peer.
 
 And to check the tree's state:
 

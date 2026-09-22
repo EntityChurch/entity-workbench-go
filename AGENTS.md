@@ -37,7 +37,7 @@ D12–D27 here are ours, earned on the eight crash-hunt commits, two feedback ep
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP79, and the promotion
+  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP81, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -237,6 +237,18 @@ one — name the recurring cycle first, then let each step own one lever of it.
   documented to *work*, so the first-change waiver belongs only to phase 12's asymmetric restart,
   and `known_ok` shouts if it ever starts passing; and **say when the thing under test died** —
   a peer that SIGSEGVs mid-run otherwise presents as a dozen unrelated panel bugs.
+  **`type` REPORTS WHAT THE CONTROL HOLDS, NOT WHAT XDOTOOL SENT** (D25, third instance —
+  added 2026-09-08). It used to return `{"typed": "<what we sent>"}`, which is a receipt for
+  keystrokes leaving the driver: on 2026-09-08 a run typed a receiving directory into an offer
+  card, reported success, and the app accepted into its pre-filled default — **9 of 74 failed**,
+  every one a file missing from a path nobody had ever accepted into, and the transcript could
+  not distinguish *"the app ignored the operator"* from *"the input never arrived"*. The driver
+  now reads the control back and returns `text`/`mismatch`; the scenario asserts it **before
+  pressing Accept**, so the failure is named where it happens. A mismatch is **advisory in the
+  driver and asserted by the caller** — a control may legitimately transform its input, and a
+  driver refusing on that blocks scenarios that work. **The re-run was 74 · 0 · 1 known-open,
+  and nothing was changed that affects whether keystrokes land** — so treat this shape of red as
+  the harness first, and know the intermittency is still there.
 - **For anything above the platform, the headless suite can drive real input too, and it is
   much cheaper** (added 2026-08-21). `Avalonia.Headless`'s `MouseDown` / `MouseUp` /
   `KeyPressQwerty` run the genuine route — hit test, capture, class **and** instance handlers —
@@ -395,9 +407,14 @@ one — name the recurring cycle first, then let each step own one lever of it.
   fastest end-to-end validation that the shipped binary works).
 - **`make gui` rebuilds the image; `make gui-run` does not.** Use `gui` after any Go or C#
   change, `gui-run` to launch what is already extracted. Both forward the app's own flags —
-  `make gui-run ARGS="--identity me --storage sqlite"` (double-dash: the .NET frontend does
-  not use Go's `flag` spelling). **With no flags the GUI is an ephemeral in-memory peer and
-  loses everything on exit.** `avalonia/README.md` is the full entry-path doc.
+  `make gui-run ARGS="--new-identity second-peer"` (double-dash: the .NET frontend does
+  not use Go's `flag` spelling). **With no flags the GUI is a PERSISTENT, REACHABLE peer** —
+  same peer-id, on-disk SQLite, a listener on `0.0.0.0:9110`, an mDNS announcement — and that
+  is the configuration to run; `--ephemeral` asks for the throwaway one. **This bullet said the
+  opposite until 2026-09-08**, five months of sessions copied `--identity me` out of it, and
+  `--identity` LOADS an existing identity and **fails** when there is none — so the example
+  every doc inherited could not work on a first run. `--new-identity` is the creating form.
+  `avalonia/README.md` is the full entry-path doc.
   **Both now launch through `run-with-dump.sh`, and the rebuild is the only difference left.**
   Until 2026-09-01 `gui-run` exec'd the bare binary, so whether a session had diagnostics
   depended on which target you happened to type and nothing recorded which. The app now prints
@@ -512,7 +529,7 @@ one — name the recurring cycle first, then let each step own one lever of it.
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
 - The project measures everything against the **27 disciplines (D1–D27)**, ten review
-  questions, and anti-pattern catalog (AP1–AP79) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+  questions, and anti-pattern catalog (AP1–AP81) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A COPY OF A LIVE SQLITE STORE IS NOT THE STORE, AND THE MISSING WRITES READ AS ZERO ROWS**
   (AP76). File-backed `SqliteStore` opens **WAL** (`core/store/sqlite.go`, `buildSqliteDSN`
   defaults `JournalMode` to `"WAL"`), so everything since the last checkpoint is in the `-wal`
@@ -618,8 +635,19 @@ one — name the recurring cycle first, then let each step own one lever of it.
   discriminator and it **refutes** the obvious hypothesis: the two-root-names trap is not the
   cause, because asymmetric and symmetric behave identically. The declaration *takes* (the owner
   reports `mode=both`) and **the owner holds no sync binding naming the receiver**, so the
-  owner-side receive leg is never established. `receiveFromPeers` (`shellcmd/reconcile.go`) says a
-  local folder that `Receives()` pulls from every peer whose state is `Accepted` — start there.
+  owner-side receive leg is never established.
+  **THE CAUSE IS MEASURED (2026-09-08): THE OWNER NEVER LEARNS THE RECEIVER ACCEPTED.**
+  `receiveFromPeers` (`shellcmd/reconcile.go`) admits only peers whose state is `Accepted`;
+  `declareLocalShare` writes `Offered` and **nothing can ever advance it**, because acceptance is
+  recorded by `declareAcceptedFolder` in the *receiver's* tree and never travels. Both peers hold
+  a record with the same folder id and different peer states. `shellboot/mode_both_cause_test.go`
+  measures it with authorization out of the picture, so it is not the grant stage — and with a
+  **control arm** asserting the accept happened, without which "the owner does not see accepted"
+  passes on a fixture where nobody accepted anything. **So this and conflict propagation are ONE
+  piece of work**: whatever carries *"I accepted your folder"* back is the same channel that
+  carries *"your change landed on my edit"*, and building either alone builds it twice
+  (`reviews/CONFLICT-PROPAGATION-OPTIONS-2026-09-08.md` §8). If that test starts failing, the
+  channel exists — delete it and gate the reverse leg, do not relax the assertion.
   Note the verb takes a folder-id of `{owner-peer-id}.{sender-root}`, so an operator who accepted
   into a directory of their own choosing sees an id built from a root they never typed.
 - **`make threepeer-sync` runs the topologies two peers CANNOT EXPRESS.** Two peers are one edge,
@@ -707,16 +735,60 @@ one — name the recurring cycle first, then let each step own one lever of it.
   PROGRAM's output for it**, not just `docs/`. `avalonia/README-SHARING.md` is the standing
   artifact for this — it is written by transcription from a real two-peer session, so writing it
   is running it.
-- **THE FIRST CHANGE AFTER EITHER PEER RESTARTS IS NOT DELIVERED, AND THE CAUSE IS UNKNOWN.**
+  **AND GREP THE PUBLISHED DOCS FOR THE SENTENCE THAT USED TO BE TRUE** (AP80) — this is AP71 one
+  layer out and it is the half we keep missing. A feature ships in code, in the one guide the
+  session had open, and in a **plan** that now describes the past, and the plan is what a stranger
+  opens to find out what the product does. Four published claims were false on 2026-09-08, each
+  written by a session that shipped its feature correctly: the operator guide said concurrent
+  edits were unhandled *the day after* they shipped, and the landscape doc still carried the
+  provenance claim that had been retracted in `STATUS.md`, in this file and in the test, in the
+  very section a reader goes to for what M3 is. **Nothing in the tree can fail on prose** — start
+  from `CANONICAL-DOCS.toml`'s declared list, which is short, and search the **claim**, not the
+  filename. Corollary: **a supersession recorded only in `STATUS.md` has not been recorded**,
+  because nobody arrives at a topic through the rolling log; banner the document the next session
+  will actually open.
+- **THE FIRST CHANGE AFTER A RESTART IS NOT DELIVERED LIVE, AND THE CAUSE IS UNKNOWN — BUT IT IS
+  A DELAY, NOT A LOSS, AND WE CALLED IT A LOSS FOR FIVE DAYS.**
   Measured 2026-09-03, both directions, no error on either side, `status` reporting `settled`
   throughout: restart a peer, and the next file changed never arrives while every one after it
-  does. It is not a delay — the change is gone, and only `resync` recovers it. **Two obvious
+  does. **That much still holds. The sentence that followed — *"it is not a delay, the change is
+  gone, and only `resync` recovers it"* — was WRONG, and it was repeated in six documents.** It
+  was written on 2026-09-03, *before the catch-up supervisor existed*, and nobody re-measured it
+  after. `make twopeer-gui` PHASE 13 now does: the waived file lands **~107 s after it was
+  written, with no resync and no operator action.** The mechanism predicts the number — the
+  supervisor doubles its interval after every empty pass, so from a restart the passes fall at
+  roughly t=0, t≈120 s, t≈360 s, and **every harness in this tree asserted on a 90-second window,
+  which expires between the first two by construction.** *A window shorter than the mechanism's
+  period turns a latency into a loss, and the write-up is then confidently about the wrong
+  defect.* No bound is promised: the interval grows with idle time to a 10-minute ceiling, and
+  `resync` / **Pull now** forces it. **Two obvious
   hypotheses are already refuted** (a missing outbound dial; a stale entry in our own pool — the
   evict-then-dial change was REVERTED rather than kept, because a cost justified by a dead
   hypothesis is not a fix). Read
   `docs/architecture/reviews/FIRST-CHANGE-AFTER-RESTART-IS-LOST-2026-09-03.md` before touching
   this — §4 lists what has not been ruled out, and the first question to answer is whether the
   loss is on the send side or the receive side, which nobody has instrumented.
+- **A REMEMBERED ADDRESS IS A HYPOTHESIS, NOT AN AUTHORITY — AND DISCOVERY CANNOT CURRENTLY
+  OVERRIDE ONE** (open, found 2026-09-08 on the first real two-machine run).
+  `dialableAddressFor` (`shellcmd/share_op.go:969`) consults this session's connections, then
+  **the stored declaration**, then discovery — so once an address is recorded, a live mDNS
+  announcement can never correct it, and we dial a stale address forever while the peer announces
+  its real one on the LAN. `observeDevice` (`shellcmd/status.go:173`) is stricter still: stored
+  declaration **only**, discovery nowhere in the reconcile path. Measured: 45 minutes of
+  `connection refused` at a port the peer had moved off, **zero** successful connections, and the
+  operator's folder syncing one way because inbound worked and outbound never came up. The intent
+  is right — a stored address is the only source that survives a restart — and **the error is
+  treating *durable* as *authoritative*.** Where a peer is, is observable; when the stored
+  hypothesis has just been refused, the observation must win and be written back. Reach for this
+  wherever a cached fact outranks a live one.
+- **`ConnectedPeers()` RENDERS "CONNECTED" FOR A PEER WE CANNOT DISPATCH TO, AND AN OPERATOR SAW
+  IT** (open, same run). `observeDevice` sets `st.Connected` from the connection **pool**, and an
+  inbound-only session — they dialled us, we never dialled them — is indistinguishable from a
+  working one. That is the exact state in which sharing is half-broken, and the most likely one,
+  since a dial-by-address authorizes only the dialer (AP63). **The panel and the run log
+  contradicted each other in the same session and the reassuring one was on screen.** Direction
+  belongs on the reading, the way inbound authority already is: a peer we hold no outbound route
+  to must say so, not show a green word.
 - **THE ADDRESS AN OPERATOR TYPES IS A DURABLE FACT AND BELONGS IN THE DECLARATION.** `connect`
   used to put it in `ShellWorkspace.Conns` and the kernel's pool — both process memory — so it
   died with the process and the reconciler had nothing to dial after a restart.
@@ -961,8 +1033,18 @@ one — name the recurring cycle first, then let each step own one lever of it.
   `status`; it had zero readers in this repo before that, which is **D20 aimed at the kernel
   for the fourth time.** The catch-up makes a drop a DELAY, not a loss — it is not
   backpressure, and real backpressure belongs in the kernel's queue.
-  **The RATE ADAPTS, and the three properties are load-bearing** (`nextCatchUpInterval`, a pure
-  function so it is gated without a clock). The receiver cannot see the sender's counter, so
+  **The RATE ADAPTS, and the four properties are load-bearing** (`nextCatchUpInterval`, a pure
+  function so it is gated without a clock). **The CEILING IS DERIVED FROM WHAT A PASS COSTS, not
+  a constant** (`settledCeiling`, added 2026-09-08 on an operator report). The intervals double,
+  so the PASSES land at t=0, 2 min, 6 min, 14 min, 24 min — four empty passes and every folder
+  was on a ten-minute check, *whatever it cost to look*, which on a 1,000-file folder is 0.24 s.
+  The resting interval is now at least 100× a pass (≈1% duty), floored at the base rate and still
+  capped at the 10-minute hard ceiling: a ~1k-file folder rests at **60 s** (which is also
+  Syncthing's default rescan interval), a 10k-file folder at 4 min, a 100k-file folder at the cap
+  as before. `SYNC-LIMITS` had already named this as a known limitation — *"adapts to whether it
+  is finding anything, NOT to folder SIZE"* — and it sat as a limitation rather than a bug
+  because nobody had multiplied the ladder out into wall-clock latency. **A back-off whose
+  ceiling is not derived from a measured cost is a latency budget nobody signed off.** The receiver cannot see the sender's counter, so
   the only local signal is *its own passes*: recovered something → we are behind; recovered
   nothing → we are not. **Recovery is asymmetric on purpose** — back off by doubling to a
   10 min ceiling, return to the 5 s floor in ONE step, because being slow to notice a burst is

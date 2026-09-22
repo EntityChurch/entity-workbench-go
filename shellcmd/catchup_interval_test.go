@@ -33,16 +33,44 @@ func TestNextCatchUpInterval(t *testing.T) {
 			why:  "a pass that recovered files must not wait ten minutes to try again",
 		},
 		{
-			name:    "settled backs off geometrically",
-			current: base, pass: time.Second, recovered: 0,
+			name: "settled backs off geometrically",
+			// A 3 s pass — a folder big enough that backing off buys
+			// something. The ceiling is derived from the pass now
+			// (settledCeiling), so this case has to be in the regime
+			// where a doubling is actually permitted, or it is asserting
+			// the cap rather than the ramp.
+			current: base, pass: 3 * time.Second, recovered: 0,
 			want: base * catchUpBackoffFactor,
 			why:  "an idle folder should cost less over time, not the same forever",
 		},
 		{
-			name:    "back-off is capped",
-			current: MaxCatchUpInterval, pass: time.Second, recovered: 0,
+			name: "back-off is capped by the HARD ceiling for an expensive folder",
+			// 30 s per pass -> derived ceiling 50 min, clamped to the hard
+			// 10-minute cap. This is the only regime the flat constant was
+			// ever right for.
+			current: MaxCatchUpInterval, pass: 30 * time.Second, recovered: 0,
 			want: MaxCatchUpInterval,
 			why:  "a folder must still be checked eventually, however long it has been quiet",
+		},
+		{
+			name: "A CHEAP FOLDER RESTS AT THE BASE RATE, it does not climb to ten minutes",
+			// The operator-visible one, and the reason settledCeiling
+			// exists. A quarter-second pass is a ~1000-file folder. Under
+			// the old flat ceiling this returned 120 s and kept climbing to
+			// 10 minutes over the next few passes — so a change that missed
+			// live delivery could sit unnoticed for ten minutes on a folder
+			// where looking costs 0.24 s.
+			current: base, pass: 240 * time.Millisecond, recovered: 0,
+			want: base,
+			why:  "backing off past the base rate must buy a real saving, and here it buys none",
+		},
+		{
+			name: "the derived ceiling scales WITH the folder",
+			// 2.4 s -> 10,000 files. Ceiling 4 minutes: it may climb past
+			// the base rate, and not to ten minutes.
+			current: 2 * time.Minute, pass: 2400 * time.Millisecond, recovered: 0,
+			want: 4 * time.Minute,
+			why:  "a folder expensive enough to be worth backing off from should back off further",
 		},
 		{
 			name: "the ramp up from the floor is GRADUAL, not a snap to the base rate",
@@ -95,9 +123,12 @@ func TestNextCatchUpInterval(t *testing.T) {
 func TestNextCatchUpInterval_ConvergesFromIdleToBusyInOneStep(t *testing.T) {
 	interval := DefaultCatchUpInterval
 
-	// Back all the way off.
+	// Back all the way off. The pass has to be EXPENSIVE (6 s -> a derived
+	// ceiling of exactly MaxCatchUpInterval) or the loop now correctly
+	// rests at the base rate and never reaches the hard ceiling at all —
+	// which is settledCeiling working, not the ramp failing.
 	for i := 0; i < 30; i++ {
-		interval = nextCatchUpInterval(interval, 10*time.Millisecond, 0)
+		interval = nextCatchUpInterval(interval, 6*time.Second, 0)
 	}
 	if interval != MaxCatchUpInterval {
 		t.Fatalf("after 30 idle passes the interval is %v, want the %v ceiling",

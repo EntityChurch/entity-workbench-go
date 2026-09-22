@@ -484,10 +484,16 @@ exports the model being wrong.
   *the* lever; that was right about the mechanism and wrong about the priority,
   because on a LAN the reconciler plus discovery removes the address problem
   without it.
-- **Conflict semantics are unchanged.** `FILE-REPLICATION-LANDSCAPE.md` §3 still
-  decides whether this becomes a tool people install. A concurrent edit still
-  loses a write silently. Nothing here improves that; it makes the layer above it
-  usable enough that the question can be reached.
+- **Conflict semantics are unchanged *by this document*, and were changed on
+  2026-09-07** — this row used to end *"a concurrent edit still loses a write
+  silently"*, and that is no longer true. A delivery landing on a local edit is
+  detected, recorded and undoable; `keep-both` is available per folder;
+  `SYNC-LIMITS-AND-FAILURE-MODES.md` §5 is now the discussion rather than
+  `FILE-REPLICATION-LANDSCAPE.md` §3. What the reconciler contributes is
+  unchanged: it makes the layer above usable enough that the question can be
+  reached. What is still open is that **a conflict is not propagated to the
+  other peer**, which needs a receiver→owner channel — the same one missing
+  from `Mode: both`.
 - **The adapter interface in §4 is a sketch**, generalized from one implemented
   kind. It is a candidate until a second kind is built against it.
 

@@ -468,7 +468,20 @@ note "peer-b's suggested directory: $(field "$RD" text)"
 # PHASE 6 — accept, gesture two
 # ======================================================================
 log "PHASE 6 — peer-b accepts into a directory it chooses"
-expect_ok "peer-b types the receiving directory" B type '#sync.offer.dir[0]' /received >/dev/null
+RT=$(expect_ok "peer-b types the receiving directory" B type '#sync.offer.dir[0]' /received)
+# ASSERT THE BOX HOLDS IT, before pressing anything. `type` used to report
+# what xdotool SENT, which is a receipt for the keystrokes leaving the
+# driver and says nothing about where they landed — so a run where the
+# operator's directory never reached the control was indistinguishable
+# from one where the app ignored it, and the first evidence either way was
+# nine failures about files at a path nobody had ever accepted into.
+# D25/AP55: a field that prints is not a field that answers.
+TYPED_BACK=$(field "$RT" text)
+if [ "$TYPED_BACK" = "/received" ]; then
+  ok "the directory box holds what was typed"
+else
+  bad "the directory box does NOT hold what was typed — it holds '$TYPED_BACK'. Everything below is measuring the wrong path"
+fi
 expect_ok "peer-b presses Accept" B click '#sync.offer.accept[0]' >/dev/null
 expect_ok "peer-b is told what was accepted and where" B waittext '#sync.note' "Accepted" 60000 >/dev/null
 RN=$(drv B alltext '#sync.note')
@@ -651,6 +664,45 @@ wait_for_file "$RUN/received/asym1.txt" "asym-1" \
   "[receiver restarted] FIRST change after restart arrived" known
 wait_for_file "$RUN/received/asym2.txt" "asym-2" \
   "[receiver restarted] SECOND change after restart arrived"
+
+# ======================================================================
+# PHASE 13 — is the waived change LOST, or merely LATE?
+# ======================================================================
+# The single waived check above says asym1.txt was not on disk 90 seconds
+# after it was written. It does NOT say the file never arrives, and those
+# are very different products: "a sync tool that drops your first change
+# after a restart" and "a sync tool whose first change after a restart can
+# take a couple of minutes". Every document in this repo has described it
+# as the first one, on the strength of a review written on 2026-09-03 —
+# BEFORE the catch-up supervisor existed. Nothing has re-measured it since.
+#
+# So keep waiting. The supervisor starts at DefaultCatchUpInterval and
+# DOUBLES after every pass that recovers nothing (shellcmd/catchup.go,
+# nextCatchUpInterval), so the passes after a restart fall at roughly
+# t=0, 120s, 360s — and the 90s window above expires between the first two
+# by construction. That is a harness window shorter than the mechanism's
+# period, which is a bad reason to call something lost.
+#
+# MEASURED WITH `note`, NEVER `ok`. There is no designed behaviour to
+# assert against here: nothing promises a bound on this latency, and a
+# measurement dressed as a check is how an undesigned behaviour gets
+# recorded as a passing requirement. The waiver above stays exactly as it
+# is either way — this phase reports, it does not absolve.
+log "PHASE 13 — does the waived first-change eventually converge? (measured, not asserted)"
+LATE_CAP=300
+late_i=0
+while [ "$late_i" -lt "$LATE_CAP" ]; do
+  if [ -f "$RUN/received/asym1.txt" ] && \
+     [ "$(cat "$RUN/received/asym1.txt" 2>/dev/null)" = "asym-1" ]; then
+    break
+  fi
+  late_i=$((late_i+1)); sleep 1
+done
+if [ -f "$RUN/received/asym1.txt" ]; then
+  note "the waived first-change CONVERGED on its own, ~$((90+late_i))s after it was written — no resync, no operator action. It is a DELAY, not a loss."
+else
+  note "the waived first-change is STILL ABSENT after ~$((90+LATE_CAP))s. Nothing recovered it on a timer; on this evidence it needs an explicit resync."
+fi
 
 # Both apps must still be alive. A crash mid-run is a hard failure even
 # if every check before it passed — and without this the run can end green
