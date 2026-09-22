@@ -1,17 +1,307 @@
 # entity-workbench-go — status
 
-_Updated: 2026-09-01 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
+_Updated: 2026-09-02 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
-> **Start here:** **§0M — a mount you can actually use**, immediately below, then **§0L**
-> (the GUI can mount a directory, and it remembers your workspace) and **§0J** (it was not a
-> stack overflow, and the reason we said it was is the real finding). Everything after those is
-> the running history. **§0I is superseded by §0J and is kept only so the error is legible.**
+> **Start here:** **§0P — the whole flow, and the wildcard that was hiding the permission
+> stage**, immediately below, then **§0O** (M2, and the subscription that was dead after every
+> restart), **§0N** (the panel threw on every file, and the forensics worked),
+> **§0M** (a mount you can actually use), **§0L** (the GUI can mount a directory, and it
+> remembers your workspace) and **§0J** (it was not a stack overflow, and the reason we said it
+> was is the real finding). Everything after those is the running history. **§0I is superseded by
+> §0J and is kept only so the error is legible.**
 >
 > **What this file is.** The rolling engineering log for entity-workbench-go — our tree, our
 > defects, our decisions — and it is **published**. Working memory that is not about this
 > project's own state lives in `docs/status/`, which publishes nothing: dated snapshots,
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
+
+## §0P NEW (2026-09-02, third pass) — the whole flow, and the wildcard that was hiding a stage
+
+The ask was to make discover → share → permission → mount → change/sync one seamless process, and
+validate it before multi-device testing. It is validated, end to end, with **no wildcard grants
+anywhere** — and turning the wildcard off is what made the afternoon interesting.
+
+### Every cross-peer test we have ever run was under a wildcard
+
+Twenty-four of them, all `peer.OpenAccessGrants()`. That authorizes everything, so the entire
+cross-peer suite establishes that the bytes move and says **nothing** about permission — the one
+stage an operator actually has to perform. The kernel's per-peer mechanism, the V7 v7.62 §8
+handshake policy table at `system/capability/policy/{peer}`, had **zero uses in this repo**. What
+we had instead was `shellboot.Config.OpenAccess`, whose own doc says development-only.
+
+The generalisation is the part to carry: **a permissive fixture does not weaken a test, it deletes
+a stage of the product from the suite** — and the deletion is invisible, because everything
+downstream of the disabled mechanism passes. The count of tests covering that mechanism is zero
+however many run through it. AP63.
+
+### Four things the wildcard was hiding
+
+All measured (`shellboot/policy_probe_test.go`), each with its own arm, and each one an afternoon
+lost if you meet it on real hardware instead:
+
+1. **A sync is MUTUAL authorization.** The receiver dispatches *into* the publisher to subscribe
+   and to fetch blobs; the publisher's subscription engine dispatches the notification *back*
+   into the receiver's `blob-resolve`. Both cross a capability boundary. Grant one direction and
+   the subscription is **accepted** and no file ever arrives — indistinguishable from a working
+   share until someone opens the folder. Every prior test hid this because the receiver was
+   always wildcard, **including the one written specifically to close the capability-delegation
+   gap**, which scopes the sender and leaves the receiver open on purpose.
+2. **The grant is assembled at HANDSHAKE.** A policy written on a live connection is inert until
+   that connection is re-established.
+3. **The peer that DISPATCHES is the peer that must reconnect.** A reconnect by the granter does
+   nothing for the grantee, who dispatches over the connection *it* opened.
+4. **A dial-by-address authorizes the DIALER ONLY.** `sendReciprocalGrant` is gated on
+   `EstablishedViaRendezvousKey()`, and the kernel says why: *"a dial-by-address is asymmetric —
+   one party requested service."* So a two-way sync needs **both** peers to dial, each after the
+   other's policy exists — and the final dial is a step neither verb can perform for the other.
+   `accept` prints the exact command for the other machine, because the symptom otherwise is
+   silence on the side that cannot see the refusal.
+
+### What shipped
+
+`peers` (discover), `share` / `unshare` / `shares`, `offers`, `accept`, `access`. Two of these
+stages had no surface at all before today: `entitysdk/share.go` implements APP-CONVENTION-SHARE in
+full and was called from `share_test.go` and nowhere else, and the policy table was untouched.
+
+Three decisions worth recording:
+
+- **The authorization is the policy table, not `AuthorShare`'s minted token.**
+  `ShareWithdrawalNotice` states that a `system/capability:request`-minted token is **not
+  recallable** — no tree write, so the granter never holds its hash and `revoke` cannot name it.
+  Built on that, `unshare` could not end access and would be lying by its name. A policy entry is
+  a tree write we own.
+- **The offer record is a label, not an authority**, per §2.2 — so seeing an offer and still
+  getting a 403 is the two things being correctly separate rather than a defect.
+- **`access` marks the peer's own row.** The kernel seeds a `*:*` entry keyed on the peer's own
+  identity hash (§6.9a). Unlabelled it reads as a wildcard grant to a 66-character stranger;
+  hidden it would conceal a real grant. It is shown and named.
+
+### Two bugs found in our own new code, both by the test rather than by review
+
+**A reconnect that could leave the peer disconnected.** The first version tore the connection
+down and *then* discovered it had nothing to dial — strictly worse than doing nothing, because it
+turned a share into an outage. It now resolves an address first and leaves the connection alone
+if it has none.
+
+**`ConnectedPeers()` is not a source of dialable addresses.** Its `Address` is the connection's
+*observed* remote address, which for an **inbound** connection is the dialer's ephemeral source
+port. It looks exactly like an address — `127.0.0.1:50026` — and dialling it is refused. The two
+honest sources are the address we recorded when *we* dialled (`connect` writes it) and the peer's
+own mDNS announcement, which advertises the port it listens on.
+
+### One extraction
+
+`chooseDialAddr` / `pickDialHost` / `parseTXTPairs` lived in the Avalonia bridge. The shell's
+`peers` verb was about to be the second consumer, and the dial-address choice is a substrate
+judgement about mDNS announcements rather than anything a renderer owns — so it moved to
+`entitysdk` and the bridge calls it. *DRY the integration, not the renderer.*
+
+### Verified
+
+`make test-each` 10/10. `lint`, `textual`, `reachability`, `gofmt` clean.
+`shellboot/flow_e2e_test.go` runs the whole flow across two peers with **no OpenAccess on either
+side** — discover, share, inspect the permission, read the offer from the other peer, mount,
+accept, write a file, **edit** it, then revoke. Its companion `TestFlow_ShareAloneDeliversNothing`
+is the control arm and the more valuable of the two: it pins that the sender's half alone yields
+an accepted subscription and an empty folder, so a later "simplification" of `accept` into a plain
+sync fails there with the reason attached.
+
+**Not done, named rather than implied:** no GUI surface for any of these verbs — the Local Files
+panel manages mounts and says nothing about shares or syncs. Still one LAN or manual addressing
+(`ext/relay` unlanded upstream). Concurrent edits to one file on two machines remain M3 and
+remain unsafe to assume. The operator recipe is
+`docs/architecture/USAGE-SHARE-A-FOLDER.md`.
+
+## §0O NEW (2026-09-02, second pass) — M2, and the subscription that was dead after every restart
+
+Two peers, one folder, end to end, through the shipped verbs. And on the way, a live defect that
+had been in every build since the subscription wiring was written.
+
+### `sync` — and the engine was already there
+
+`sync <peer> <root>`, `unsync`, `syncs`. The receiving chain is *subscribe to their
+`local/files/{root}/*` with the payload included → `workbench/blob-resolve` → pull the blob
+closure across → dispatch `local/files:write` locally*. Durable half at
+`app/workbench/syncs/{peerID}.{root}`, restored by `shellboot`.
+
+**The reason this was a wiring job and not a build is the finding.**
+`workbench.BlobResolveHandler` is the entire cross-peer materialization pipeline and it had
+**twelve test files** behind it — one-way, bidirectional, burst writes, a 4 MB file, capability
+delegation, late join, self-loop. Every one of those registrations was in a `_test.go`.
+`shellboot` registered ingest and chain-errors and not this one, and `subscription` is
+`ls|inspect|rm` with no create, so **the whole thing was built, tested, and reachable from
+nothing a user could run.**
+
+That is D23 at the **handler** layer, and `make reachability` passes because the sweep asks
+whether a *model* has a surface. A handler is not a model. §0L already noted that a read-only
+surface over a read-write model is invisible to that sweep; this is one further out — no surface
+at all, and nothing looking for it. The question the sweep will not ask for you: *what registers
+this in a shipped binary, and what verb causes it to be used?*
+
+`sync` **refuses without a local mount to receive into.** A sync writes into a mount; it does not
+create one. Choosing where an operator's files land is not a default, and a relationship that
+establishes cleanly and then 404s on every delivery is the failure this repo has now shipped
+twice — the ingest mapping, then the mount binding. The third time it becomes a precondition.
+
+### Every subscription was dead after a restart, and every mount with it
+
+Found while scoping the above, not by any suite.
+
+`subscription.Engine.Load()` rebuilds the engine's runtime index from the
+`system/subscription/{id}` entities in the tree. Its own doc comment says it **must** be called
+after `SetLocationIndex` and before `StartDelivery`, and says why — *"subscriptions are classified
+as PERSISTENT extension state, so the durable copy in the tree is authoritative and the runtime
+index is a derived cache that must be rebuilt on boot."* `entity-core-go`'s daemon calls it.
+`entitysdk.assembleAppPeer` made both neighbouring calls and not that one.
+
+So a reopened peer had every subscription it had ever made sitting in its tree, and none of them
+live. **Every mount in this repo is driven by a subscription**, so the shipped behaviour was: the
+watcher resumes, `mounts` lists it healthy, and no document ever appears again.
+
+That is precisely the end state `workbench/mount_binding.go` was written to fix six days ago,
+reached by a **second independent route the fix could not close** — and the mount-binding work was
+inside this code and did not see it, because it was hunting a fact held in one process's memory
+while this is a fact held in the tree that nothing reads back. Two failures wearing one symptom;
+finding either is no evidence about the other.
+
+**AP39's shape one extension over, and worse in kind.** There the volatile index was the query
+index and `find`/`grep` answered wrongly. Here the volatile index is the subscription engine's,
+and a subscription is not a read path — it is what makes a write *cause* something, so the
+failure is not a wrong answer but no answer.
+
+Two instances of one shape is the ladder's promotion trigger: **D26** is ratified — *a persistent
+store does not make a derived runtime index persistent; name what rebuilds it at open, and gate it
+across a process boundary.* Both instances were **adopt, not build**: the kernel shipped the
+answer and we had never called it, which is D20 pointed at initialization.
+
+**The gate had to be built twice to be worth anything.** Its first version asserted the
+subscription entity was in the reopened tree — which it is, in both builds, always. Only the
+reopened *engine's* subscriber count separates them. And the pattern key is now read back off the
+stored entity rather than reconstructed, because the engine indexes on `sub.Pattern` verbatim and
+the hand-built key was simply wrong: the test's own premise check caught that on the first run and
+reported it as a broken test rather than a broken engine, which is the only reason it did not
+become a false finding.
+
+### A stale status line that said the opposite of the truth
+
+`TestStage3_Case2_Bidirectional`'s header said **"CURRENTLY SKIPPED pending core-team / arch
+investigation"** and *"fully symmetric peer-to-peer does not [work]"*. F9 was closed by core-go at
+`8ad52bc`, the skip came off, and the test has been passing ever since — with that paragraph
+above it. So the file asserted in its own header that the default deployment shape was broken
+while the code beneath it proved nightly that it was not, and the constraint outlived its fix in
+our planning documents. Corrected in place, history kept and marked as history.
+`FILE-REPLICATION-LANDSCAPE.md` §6 inherited the same error and is corrected too.
+
+### What M2 does not cover, named rather than implied
+
+Two peers on **one host** over loopback TCP. Two physical machines is untouched — the addressing
+and NAT story is not started and `ext/relay` is unlanded upstream. **No GUI affordance**: the
+verbs are shell-only, and the Local Files panel still manages mounts and says nothing about syncs.
+And a sync delivers changes from the moment it is established; it does not replay history, which
+the verb prints rather than leaving an operator to watch an empty directory.
+
+### Verified
+
+`make test-each` **10/10** with M2 and the subscription fix in.
+`lint`, `gofmt`, `reachability` clean. The M2 end-to-end gate builds both peers through the real
+`shellboot.Bootstrap` and was **verified to fail before it was trusted** — deleting the
+blob-resolve registration fails it with *"shellboot did not wire the blob-resolve handler"*, which
+is the pre-M2 state reproduced. An earlier draft of that test assembled its own handler list and
+would have stayed green through exactly that deletion; that is the same defect as AP61 one layer
+up, caught in review rather than by a suite.
+
+## §0N NEW (2026-09-02) — the panel threw on every file, and this time the forensics worked
+
+§0M shipped the Files panel and closed by naming what had not been done: *"nobody has driven this
+by hand. It is headless plus the Go suites."* An operator drove it the next morning. The report:
+mounted a folder, saw the files, clicked them, **the preview pane never updated**, and after a few
+more clicks the app died.
+
+Both symptoms are one defect, and it was diagnosed from the run log in a single read.
+
+### One exception, nine times, then the ninth killed it
+
+`FileExplorerPanel.OnRowSelected` formatted the file's mtime with
+`DateTimeOffset.FromUnixTimeSeconds`. The field holds Unix **milliseconds** — every producer
+writes `info.ModTime().UnixMilli()`, in the kernel's watcher, both sites in its operations, and
+our own `mount_sweep.go` — and `FromUnixTimeSeconds` throws above year 9999, which every real
+mtime in milliseconds is. So the handler threw on **every file row**, before reaching
+`LoadPreview` three lines later. That is the dead preview pane, exactly.
+
+The crash is the same fault counted. `MaxContainedUiFaults` is 8; the log holds nine
+`Dispatcher.UnhandledException` records and then an `AppDomain.UnhandledException (terminating)`.
+The operator's *"eventually it just crashed"* is the ninth click.
+
+The field is now `ModifiedAtMillis` end to end — model, bridge DTO, panel — because **a doc
+comment is invisible from the far side of cgo and JSON**, and this one said "a Unix second" while
+every writer disagreed with it. Separately, `FormatMtime` now range-checks: an mtime is a number a
+*filesystem* chose, not one we did, and a row that cannot be dated should lose its date, not the
+operator their session. The unit was the cause; the missing guard is why it was fatal instead of
+ugly.
+
+### Why 138/138 could not see it — two reasons, both worth carrying
+
+**The end-to-end test drove data all the way to the row and never touched a row.**
+`A_Mounted_Directory_Of_Mixed_Kinds_Becomes_Browsable_Files` is a real-session test in the strong
+sense — real directory, real watcher, real subscription, real ingest, real bridge — and every
+assertion in it reads a **row viewmodel**. `OnRowSelected` is reachable only from
+`SelectionChanged`. The test stopped one method call short of the code that renders what it had
+spent seven layers producing, and that gap reads as thorough coverage rather than as a hole.
+
+**And the envelope test's fixture carried a value no producer emits.** It hard-coded
+`"modifiedAt": 1700000000` — plausible-looking, in the seconds range, and written by nobody in
+either tree. So it asserted the decode and could never catch the unit. That is **AP58's shape at
+the level of a value rather than a wrapper**: a fixture that is not what production produces
+cannot fail on the difference. AP58 was measured six days ago on a store wrapper; this is the
+second instance, one layer over, which is what the promotion ladder calls a different shape.
+
+Now: the mount test **selects every row**, and asserts the detail line carries the current year
+(so a unit swap fails rather than silently printing 1970) and that the preview pane updated — the
+operator's own sentence as an assertion. `FileExplorerMtimeTests` covers the formatter directly
+including the `long.MaxValue` arm. **Verified to fail before trusted**: restoring
+`FromUnixTimeSeconds` fails all three with the operator's exception, through the same
+`SelectionChanged → OnRowSelected` route the production stack shows. AP61.
+
+**A near-miss in the gate itself, recorded because it nearly cost the whole exercise.** Inserting
+the new test class immediately above `FileExplorerPanelMountTests` silently stole its
+`[Collection(nameof(BridgeCollection))]` attribute. The first falsification run duly reported
+3 failures — and one of them was *"constructor parameters did not have matching fixture data"*,
+meaning the row-selection arm had never executed. The failure **count** was right and the failure
+**reason** was wrong, and the count alone would have been read as proof. A control run that fails
+for the wrong reason is not a control run.
+
+### The instrument question, answered
+
+The operator asked whether the diagnostic work is paying off. On this one it paid completely,
+and it is worth being precise about which pieces did it:
+
+- **The run log survived.** AP54 moved run logs out of `dist-native/`, which `extract` deletes on
+  every build. The 2026-09-01 crash lost its stderr to exactly that. This one is 3,285 lines at
+  `avalonia/run-logs/run-20260902-083012.log`.
+- **`run-with-dump.sh` was armed without anyone choosing it** — until 2026-09-01 `gui-run` exec'd
+  the bare binary and whether a session had diagnostics depended on which target you typed.
+- **The breadcrumb ring named the click.** The last entry before the fault is
+  `input: press @547,690 on TextBlock "  ENTITY-COMPUTATION-MODEL.html"`.
+- **The fault channel printed `file:line` on the first fault**, so no coredump was opened, no
+  `si_code` was read, and `crash-stack` was not needed. The doctrine's whole point is that the
+  intuitive order wastes days; here the first signal was sufficient and the rest stayed unused.
+- **Containment turned one fatal click into eight recorded ones.** Nine identical stacks is
+  strictly more evidence than dying on the first, which is what the bound was for.
+
+**What did not work is the suite**, and that is the finding. The forensics chain caught a defect
+the tests were structurally unable to reach.
+
+**One honest observation, not acted on.** Containment is silent *to the operator*. Eight faults
+went to the log and the crash trail and nothing appeared on screen, so from the user's seat the
+preview pane was simply dead until the app vanished. That is arguably correct — a UI that spams
+exception dialogs is worse — but "contained" currently also means "invisible", and AP49's rule
+that a surface must say so points the other way. Flagged for a decision rather than changed.
+
+### Verified
+
+`make test-each` **10/10**. Avalonia headless **141/141** (was 138 — the three new tests).
+`lint`, `textual`, `reachability`, `gofmt` clean.
 
 ## §0M NEW (2026-09-01, fifth pass) — a mount you can actually use
 

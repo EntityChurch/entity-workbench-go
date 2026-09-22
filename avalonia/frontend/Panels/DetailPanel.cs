@@ -16,8 +16,12 @@ namespace EntityAvalonia.Panels;
 // MainWindow forwards TreeViewPanel.EntitySelected events here.
 // Pure read-only; no input controls. Selectable text so users can
 // copy hashes, type names, etc.
-public sealed class DetailPanel : UserControl, IDisposable
+public sealed class DetailPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: header + the field list.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 340;
     private readonly long _peerHandle;
     private readonly IPanelHost? _host;
     private readonly Action<string>? _selectedPathHandler;

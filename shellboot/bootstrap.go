@@ -125,12 +125,15 @@ type Config struct {
 //  2. Create the storage directory if missing.
 //  3. Resolve Identity into the peer-config identity binding.
 //  4. Register the workbench handlers (notification-ingest,
-//     chain-errors, revision-converge) so `mount` and `revision follow`
-//     work.
+//     blob-resolve, chain-errors) so `mount` and `sync` work.
+//     (revision-converge used to be here and retired when
+//     `revision:pull` landed in core-go; the list said otherwise for
+//     long enough that it is worth naming the correction.)
 //  5. Construct the AppPeer via entitysdk.CreatePeer.
 //  6. Call localfiles.Engine.Load to re-start any persisted Phase E
 //     mounts (restart-equivalence).
-//  7. Wire the converge handler's AppPeer ref.
+//  7. Restore the workbench half of every mount and every sync — the
+//     source-to-target routing the kernel does not hold.
 //  8. Construct the ShellWorkspace and stash the handler refs on it.
 //
 // Skipping any of these on the frontend side leaves a measurable
@@ -218,10 +221,29 @@ func Bootstrap(ctx context.Context, cfg Config) (*entitysdk.AppPeer, *shellcmd.S
 	// same orchestration declaratively, with no workbench-internal
 	// handler.
 	ingestHandler := workbench.NewNotificationIngestHandler(nil)
+
+	// blob-resolve is the CROSS-PEER half: a subscription on another
+	// peer's local/files/{root}/* prefix delivers here, and this handler
+	// pulls the blob closure across and writes the file to our disk. It
+	// is what makes `sync` work.
+	//
+	// It had twelve test files behind it and no registration outside
+	// them. shellboot wired ingest and chain-errors and not this, and
+	// `subscription` has no create verb, so the entire cross-peer file
+	// pipeline was built, tested, and reachable from nothing a user
+	// could run. That is D23 at the handler layer, where the
+	// reachability sweep does not look because it asks whether a MODEL
+	// has a surface.
+	blobResolveHandler := workbench.NewBlobResolveHandler()
+
 	peerCfg.Handlers = append(peerCfg.Handlers,
 		entitysdk.HandlerRegistration{
 			Pattern: workbench.NotificationIngestPattern,
 			Handler: ingestHandler,
+		},
+		entitysdk.HandlerRegistration{
+			Pattern: workbench.BlobResolvePattern,
+			Handler: blobResolveHandler,
 		},
 		entitysdk.HandlerRegistration{
 			Pattern: workbench.ChainErrorsPattern,
@@ -301,8 +323,21 @@ func Bootstrap(ctx context.Context, cfg Config) (*entitysdk.AppPeer, *shellcmd.S
 		}
 	}
 
+	// The same restoration for the cross-peer side. Only the handler's
+	// source→target routing needs rebuilding here: the subscription
+	// itself is persistent kernel state and the engine rebuilds its
+	// runtime index at open (entitysdk/app.go — it did not until
+	// 2026-09-02, and until then a restart left every mount and every
+	// sync listed as healthy and producing nothing).
+	if restored, problems := workbench.RestoreSyncBindings(ap.Store(), blobResolveHandler); restored > 0 || len(problems) > 0 {
+		for _, p := range problems {
+			fmt.Fprintf(os.Stderr, "warning: sync binding not restored — %s\n", p)
+		}
+	}
+
 	ws := shellcmd.NewShellWorkspace(ap, cfg.LocalAlias, cfg.Identity)
 	ws.NotificationIngest = ingestHandler
+	ws.BlobResolve = blobResolveHandler
 
 	return ap, ws, nil
 }

@@ -105,6 +105,20 @@ func (h *BlobResolveHandler) UnregisterMount(sourcePrefix string) {
 	delete(h.mounts, sourcePrefix)
 }
 
+// LookupMount returns the target prefix registered for a source prefix,
+// or "" when none is. Exact match, not the longest-prefix walk Handle
+// does — this exists so a restore can be verified to have produced a
+// mapping the handler can ROUTE on, and a registration nobody can
+// dispatch against is the same silence it replaced.
+func (h *BlobResolveHandler) LookupMount(sourcePrefix string) string {
+	if !strings.HasSuffix(sourcePrefix, "/") {
+		sourcePrefix += "/"
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.mounts[sourcePrefix]
+}
+
 func (h *BlobResolveHandler) Name() string { return "workbench-blob-resolve" }
 
 // Manifest declares the handler + its internal scope. The internal

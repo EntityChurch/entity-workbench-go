@@ -231,7 +231,7 @@ func buildDiscoveryRender(hp *shellboot.HostedPeer) wb.NearbyPeersRender {
 		if decErr != nil {
 			continue
 		}
-		txt := parseTXTPairs(hint.Text)
+		txt := entitysdk.ParseTXTPairs(hint.Text)
 		pidHint := txt["peer_id_hint"]
 		if pidHint == "" {
 			continue
@@ -239,7 +239,7 @@ func buildDiscoveryRender(hp *shellboot.HostedPeer) wb.NearbyPeersRender {
 		if pidHint == localPID {
 			continue
 		}
-		dialAddr := chooseDialAddr(hint, txt)
+		dialAddr := entitysdk.DialAddressForHint(hint)
 		_, alreadyConnected := connectedPIDs[pidHint]
 		out = append(out, wb.NearbyPeerEntry{
 			PeerID:    pidHint,
@@ -255,68 +255,12 @@ func buildDiscoveryRender(hp *shellboot.HostedPeer) wb.NearbyPeersRender {
 	return wb.NearbyPeersRender{Entries: out}
 }
 
-// chooseDialAddr picks the URL form for AppPeer.Connect. The mDNS hint
-// carries a proto TXT (key "proto") with comma-separated names per
-// EXTENSION-DISCOVERY §3.2 — workbench v1 ships profile_refs "tcp" and
-// "ws", which are also the protocol names. Prefer ws for browser
-// interop; fall back to TCP otherwise.
-//
-// Host preference: a routable IPv4 from the hint beats the announced
-// mDNS HostName, because the HostName is the canonical `.local.` form
-// (`peer-host.lan.local.`) and resolving that requires nss-mdns /
-// avahi-daemon on the dialing host. Falling back to HostName when no
-// IPv4 was announced keeps loopback / IPv6-only LANs working. (IPv6
-// fallback is third — many home routers fail IPv6 LAN reachability.)
-func chooseDialAddr(hint entitysdk.MDNSEndpointHint, txt map[string]string) string {
-	host := pickDialHost(hint)
-	if host == "" || hint.Port == 0 {
-		return ""
-	}
-	proto := txt["proto"]
-	if proto == "ws" || proto == "wss" {
-		return fmt.Sprintf("ws://%s:%d/ws", host, hint.Port)
-	}
-	return fmt.Sprintf("tcp://%s:%d", host, hint.Port)
-}
-
-// pickDialHost selects the most-dial-friendly host string from the
-// hint: first non-empty IPv4 → first non-empty IPv6 → HostName.
-func pickDialHost(hint entitysdk.MDNSEndpointHint) string {
-	for _, ip := range hint.IPv4 {
-		if ip != "" {
-			return ip
-		}
-	}
-	for _, ip := range hint.IPv6 {
-		if ip != "" {
-			// Bracket per net.Dial's host:port grammar.
-			return "[" + ip + "]"
-		}
-	}
-	return hint.HostName
-}
-
-// parseTXTPairs splits "key=value" entries (RFC 6763 §6 / §3.2). Used
-// because we now decode the endpoint_hint into the full struct
-// ourselves; the TXT lookup table that core-go's DecodeEndpointHint
-// returned is no longer part of our decode path.
-func parseTXTPairs(txt []string) map[string]string {
-	out := make(map[string]string, len(txt))
-	for _, t := range txt {
-		i := -1
-		for k, c := range t {
-			if c == '=' {
-				i = k
-				break
-			}
-		}
-		if i < 0 {
-			continue
-		}
-		out[t[:i]] = t[i+1:]
-	}
-	return out
-}
+// The dial-address choice and the TXT parser used to live here. They
+// moved to entitysdk (DialAddressForHint / DialHostForHint /
+// ParseTXTPairs) on 2026-09-02, when the shell's `peers` verb became the
+// second consumer — AGENTS.md: DRY the integration, not the renderer.
+// The reasoning about IPv4-before-HostName (a `.local.` name needs
+// nss-mdns on the DIALING host) moved with them.
 
 //export DiscoveryClose
 func DiscoveryClose(h C.int64_t) {

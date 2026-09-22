@@ -73,6 +73,23 @@ type ShellWorkspace struct {
 	// not concurrently mutated across shells today.
 	mountSubs map[string]*entitysdk.RawSubscription
 
+	// syncSubs holds the remote-prefix subscription per established
+	// inbound sync, keyed by workbench.SyncBindingKey, so `unsync` can
+	// cancel exactly the one it created. Same shape and same reasoning
+	// as mountSubs above.
+	//
+	// A sync RESTORED at startup has no entry here and is not broken:
+	// the subscription is persistent kernel state that the engine
+	// rebuilds at open, so the handle simply lives somewhere this
+	// workspace does not. `SyncRow.Live` reports the distinction rather
+	// than letting a surface read "no handle" as "dead".
+	syncSubs map[string]*entitysdk.RawSubscription
+
+	// BlobResolve is the workbench cross-peer materialization handler
+	// used by the `sync` verb. Bound at workspace construction by
+	// shellboot; nil when the workbench handlers aren't wired.
+	BlobResolve *workbench.BlobResolveHandler
+
 	// OnConnAdded / OnConnRemoved, when non-nil, are invoked after
 	// addConn / removeConn (remote connections only — the local peer
 	// is added directly during NewShellWorkspace and does not fire
@@ -104,7 +121,31 @@ func NewShellWorkspace(local *entitysdk.AppPeer, localAlias, identity string) *S
 		peerMap:   map[string]string{localID: localAlias},
 		Identity:  identity,
 		mountSubs: map[string]*entitysdk.RawSubscription{},
+		syncSubs:  map[string]*entitysdk.RawSubscription{},
 	}
+}
+
+// registerSyncSub records the remote-prefix subscription for an
+// established sync so unsync can later cancel it. Overwrites any prior
+// entry (re-syncing the same pair).
+func (ws *ShellWorkspace) registerSyncSub(remotePeerID, root string, sub *entitysdk.RawSubscription) {
+	if ws.syncSubs == nil {
+		ws.syncSubs = map[string]*entitysdk.RawSubscription{}
+	}
+	ws.syncSubs[workbench.SyncBindingKey(remotePeerID, root)] = sub
+}
+
+// takeSyncSub removes and returns the subscription for a sync, or nil.
+// Returning it rather than closing it keeps the error handling at the
+// caller, where the outcome struct that has to carry it lives.
+func (ws *ShellWorkspace) takeSyncSub(remotePeerID, root string) *entitysdk.RawSubscription {
+	key := workbench.SyncBindingKey(remotePeerID, root)
+	sub, ok := ws.syncSubs[key]
+	if !ok {
+		return nil
+	}
+	delete(ws.syncSubs, key)
+	return sub
 }
 
 // registerMountSub records the source-prefix subscription for a mounted

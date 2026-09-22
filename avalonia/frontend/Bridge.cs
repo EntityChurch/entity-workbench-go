@@ -611,6 +611,46 @@ public static class Bridge
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "LocalFilesDefaultExclude")]
     public static extern IntPtr LocalFilesDefaultExclude();
 
+    // --- Share / sync (the folder-sharing flow) --------------------------
+    //
+    // One export per ShellWorkspace operation, same operation the shell
+    // verb calls. No handle: shares and syncs are config, written when an
+    // operator acts and then still — the same reason LocalFilesRender is
+    // handle-free. Mount CONTENTS churn and have a handle; mount
+    // AGREEMENTS do not.
+    //
+    // ShareOffers and ShareAccept reach the NETWORK — they re-establish a
+    // connection and dispatch to a remote peer, so they can take seconds.
+    // Both are still synchronous, per AP31 (an async cgo export would have
+    // to copy every C-owned argument into Go memory before launching its
+    // goroutine, and a `*C.char` read on the goroutine is a use-after-free
+    // that reads as the empty string). SharePanel keeps the UI alive by
+    // calling them on a thread-pool worker instead.
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShareRender")]
+    public static extern IntPtr ShareRender(long peerHandle);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShareOffers", CharSet = CharSet.Ansi)]
+    public static extern IntPtr ShareOffers(long peerHandle, string peer);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShareCreate", CharSet = CharSet.Ansi)]
+    public static extern IntPtr ShareCreate(long peerHandle, string root, string peer, string title);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShareRevoke", CharSet = CharSet.Ansi)]
+    public static extern IntPtr ShareRevoke(long peerHandle, string root, string peer);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShareAccept", CharSet = CharSet.Ansi)]
+    public static extern IntPtr ShareAccept(long peerHandle, string peer, string root);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShareUnsync", CharSet = CharSet.Ansi)]
+    public static extern IntPtr ShareUnsync(long peerHandle, string peer, string root);
+
+    // The reciprocal dial. Pass address="" to let the workspace resolve
+    // one (a peer we have dialled before, or an mDNS announcement); pass
+    // a typed address when it reports needsAddress. Network-bound.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShareComplete", CharSet = CharSet.Ansi)]
+    public static extern IntPtr ShareComplete(long peerHandle, string peer, string address);
+
     // File explorer: one mount's CONTENTS, and unlike LocalFilesRender
     // above this one IS a handle. The distinction is the event source. A
     // mount's config is written once and does not move; a mount's

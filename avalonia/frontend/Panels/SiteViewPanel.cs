@@ -47,8 +47,12 @@ namespace EntityAvalonia.Panels;
 // persistent stacks. If sidebar grows past ~50 rows or nav rebuild
 // dominates frame time, lift the in-place-replace shape from
 // MarkdownFilesPanel.RowsPathSetMatches.
-public sealed class SiteViewPanel : UserControl, IDisposable
+public sealed class SiteViewPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: sidebar of pages beside a page body.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 460;
     private readonly long _peerHandle;
     private readonly long _handle;
     private readonly string _siteID;

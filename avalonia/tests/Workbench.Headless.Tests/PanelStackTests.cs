@@ -139,6 +139,15 @@ public sealed class PanelStackTests
         // the invariants here ensures a future "just use star" revert
         // would fail the test instead of silently re-opening the
         // crash class.
+        //
+        // The assertion is a RANGE, not equality with SlotMinHeight.
+        // It used to be equality, which was a proxy that held only
+        // while no panel declared a floor through IPanelPreferredHeight
+        // — and every panel declaring one is the fix for the clipping
+        // bug (see PanelStackScrollTests). What protects against the
+        // crash is that the row's floor is positive and bounded, which
+        // is what SlotMinHeightFor's clamp guarantees and what this now
+        // states directly.
         var host = new TestHost();
         var stack = new PanelStack(
             _bridge.DefaultPeer,
@@ -149,7 +158,7 @@ public sealed class PanelStackTests
             for (int i = 0; i < 3; i++)
             {
                 var row = stack.SlotRowForTests(i);
-                Assert.Equal(PanelStack.SlotMinHeight, row.MinHeight);
+                Assert.InRange(row.MinHeight, PanelStack.SlotMinHeight, PanelStack.SlotMaxHeight);
                 Assert.Equal(PanelStack.SlotMaxHeight, row.MaxHeight);
             }
         }
@@ -199,11 +208,16 @@ public sealed class PanelStackTests
     public void Eight_Panels_Mount_Without_Crashing()
     {
         // Cross-check: with star rows + MinHeight + ScrollViewer +
-        // viewport-bound Grid.Height, adding 8 panels (total
-        // 8*200 + 7*4 = 1628 px content_min) must not throw or
+        // viewport-bound Grid.Height, adding 8 panels must not throw or
         // crash regardless of viewport. Previously, with raw
         // star-weighted rows in an unbounded splitter context, deep
         // splitter drags risked the layout-engine recursion.
+        //
+        // The content_min is now 8 * the DECLARED floor of a detail
+        // panel rather than 8 * 200 — every panel declares one, so the
+        // arithmetic the old comment did (8*200 + 7*4 = 1628) no longer
+        // describes this stack. The row assertion below is a range for
+        // the same reason; see Slot_Rows_Have_MinHeight_And_MaxHeight_Pinned.
         var host = new TestHost();
         var stack = new PanelStack(_bridge.DefaultPeer, host);
         try
@@ -216,7 +230,7 @@ public sealed class PanelStackTests
             for (int i = 0; i < 8; i++)
             {
                 var row = stack.SlotRowForTests(i);
-                Assert.Equal(PanelStack.SlotMinHeight, row.MinHeight);
+                Assert.InRange(row.MinHeight, PanelStack.SlotMinHeight, PanelStack.SlotMaxHeight);
             }
         }
         finally

@@ -76,8 +76,12 @@ namespace EntityAvalonia.Panels;
 //
 // No peer handle: a Mode A2 consumer is not a peer (§6.5.3). The
 // registry factory passes one and this panel ignores it, visibly.
-public sealed class BrowserPanel : UserControl, IDisposable
+public sealed class BrowserPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: three columns of chain detail beside a rendered page body.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 520;
     // A published site's body is authored content and can be long. Same
     // rule as SiteViewPanel: no single SelectableTextBlock over ~500
     // inlines.

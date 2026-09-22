@@ -52,11 +52,23 @@ public sealed class PeerConnectionsPanelTests
     }
 
     [AvaloniaFact]
-    public void Mount_Without_ListenAddr_Hides_Nearby_Section()
+    public void Mount_Without_ListenAddr_Says_Why_Discovery_Is_Off()
     {
         // BridgeFixture's default peer is constructed with Listen="" so
-        // discovery is disabled; the panel should mark the discovery
-        // handle as -1 and have zero nearby entries.
+        // discovery is disabled; the panel marks the discovery handle -1
+        // and has zero nearby entries.
+        //
+        // It used to HIDE the whole section in that case — header, list
+        // and placeholder all `IsVisible = _discoveryHandle >= 0` — and
+        // this test was named for that behaviour while asserting only on
+        // the handle, so it could not see the change either way. An
+        // operator launched the GUI without a listener, found no
+        // discovery UI anywhere, and reasonably concluded mDNS was not
+        // implemented. "Discovery is off" and "discovery found nobody"
+        // are different claims and both rendered as nothing.
+        //
+        // AP45/AP59: an absence carries its reason. The section stays,
+        // and the placeholder names the flag that turns it on.
         var panel = new PeerConnectionsPanel(_bridge.DefaultPeer);
         var window = new Window { Content = panel, Width = 400, Height = 300 };
         window.Show();
@@ -64,6 +76,15 @@ public sealed class PeerConnectionsPanelTests
         Assert.True(panel.DiscoveryHandleForTests < 0,
             $"expected discovery handle to be -1 (disabled); got {panel.DiscoveryHandleForTests}");
         Assert.Equal(0, panel.NearbyCountForTests);
+
+        Assert.True(panel.NearbyHeaderVisibleForTests,
+            "the Nearby peers header must stay visible when discovery is off — hiding it is "
+            + "indistinguishable from the feature not existing");
+        Assert.True(panel.NearbyPlaceholderVisibleForTests,
+            "the placeholder must be visible to carry the reason");
+        var text = panel.NearbyPlaceholderForTests;
+        Assert.Contains("--listen", text);
+        Assert.DoesNotContain("Searching", text);
     }
 
     [AvaloniaFact]

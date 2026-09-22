@@ -1003,6 +1003,34 @@ func assembleAppPeer(bo *builtOptions) (*AppPeer, error) {
 	// Pattern mirrors entity-core-go/cmd/entity-peer/main.go:169-176.
 	if bo.subEngine != nil {
 		bo.subEngine.SetLocationIndex(p.LocationIndex())
+
+		// Rebuild the engine's runtime index from the tree. Subscriptions
+		// are PERSISTENT extension state: the entity at
+		// `system/subscription/{id}` is authoritative and the engine's
+		// `pathIndex` is a derived cache, so a reopened peer has every
+		// subscription it ever made and none of them are live until this
+		// runs. The kernel says so in Load's own doc comment — "must be
+		// called after SetLocationIndex and before StartDelivery" — which
+		// is exactly this position, and `entity-core-go`'s daemon calls it.
+		// We did not, from the day this wiring was written.
+		//
+		// **This is AP39's shape one extension over**, and worse in kind.
+		// There the volatile index was the query index and the symptom was
+		// `find`/`grep` going blind to everything written before the
+		// process started — a read path answering wrongly. A subscription
+		// is not a read path; it is what makes a write *cause* something.
+		// Every mount in this repo is driven by one, so before this call a
+		// restart left the watcher running, the mount listed as healthy,
+		// and no document ever produced again — the same end state
+		// workbench/mount_binding.go was written to fix, reached by a
+		// second independent route that fix could not close.
+		//
+		// Gate: entitysdk/subscription_restart_test.go, which asserts on
+		// the ENGINE's registered set rather than on the tree, because the
+		// tree keeps the entity either way and a test that re-read it
+		// would pass against the broken build.
+		bo.subEngine.Load()
+
 		bo.subEngine.Deliver = subscription.MakeDeliveryFunc(
 			p.Keypair(), p.Identity(), p.Store(), p.LocationIndex(), p.Dispatcher(),
 		)

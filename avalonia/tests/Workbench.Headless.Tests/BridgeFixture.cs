@@ -43,6 +43,15 @@ public sealed class BridgeFixture : IDisposable
         // `workbench/browse_config_test.go`.
         EntityAvalonia.Panels.BrowserPanel.AutoPinOnOpen = false;
 
+        // Same rule, one panel over: no suite in this assembly dials
+        // anything by itself. SharePanel completes the reciprocal dial
+        // automatically when a peer it shares with reconnects, which is
+        // correct in the app and is a suite reaching the network here.
+        // In-process flag rather than an env var — Go captures its
+        // environment at process start, so a C# SetEnvironmentVariable
+        // never reaches the bridge.
+        EntityAvalonia.Panels.SharePanel.AutoDialOnConnect = false;
+
         var config = new BridgeConfig
         {
             Identity = "",

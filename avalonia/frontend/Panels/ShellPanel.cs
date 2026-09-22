@@ -36,8 +36,12 @@ namespace EntityAvalonia.Panels;
 //      once; never re-parented
 //   P4 bounded scrollback — defensive cap on _scrollbackRows so a
 //      command flood can't blow inline-recursion limits (AP8)
-public sealed class ShellPanel : UserControl, IDisposable
+public sealed class ShellPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: prompt + enough scrollback that a command and its output are visible together.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 360;
     private readonly long _peerHandle;
     private readonly IPanelHost _host;
     private readonly long _handle;

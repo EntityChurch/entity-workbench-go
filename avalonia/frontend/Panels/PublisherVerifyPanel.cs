@@ -40,8 +40,12 @@ namespace EntityAvalonia.Panels;
 // No peer handle: a Mode A2 consumer is not a peer. The panel is
 // constructed with one only because PanelRegistry's factory signature
 // has one; it is ignored, deliberately and visibly.
-public sealed class PublisherVerifyPanel : UserControl, IDisposable
+public sealed class PublisherVerifyPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: origin form + the verification chain, which is a long single column.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 420;
     // P4 (bounded list) — a published site's committed key set is
     // unbounded. Show the first MaxKeysShown and say so; a truncated
     // list that does not announce itself reads as a complete one, which

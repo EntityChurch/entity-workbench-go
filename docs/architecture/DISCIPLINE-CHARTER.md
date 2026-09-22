@@ -81,7 +81,7 @@ L0-L3's actual behavior gets documented forensically.
 
 ---
 
-## 2. The 24 disciplines
+## 2. The 26 disciplines
 
 D1-D11 are inherited verbatim from the entity-OS discipline charter
 (originating in godot-entity-core-rust, ratified by egui-entity-core-rust).
@@ -576,6 +576,56 @@ site", refuses to rank non-code stack words as return addresses, and
 states in its own output when it is scanning without a live stack
 pointer and therefore cannot distinguish live frames from stale bytes.
 
+**D26 — A persistent store does not make a DERIVED RUNTIME INDEX
+persistent. For every index built over the tree, name what rebuilds it at
+open, and gate it across a process boundary.**
+*Source:* two instances, same failure, different extension — which is
+what promotes this out of the catalog. (1) **AP39**, 2026-08-23: the
+three query indexes are in-memory and fed only by this process's writes,
+so `-storage sqlite` gave a tree that survived a restart and an index
+that did not; `find` / `grep` / `compute aggregate` were blind to
+everything written before the process started while `ls` listed it
+happily. (2) **AP62**, 2026-09-02: the **subscription engine's**
+`pathIndex` is the same shape, and worse in kind. `Engine.Load()` exists,
+its doc comment states it "must be called after SetLocationIndex and
+before StartDelivery", `entity-core-go`'s own daemon calls it, and
+`entitysdk.assembleAppPeer` did all three neighbouring calls and not that
+one — so every subscription a peer ever made was in its tree and none of
+them were live after a restart.
+*Why:* the failure is silent in both directions. The durable half is
+intact, so every check that reads the tree passes; the derived half is
+empty, so the behaviour that depends on it simply does not happen. For a
+read index the symptom is a wrong answer, which is bad. For a
+**subscription** index there is no answer at all, because a subscription
+is not a read path — it is what makes a write *cause* something. Every
+mount in this repo is driven by one, so the observable symptom was a
+mount that listed as healthy, kept its watcher, and never produced
+another document. That is the same end state
+`workbench/mount_binding.go` was written to fix, reached by a second
+independent route that fix could not close — and the mount-binding work
+did not find it, because it was looking for a fact held in memory rather
+than an index that failed to rebuild.
+*How:*
+- When you add anything derived from the tree — an index, a routing map,
+  a cache, a registration — the question to answer **in the same change**
+  is *what rebuilds this at open*. Not later; the answer is cheapest
+  while the shape is in your head and it never gets written afterwards.
+- **Grep the dependency for a `Load` / `Rebuild` / `Restore` you are not
+  calling** before concluding you need to build one. Both instances were
+  *adopt*, not build: the kernel shipped the answer and we had simply
+  never called it. D20 priced against the substrate; this is D20 pointed
+  at initialization specifically.
+- **The gate has to cross a process boundary.** In-process both
+  behaviours are identical, so a same-process test is green either way.
+  Close and reopen, then assert on the **derived structure**, not on the
+  tree — the tree keeps its copy regardless, so a test that re-reads it
+  passes against the broken build.
+*Enforcement:* `entitysdk/subscription_restart_test.go` (subscriptions)
+and `entitysdk/query_index_restart_test.go` (query). Both open a
+persistent store twice and assert on the index rather than the entity.
+Backlog **PR-2** is the sweep this discipline generalizes: enumerate every
+read path and every derived index a store serves, and restart-cover each.
+
 ---
 
 ## 3. The ten review questions (run on every diff)
@@ -618,7 +668,7 @@ Short enough to run on every change. Six inherited, four substrate-native.
 
 ---
 
-## 4. The anti-pattern catalog (AP1-AP60)
+## 4. The anti-pattern catalog (AP1-AP64)
 
 Each a real defect that shipped or a claim that was routed, diagnosed, and
 is now pinned by a regression test.
@@ -862,6 +912,52 @@ mutex, which is the whole reason the looped form replaced the single-shot one.
 `TestExplorer_WakeSurvivesAMountSwitch` guards the fix's own hazard — the first correction cleared
 the renderer's callback on every re-bind, which would have left a panel live-updating for exactly
 one mount and silently static for every one chosen afterwards.
+
+| AP61 | `FileExplorerPanel.OnRowSelected` (`avalonia/frontend/Panels/FileExplorerPanel.cs`), shipped 2026-09-01 in the same commit as the panel, found by the operator the next morning | **An end-to-end test that drives data to the last viewmodel and never SELECTS a row has not tested the panel — and a fixture value the production writer never emits cannot fail on a unit mismatch.** The field carried Unix **milliseconds** (every producer writes `info.ModTime().UnixMilli()` — `ext/localfiles/watcher.go`, `ext/localfiles/operations.go` ×2, our own `mount_sweep.go`), was *documented* as "a Unix second", and the renderer called `DateTimeOffset.FromUnixTimeSeconds`, which throws for any date past year 9999 — i.e. for every real mtime. So **every file row an operator clicked threw**, the preview pane never updated (the throw is upstream of `LoadPreview`), and the **ninth** click ended the process, because `MaxContainedUiFaults` is 8. **Two independent reasons the suite could not see it, and both generalise.** (1) `A_Mounted_Directory_Of_Mixed_Kinds_Becomes_Browsable_Files` is a genuinely strong real-session test — real directory, real watcher, real ingest, real bridge — and it asserted on **row viewmodels**, stopping one method call short of the code that renders a row. Crossing seven layers to the data and never triggering the display is a gap that reads as thorough coverage. (2) The envelope test hard-coded `"modifiedAt": 1700000000` — a plausible-looking **seconds** value that no producer in either tree emits — so it asserted the decode and could never catch the unit. This is AP58's shape at the level of a *value* rather than a *wrapper*: **a fixture that is not what production produces cannot fail on the difference.** Two rules. **Put the unit in the field name when it crosses a boundary** (`ModifiedAtMillis`), because a doc comment is invisible from the other side of cgo and JSON. **And a data value must not be able to end the process**: an mtime is a number a *filesystem* chose, so the render path guards the range and prints `mtime out of range (n)` rather than throwing — the unit bug was the cause, the missing guard is why it was fatal instead of ugly. | D23, D10, D19, D24 |
+
+| AP62 | `entitysdk/app.go`'s subscription wiring, from the day it was written until 2026-09-02 — found while scoping M2, not by any suite | **Nothing in this repo called `subscription.Engine.Load`, so every subscription a peer made was in its tree and dead after a restart.** The engine's `pathIndex` is a derived runtime cache over `system/subscription/{id}` entities. `Load()` rebuilds it; its own doc comment says it "must be called after SetLocationIndex and before StartDelivery" and gives the reason ("subscriptions are classified as PERSISTENT extension state"); `entity-core-go`'s `cmd/entity-peer` calls it. `assembleAppPeer` called `SetLocationIndex`, then set `Deliver`, then `StartDelivery` — the two calls on either side of the gap, and not the one in it. **This is AP39's shape one extension over and worse in kind**: a volatile *read* index answers wrongly, which is bad; a volatile *subscription* index means the write causes nothing at all, silently. Every mount here is driven by a subscription, so the shipped symptom was a restarted peer whose watcher resumed, whose `mounts` listed it healthy, and which never produced another document — **the exact end state `workbench/mount_binding.go` had just been written to fix, reached by a second route that fix could not close.** Two things worth carrying beyond the fix. **(1) The mount-binding work was in this code and missed it**, because it was hunting a fact held in one process's memory, and this is a fact held in the tree that nothing reads back — a different failure wearing the same symptom, and finding one is not evidence about the other. **(2) The measurement had to cross a process boundary AND assert on the derived structure.** The first draft of the gate asserted the subscription entity was in the reopened tree; it was, always, in both builds. Only `SubscriberCountForPrefix` on the reopened engine separates them — and the test states its own premise in pass 1 (a non-zero count immediately after subscribing) so a spelling error in the pattern reports as a broken test rather than as a broken engine, which is what it did on the first run. | D26, D20, D10, D19 |
+
+| AP63 | the whole cross-peer surface, from the first Stage-3 test until 2026-09-02 — every sync this repo has ever run ran under a wildcard | **Twenty-four cross-peer tests establish that the transport works and none of them tested permission, because all twenty-four run under `peer.OpenAccessGrants()`.** A wildcard authorizes everything, so a green cross-peer suite says the bytes move and says nothing about the stage an operator actually performs. The kernel's per-peer mechanism — the V7 v7.62 §8 handshake policy table at `system/capability/policy/{peer}`, unioned into the grant set by `AssembleInboundGrants` — had **zero uses in this repo**; what we had instead was `shellboot.Config.OpenAccess`, whose own doc says development-only. Turning the wildcard off surfaced four facts in one afternoon, none of them guessable and each one a wasted day if met on real hardware. **(1) A sync is MUTUAL authorization.** The receiver dispatches into the publisher to subscribe and fetch; the publisher's subscription engine dispatches the notification back into the receiver's `blob-resolve`. Grant one direction and the subscription is ACCEPTED and no file ever arrives — indistinguishable from a working share until someone opens the folder. Every prior test hid this because the receiver was always wildcard, *including the one written specifically to close the capability-delegation gap*, which scopes the sender and leaves the receiver open on purpose. **(2) The grant is assembled at HANDSHAKE**, so a policy written on a live connection is inert until the connection is re-established. **(3) The peer that DISPATCHES is the peer that must reconnect** — a reconnect by the grantER refreshes nothing the grantEE dispatches over, because the grantee uses its own pooled outbound connection. **(4) Over a dial-by-address, authorization is ONE-DIRECTIONAL by design**: `Connection.sendReciprocalGrant` is gated on `EstablishedViaRendezvousKey()`, and the kernel says why — *"a dial-by-address is asymmetric — one party requested service"*. So a working two-way sync needs BOTH peers to dial, each after the other's policy exists, and the final dial is a step neither verb can perform for the other. The generalisation: **a permissive test fixture does not weaken a test, it deletes a stage of the product from the suite** — and the deleted stage is invisible, because everything downstream of it passes. When a fixture disables a mechanism wholesale (a wildcard grant, a disabled verifier, a bypassed check), that mechanism has no coverage at all, and the count of tests over it is zero however many tests run through it. | D26, D10, D19, D23 |
+
+| AP64 | `avalonia/frontend/Panels/*` — every panel but one, from the multi-panel stack landing until 2026-09-02 | **An opt-in sizing contract that only one implementer opted into, so the layout was correct and the app was unusable.** `PanelStack` sizes its Grid to `max(viewport, sum-of-slot-minimums)` and a slot's minimum is whatever its panel declares through `IPanelPreferredHeight`. The interface's own doc said *"implement it only when the default slot height genuinely does not work — most panels are text or lists, they reflow"*, which is false of every panel in this app: the cheapest one has ~320px of fixed chrome and `PeerConnectionsPanel` has ~540px. `ProgramPanel` was the sole implementer, so three ordinary panels summed to 608px against a ~900px viewport, the Grid was pinned to the viewport, each row got ~297px, and content below the fold was **clipped with nothing to scroll** — while the stack's scrollbar rendered permanently (`Visible` + `AllowAutoHide=false`) and inert. The operator's report was *"the GUI doesn't scroll, so I have to close every panel and have only one"*, which is the exact and only workaround. Three things to carry. **A default that is wrong for every caller is not a default, it is a bug with a docstring** — and prose telling implementers to skip a contract is how it stays unimplemented. **A test that pins a proxy for an invariant fails when the invariant is fixed**: `Slot_Rows_Have_MinHeight_And_MaxHeight_Pinned` asserted `MinHeight == SlotMinHeight` to protect a zero-collapse SIGSEGV mitigation whose real requirement is `0 < MinHeight <= SlotMaxHeight`, so the two tests guarding the crash class went red on the fix and read momentarily like a regression. **And nothing in the suite could see any of this**, because every layout test mounted one panel or asserted on row definitions rather than on whether a scroll viewer's extent exceeded its viewport — the one measurement that distinguishes a scrollbar from a picture of a scrollbar. | D23, D20 |
+
+*Enforcement (AP64):* `avalonia/tests/.../PanelStackScrollTests.cs`.
+`Every_Registered_Panel_Declares_A_Height_Floor` walks `PanelRegistry.All()` and **collects**
+every panel with no floor before failing (AP15 — a fail-fast loop yields a lower bound), so a
+new panel that forgets is named the first time the suite runs rather than the first time an
+operator opens a second panel. `Three_Panels_In_A_Normal_Window_Make_The_Stack_Scrollable`
+asserts `Extent.Height > Viewport.Height` at a realistic window size, and
+`One_Panel_..._Does_Not_Scroll` is its control arm — without it a stack that always overflows
+would pass, which is its own defect.
+
+*Enforcement (AP63):* `shellboot/flow_e2e_test.go` runs discover → share → permission →
+mount → edit → sync → revoke across two peers with **no `OpenAccess` on either side**, so
+every grant is one `share` or `accept` actually wrote. Its companion
+`TestFlow_ShareAloneDeliversNothing` is the control arm and the more valuable of the two: it
+pins that the sender's half alone yields an accepted subscription and an empty folder, so a
+later "simplification" of `accept` into a plain sync fails there with the reason attached.
+`shellboot/policy_probe_test.go` keeps the four measurements themselves, each with the arm
+that establishes it.
+
+*Enforcement (AP62):* `entitysdk/subscription_restart_test.go` — subscribe on a
+SQLite-backed peer, close, reopen, assert the ENGINE reports the subscriber. Verified
+failing before the fix. The pattern key is read back off the stored entity rather than
+reconstructed, because the engine indexes on `sub.Pattern` verbatim and a hand-built key
+tests this test's spelling instead of the engine's state.
+
+*Enforcement (AP61):* `FileExplorerPanelMountTests.A_Mounted_Directory_Of_Mixed_Kinds_Becomes_Browsable_Files`
+now **selects every row** after asserting on them, and asserts the detail line carries the current
+year (so a seconds/milliseconds swap fails here rather than silently printing 1970) and that the
+preview pane updated — the operator's *"the little side panel that said select a file didn't ever
+update"* as an assertion. `FileExplorerMtimeTests` covers the formatter directly, including the
+`long.MaxValue` arm for the guard. **Verified to fail before it was trusted**: restoring
+`FromUnixTimeSeconds` fails all three with the operator's own exception, through the same
+`SelectionChanged → OnRowSelected` route the production stack shows.
+**Note the near-miss in the gate itself** — inserting the new test class immediately above
+`FileExplorerPanelMountTests` silently stole its `[Collection(nameof(BridgeCollection))]`
+attribute, so the first falsification run "failed" on missing fixture data and the row-selection
+arm never executed. A control run that fails for the wrong reason is not a control run; read the
+failure message, not the failure count.
 
 *Enforcement (AP59):* `workbench/file_explorer_model_test.go::TestExplorer_SummarySeparatesIngestedFromTotal`
 pins the three-number split, and `TestExplorer_StatusNamesTheReason` pins that a row without a

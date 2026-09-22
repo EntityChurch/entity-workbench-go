@@ -27,8 +27,12 @@ namespace EntityAvalonia.Panels;
 // Lifecycle: TreeOpen on construction, TreeClose on Dispose. The wake
 // callback delegate is held in a field — if it GCs, Go's invoke
 // segfaults (same constraint as MainWindow's _watchCallback).
-public sealed class TreeViewPanel : UserControl, IDisposable
+public sealed class TreeViewPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: path bar + entity list.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 360;
     // P3 (wake debounce) — tree wakes are bursty during ingest and
     // roster sync. Coalesce a burst to a single render. Reference
     // shape: MarkdownViewPanel.LoadPathDebounce. 150ms keeps the tree

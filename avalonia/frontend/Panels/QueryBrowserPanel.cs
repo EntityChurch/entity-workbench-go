@@ -20,8 +20,12 @@ namespace EntityAvalonia.Panels;
 //
 // Console binding parity: Enter on either input executes; n key on
 // the result list advances pagination; Up/Down navigate selection.
-public sealed class QueryBrowserPanel : UserControl, IDisposable
+public sealed class QueryBrowserPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: query form + match list.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 380;
     // P4 (bounded list) — the bridge paginates server-side via
     // HasMore, but a single page that returns more than MaxClientRows
     // would still blow the visual tree. Defensive client-side cap

@@ -302,3 +302,81 @@ func atoiPort(s string) (int, error) {
 	}
 	return p, nil
 }
+
+// DialAddressForCandidate turns a discovery candidate into the URL form
+// AppPeer.Connect accepts, or "" when the announcement carries nothing
+// dialable.
+//
+// Extracted from the Avalonia bridge on 2026-09-02, when the shell's
+// `peers` verb became the second consumer. AGENTS.md's rule is *DRY the
+// integration, not the renderer* — the same closure in two renderers is
+// an extraction, and the dial-address choice is a substrate judgement
+// about mDNS announcements rather than anything either renderer owns.
+//
+// Protocol: the hint carries a `proto` TXT key with comma-separated
+// names per EXTENSION-DISCOVERY §3.2 — workbench v1 ships profile_refs
+// "tcp" and "ws", which are also the protocol names. Prefer ws for
+// browser interop; fall back to TCP.
+//
+// Host preference: a routable IPv4 from the hint beats the announced
+// mDNS HostName, because the HostName is the canonical `.local.` form
+// (`peer-host.lan.local.`) and resolving it requires nss-mdns /
+// avahi-daemon on the DIALING host — a dependency a peer cannot check
+// and should not assume. HostName is the fallback when no IPv4 was
+// announced, which keeps loopback and IPv6-only LANs working. IPv6 is
+// third: many home routers fail IPv6 LAN reachability.
+func DialAddressForCandidate(c types.CandidateData) string {
+	if len(c.EndpointHint) == 0 {
+		return ""
+	}
+	hint, err := DecodeMDNSEndpointHint(c.EndpointHint)
+	if err != nil {
+		return ""
+	}
+	return DialAddressForHint(hint)
+}
+
+// DialAddressForHint is DialAddressForCandidate for an already-decoded
+// hint, which is what the bridge holds (it renders other fields of the
+// hint beside the address).
+func DialAddressForHint(hint MDNSEndpointHint) string {
+	host := DialHostForHint(hint)
+	if host == "" || hint.Port == 0 {
+		return ""
+	}
+	proto := ParseTXTPairs(hint.Text)["proto"]
+	if proto == "ws" || proto == "wss" {
+		return fmt.Sprintf("ws://%s:%d/ws", host, hint.Port)
+	}
+	return fmt.Sprintf("tcp://%s:%d", host, hint.Port)
+}
+
+// DialHostForHint selects the most dial-friendly host string:
+// first non-empty IPv4 → first non-empty IPv6 → HostName.
+func DialHostForHint(hint MDNSEndpointHint) string {
+	for _, ip := range hint.IPv4 {
+		if ip != "" {
+			return ip
+		}
+	}
+	for _, ip := range hint.IPv6 {
+		if ip != "" {
+			// Bracketed per net.Dial's host:port grammar.
+			return "[" + ip + "]"
+		}
+	}
+	return hint.HostName
+}
+
+// ParseTXTPairs splits "key=value" entries (RFC 6763 §6 / §3.2).
+func ParseTXTPairs(txt []string) map[string]string {
+	out := make(map[string]string, len(txt))
+	for _, t := range txt {
+		i := strings.Index(t, "=")
+		if i < 0 {
+			continue
+		}
+		out[t[:i]] = t[i+1:]
+	}
+	return out
+}

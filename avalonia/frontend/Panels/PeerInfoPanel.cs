@@ -21,8 +21,12 @@ namespace EntityAvalonia.Panels;
 // Mirrors TreeViewPanel's open/registerWake/render/close lifecycle.
 // Cascades cleanly when the peer is destroyed (bridge-side
 // cascadePeerInfos closes our handle before we get to dispose).
-public sealed class PeerInfoPanel : UserControl, IDisposable
+public sealed class PeerInfoPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: identity block + the path list.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 340;
     // P4 (bounded list) — `Paths` is unbounded peer-side. A long-lived
     // peer can accumulate tens of thousands of distinct paths; rendering
     // them all is both pointless and a D15 violation. Show the first

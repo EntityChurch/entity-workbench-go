@@ -16,9 +16,20 @@ import (
 	"entity-workbench-go/workbench"
 )
 
-// TestStage3_Case2_Bidirectional documents F9 — cross-peer
-// subscription delivery is asymmetric under bidirectional setup.
-// CURRENTLY SKIPPED pending core-team / arch investigation.
+// TestStage3_Case2_Bidirectional — bidirectional cross-peer sync.
+//
+// **F9 IS CLOSED and this test RUNS.** core-go fixed it at 8ad52bc
+// (handleWrite now calls reverseTracker.markWritten symmetric to
+// reverseWrite) and the skip came off with it. The history below is kept
+// because the diagnosis is worth reading, but read it as history: the
+// "CURRENTLY SKIPPED" and "production impact" paragraphs described the
+// state before that fix and were left standing afterwards, so for a
+// while this file asserted in its own header that the default deployment
+// shape did not work while the test beneath it proved that it did. A
+// stale status line on a passing test is worse than none — it is the one
+// thing a reader trusts without running anything.
+//
+// --- history, from the round-4 closeout ---
 //
 // Surfaced in round 4 closeout. Setup: both peers run
 // watchers + subscribe to each other's local/files/sync/* prefix +
@@ -48,14 +59,10 @@ import (
 // 1.5 succeeded with the same shape but only one direction; case 2
 // adds the symmetric setup and the second direction breaks.
 //
-// **Production impact:** bidirectional cross-peer sync is the
-// default deployment shape (every node writes + receives). Until
-// this is resolved, only one-way mirror topologies work cleanly.
-// Hub-and-spoke would work with bob-as-hub if bob only publishes
-// (single-direction); fully symmetric peer-to-peer does not.
-//
-// Owner: core-go subscription engine. Coordination needed with
-// arch + sibling impls — Rust + Python may share the shape.
+// **Production impact AT THE TIME:** bidirectional cross-peer sync is
+// the default deployment shape (every node writes + receives), and
+// until F9 was fixed only one-way mirror topologies worked cleanly.
+// That constraint no longer holds.
 //
 // What this validates beyond case 1.5:
 //

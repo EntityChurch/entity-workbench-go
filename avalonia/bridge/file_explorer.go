@@ -82,15 +82,18 @@ type explorerEntryDTO struct {
 	ChildFiles int    `json:"childFiles"`
 	ChildBytes int64  `json:"childBytes"`
 	Size       int64  `json:"size"`
-	ModifiedAt int64  `json:"modifiedAt"`
-	Kind       string `json:"kind"`
-	Language   string `json:"language"`
-	MediaType  string `json:"mediaType"`
-	SourcePath string `json:"sourcePath"`
-	TargetPath string `json:"targetPath"`
-	EntityType string `json:"entityType"`
-	Ingested   bool   `json:"ingested"`
-	Status     string `json:"status"`
+	// Unix MILLISECONDS. The name carries the unit across the boundary
+	// because the renderer cannot see the model's doc comment, and read
+	// as seconds this value aborts the process rather than misprinting.
+	ModifiedAtMillis int64  `json:"modifiedAtMillis"`
+	Kind             string `json:"kind"`
+	Language         string `json:"language"`
+	MediaType        string `json:"mediaType"`
+	SourcePath       string `json:"sourcePath"`
+	TargetPath       string `json:"targetPath"`
+	EntityType       string `json:"entityType"`
+	Ingested         bool   `json:"ingested"`
+	Status           string `json:"status"`
 }
 
 type explorerRenderDTO struct {
@@ -249,21 +252,21 @@ func FileExplorerRender(h C.int64_t) (result *C.char) {
 	}
 	for _, e := range out.Entries {
 		dto.Entries = append(dto.Entries, explorerEntryDTO{
-			Name:       e.Name,
-			RelPath:    e.RelPath,
-			IsDir:      e.IsDir,
-			ChildFiles: e.ChildFiles,
-			ChildBytes: e.ChildBytes,
-			Size:       e.Size,
-			ModifiedAt: e.ModifiedAt,
-			Kind:       e.Kind,
-			Language:   e.Language,
-			MediaType:  e.MediaType,
-			SourcePath: e.SourcePath,
-			TargetPath: e.TargetPath,
-			EntityType: e.EntityType,
-			Ingested:   e.Ingested,
-			Status:     e.Status,
+			Name:             e.Name,
+			RelPath:          e.RelPath,
+			IsDir:            e.IsDir,
+			ChildFiles:       e.ChildFiles,
+			ChildBytes:       e.ChildBytes,
+			Size:             e.Size,
+			ModifiedAtMillis: e.ModifiedAtMillis,
+			Kind:             e.Kind,
+			Language:         e.Language,
+			MediaType:        e.MediaType,
+			SourcePath:       e.SourcePath,
+			TargetPath:       e.TargetPath,
+			EntityType:       e.EntityType,
+			Ingested:         e.Ingested,
+			Status:           e.Status,
 		})
 	}
 

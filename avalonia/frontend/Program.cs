@@ -287,6 +287,15 @@ public class App : Application
         PanelRegistry.Register("peer-connections", "Peer Connections",
             (handle, _) => new PeerConnectionsPanel(handle),
             PanelRegistry.Category.Network, "Who this peer is connected to, from the tree's liveness record.");
+        // Registered next to Peer Connections because that is where an
+        // operator lands looking for it: connecting is the step before
+        // sharing, and until this panel existed the flow simply stopped
+        // there. Every verb behind it was shell-only.
+        PanelRegistry.Register("share", "Shared Folders (share and receive)",
+            (handle, _) => new SharePanel(handle),
+            PanelRegistry.Category.Network,
+            "Offer a mounted folder to a peer, see what they are offering you, accept it, "
+            + "and see what is arriving. Both peers must dial each other.");
         // The generic host: ONE panel class, every program, mounted from
         // descriptors.
         //

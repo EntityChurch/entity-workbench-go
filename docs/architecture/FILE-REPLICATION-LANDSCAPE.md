@@ -69,7 +69,9 @@ Priced against the substrate, not against our own tree. Everything below is in
 | Content-addressed blob store | `core/store` | the substrate's whole basis |
 | File / directory / deletion entities | `ext/localfiles/types.go` — `FileData`, `DirectoryData`, `DirectoryEntryData`, `DeletedData` | typed, CBOR, spec'd |
 | Filesystem → tree ingest | `ext/localfiles/operations.go`, `handler.go` | live |
-| Tree → filesystem writeback | `ext/localfiles/reverse.go::StartReverseWrite` | live in the kernel — but **nothing in this repo starts it** (M1 finding; see §6) |
+| Tree → filesystem writeback | `ext/localfiles/reverse.go::StartReverseWrite` | live in the kernel; **we deliberately do not start it** — M2 replicates through the subscription chain into `local/files:write` instead (§6) |
+| Cross-peer materialization | `workbench/blob_resolve.go` (**ours**) | live, and reachable from `sync` as of 2026-09-02 — before that, twelve test files and no registration in any binary |
+| Subscription rehydration at open | `ext/subscription/engine.go::Load` | live in the kernel; **we did not call it until 2026-09-02**, so every subscription — and therefore every mount — was dead after a restart (AP62) |
 | Filesystem watching | `ext/localfiles/watcher.go` | fsnotify-based, debounced |
 | Stat cache | `ext/localfiles/statcache.go` (+ `_linux`/`_darwin`/`_windows`) | implements **Git's racy-clean rule** and smudge-to-zero discipline |
 | Loop prevention (write-back echo) | `ext/localfiles/reverse.go::reverseTracker` | 5 s window — see risks |
@@ -247,9 +249,58 @@ Two things M1 turned up that change this page's own arithmetic:
 - The window defect is **dormant for us and live for `entity-peer`**, which is why routing it did
   not block on us adopting it.
 
-**M2 — two machines, one folder, end to end.** Two peers, one mount each, capability-scoped, over
-the live transport. Non-concurrent edits only. This is the first point at which the thing is
-*real*, and it will surface the boring 80% in priority order rather than by guesswork.
+**M2 — two peers, one folder, end to end. DONE 2026-09-02 for two peers on one host over the
+real transport;** two physical machines is the remaining half. `sync <peer> <root>` /
+`unsync` / `syncs`, the durable binding at `app/workbench/syncs/{peerID}.{root}`, and
+`shellboot/sync_e2e_test.go` — both peers built through the real bootstrap, connected over TCP, a
+file written on one appearing on the other's disk, then a second file to distinguish "the first
+delivery worked" from "the relationship is live".
+
+It cost far less than this page priced it, for a reason worth recording: **the engine was already
+built and already tested, and nothing could reach it.** `workbench.BlobResolveHandler` — the whole
+cross-peer materialization chain — had twelve test files behind it (one-way, bidirectional, burst,
+4 MB file, cap delegation, late join, self-loop) and **no registration outside them**. `shellboot`
+registered two handlers and this was not one; `subscription` is `ls|inspect|rm` with no create. So
+M2 was a wiring job, not a build. That is D23 at the handler layer, where `make reachability`
+does not look because it asks whether a *model* has a surface.
+
+Two corrections to this page's own arithmetic fell out of doing it:
+
+- **The tree→disk direction question is settled, and the answer is "not `StartReverseWrite`".**
+  We replicate through the subscription chain into `local/files:write`, which is what all twelve
+  tests exercise and what the shipped `sync` verb now does. The kernel's reverse-write loop stays
+  uncalled here, deliberately.
+- **Bidirectional sync was never the blocker this page implied.** F9 — the asymmetry that made
+  "only one-way mirror topologies work cleanly" — was closed by core-go at `8ad52bc` and the skip
+  came off `TestStage3_Case2_Bidirectional`. That test's own header still said
+  *"CURRENTLY SKIPPED"* and *"fully symmetric peer-to-peer does not [work]"* while passing every
+  night, which is how the constraint survived in our planning long after it stopped being true.
+  Corrected in place.
+
+**What M2 does NOT cover, named rather than implied:** two physical machines (this is loopback
+TCP; the addressing and NAT story is untouched and `ext/relay` is unlanded upstream), any GUI
+affordance (the verbs are shell-only — the Local Files panel manages mounts and says nothing about
+syncs), and history replay (a sync delivers changes from the moment it is established; files
+already sitting in the remote mount arrive when they next change or when that peer remounts). The
+verb prints that last one rather than letting an operator watch an empty directory and conclude it
+is broken.
+
+**M2a — the flow, and the permission stage nobody had tested. DONE 2026-09-02.**
+`peers` / `share` / `offers` / `accept` / `access` / `unshare`, validated end to end across two
+peers with **no wildcard grants** (`shellboot/flow_e2e_test.go`), operator recipe in
+`USAGE-SHARE-A-FOLDER.md`.
+
+The finding that reframes §2a's affordance table: **every cross-peer test in this repo ran under
+`peer.OpenAccessGrants()`**, so the sync work to this point had validated the transport and
+nothing about authorization. Turning the wildcard off surfaced four constraints — a sync is
+*mutual* authorization; the grant is assembled at handshake; the peer that dispatches is the one
+that must reconnect; and a dial-by-address authorizes the dialer only, so both peers must dial.
+None are visible under a wildcard and each is a lost afternoon on real hardware. AP63.
+
+Two rows in §2a's table move as a result. **"Sharing with specific devices"** is no longer
+"different model, unreachable in practice" — it is `share`/`accept` over the kernel's per-peer
+policy table, which is genuinely finer-grained than pairing a device with a folder. **"Folder
+status"** gains `access`, `shares` and `syncs` as inspectable surfaces.
 
 **M3 — the novel claim, tested.** Concurrent edit to one path on two disconnected peers, then
 reconnect. Today: one write vanishes. Target: `ext/revision` three-way merge where the file

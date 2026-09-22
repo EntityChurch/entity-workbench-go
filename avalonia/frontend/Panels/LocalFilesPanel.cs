@@ -56,8 +56,12 @@ namespace EntityAvalonia.Panels;
 //
 // Both are AP45: a surface must say what it does not know, because an
 // absence reads as fine.
-public sealed class LocalFilesPanel : UserControl
+public sealed class LocalFilesPanel : UserControl, IPanelPreferredHeight
 {
+    // Chrome floor: summary + the four-field mount form + verb row + status + the mount list.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 440;
     // P4 (bounded list). A peer can hold many mounts in principle; in
     // practice it holds a handful. The cap exists so a pathological
     // config namespace cannot make the panel the slow part.

@@ -37,8 +37,12 @@ namespace EntityAvalonia.Panels;
 //
 // Edit mode (Ctrl+S save, Esc cancel) is on the underlying view model
 // but not yet exposed through the bridge or this panel.
-public sealed class MarkdownViewPanel : UserControl, IDisposable
+public sealed class MarkdownViewPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: document chrome plus enough body to be worth rendering.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 400;
     private readonly long _peerHandle;
     private readonly long _handle;
     private readonly IPanelHost? _host;

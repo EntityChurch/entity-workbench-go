@@ -91,9 +91,19 @@ type ExplorerEntry struct {
 
 	// Size is the file's size in bytes, from the source FileData.
 	Size int64
-	// ModifiedAt is the source file's mtime as a Unix second, 0 when the
-	// watcher did not record one.
-	ModifiedAt int64
+	// ModifiedAtMillis is the source file's mtime as Unix MILLISECONDS, 0
+	// when the watcher did not record one.
+	//
+	// The unit is in the name because getting it wrong is silent on this
+	// side and fatal on the other: the renderer read it as seconds, and
+	// `DateTimeOffset.FromUnixTimeSeconds` throws above year 9999 — which
+	// every real mtime in milliseconds is. Every producer of the field
+	// agrees and always has: `ext/localfiles/watcher.go`,
+	// `ext/localfiles/operations.go` (both sites) and our own
+	// `mount_sweep.go` all write `info.ModTime().UnixMilli()`. The
+	// kernel's `FileData.ModifiedAt` is `*uint64` and names no unit, so
+	// ours names it for both of us.
+	ModifiedAtMillis int64
 	// Kind is the registry's coarse classification ("markdown", "text",
 	// "code", "image", "binary"). Present even when the file has no
 	// document yet — it is derived from the name, so it is knowable
@@ -642,7 +652,7 @@ func (m *FileExplorerModel) fileEntryLocked(rel, name string) ExplorerEntry {
 	if ent, found := m.store.Get(m.sourcePrefix + rel); found {
 		if fd, err := localfiles.FileDataFromEntity(ent); err == nil {
 			if fd.ModifiedAt != nil {
-				e.ModifiedAt = int64(*fd.ModifiedAt)
+				e.ModifiedAtMillis = int64(*fd.ModifiedAt)
 			}
 			// The watcher saw the file; the registry saw its name.
 			if fd.MediaType != nil && *fd.MediaType != "" {

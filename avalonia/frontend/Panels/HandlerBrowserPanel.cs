@@ -30,8 +30,12 @@ namespace EntityAvalonia.Panels;
 // operations on the right, and the execute log below both. The custom-
 // dispatch row sits under the log because it is the escape hatch, not
 // the primary path.
-public sealed class HandlerBrowserPanel : UserControl, IDisposable
+public sealed class HandlerBrowserPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: handler list + op list + spec text + an output pane.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 440;
     // P4 (bounded list). Handler counts are small (tens), but the output
     // log grows without bound as a user executes, and an unbounded
     // ItemsSource is how a panel takes the window down. The model keeps

@@ -329,7 +329,7 @@ func init() {
 	})
 	r.Register(Command{
 		Name:    "mount",
-		Usage:   "mount <fs-dir> <tree-prefix>",
+		Usage:   "mount <fs-dir> <tree-prefix> [-include GLOB] [-exclude GLOB] [-readonly] [-force]",
 		Help:    "Bridge a filesystem directory into a revision-tracked tree prefix. File changes propagate through the workbench's ingest chain into the entity tree.",
 		Handler: cmdMount,
 	})
@@ -344,6 +344,66 @@ func init() {
 		Usage:   "mounts",
 		Help:    "List currently-mounted filesystem bridges.",
 		Handler: cmdMounts,
+	})
+	r.Register(Command{
+		Name:    "peers",
+		Usage:   "peers",
+		Help:    "Peers visible right now — announced on the local network, or connected.",
+		Handler: cmdPeers,
+	})
+	r.Register(Command{
+		Name:    "share",
+		Usage:   "share <root> with <peer> [-title TEXT] | share ls",
+		Help:    "Offer a mounted folder to a peer: authorize them and publish the offer.",
+		Handler: cmdShare,
+	})
+	r.Register(Command{
+		Name:    "unshare",
+		Usage:   "unshare <root> <peer>",
+		Help:    "Withdraw a peer's access to a shared folder.",
+		Handler: cmdUnshare,
+	})
+	r.Register(Command{
+		Name:    "shares",
+		Usage:   "shares",
+		Help:    "Folders this peer is offering, and to whom.",
+		Handler: cmdShares,
+	})
+	r.Register(Command{
+		Name:    "offers",
+		Usage:   "offers <peer>",
+		Help:    "What a peer is offering to share with you.",
+		Handler: cmdOffers,
+	})
+	r.Register(Command{
+		Name:    "accept",
+		Usage:   "accept <peer> <root>",
+		Help:    "Take a peer up on a shared folder: authorize their deliveries and sync.",
+		Handler: cmdAccept,
+	})
+	r.Register(Command{
+		Name:    "access",
+		Usage:   "access",
+		Help:    "Which peers are authorized on this peer, and for what.",
+		Handler: cmdAccess,
+	})
+	r.Register(Command{
+		Name:    "sync",
+		Usage:   "sync <peer> <root> [-as <local-root>]",
+		Help:    "Receive a folder another peer has mounted, into a local mount of the same name.",
+		Handler: cmdSync,
+	})
+	r.Register(Command{
+		Name:    "unsync",
+		Usage:   "unsync <peer> <root>",
+		Help:    "Stop receiving a peer's folder. Leaves the mount and everything already received.",
+		Handler: cmdUnsync,
+	})
+	r.Register(Command{
+		Name:    "syncs",
+		Usage:   "syncs",
+		Help:    "List established inbound folder syncs.",
+		Handler: cmdSyncs,
 	})
 	r.Register(Command{
 		Name:    "compute",

@@ -21,8 +21,12 @@ namespace EntityAvalonia.Panels;
 // Tab key cycles the per-panel display level; Ctrl+L cycles the
 // global collection level. Matches console/log_viewer.go's bindings
 // so muscle memory carries over.
-public sealed class LogViewerPanel : UserControl, IDisposable
+public sealed class LogViewerPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: filter row + log lines.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 320;
     // P4 (bounded list) — logs are append-mostly; cap the visible row
     // count so an unbounded EventLog (100k events over a long session)
     // can never blow the visual tree. Trim from the front, keeping the

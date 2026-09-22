@@ -38,8 +38,12 @@ namespace EntityAvalonia.Panels;
 // demotion leaves liveness saying `connected`, and only liveness can
 // say `suspect` or say why a peer went away. Showing one under the
 // other's name is the mistake the split exists to prevent.
-public sealed class PeerConnectionsPanel : UserControl, IDisposable
+public sealed class PeerConnectionsPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: header + listen line + liveness list + nearby list + address/alias/connect + status + the connection list.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 560;
     private readonly long _peerHandle;
     private readonly long _handle;
     private readonly long _discoveryHandle;
@@ -87,6 +91,9 @@ public sealed class PeerConnectionsPanel : UserControl, IDisposable
     internal void RerenderLivenessForTests() => RerenderLivenessFromBridge();
     internal int ConnectionCountForTests => _connections.Count;
     internal int NearbyCountForTests => _nearby.Count;
+    internal bool NearbyHeaderVisibleForTests => _nearbyHeader.IsVisible;
+    internal string NearbyPlaceholderForTests => _nearbyPlaceholder.Text ?? "";
+    internal bool NearbyPlaceholderVisibleForTests => _nearbyPlaceholder.IsVisible;
     internal string NearbyPeerIdAtForTests(int i) => _nearby[i].PeerID;
     internal bool NearbyConnectedAtForTests(int i) => _nearby[i].Connected;
     internal void TriggerNearbyConnectForTests(int i) => DoConnectFromNearby(_nearby[i]);
@@ -173,6 +180,13 @@ public sealed class PeerConnectionsPanel : UserControl, IDisposable
             TextWrapping = TextWrapping.Wrap,
         };
 
+        // The header stays visible even when discovery is OFF. It used to
+        // be hidden along with the list and the placeholder, so a peer
+        // launched without a listener showed no discovery section at all —
+        // and "this build has no mDNS" is indistinguishable from "mDNS
+        // found nobody" when both render as nothing. An operator hit
+        // exactly that and reasonably concluded the feature was missing.
+        // AP45/AP59: an absence must carry its reason.
         _nearbyHeader = new TextBlock
         {
             Text = "Nearby peers",
@@ -180,21 +194,24 @@ public sealed class PeerConnectionsPanel : UserControl, IDisposable
             FontSize = 12,
             Opacity = 0.7,
             Margin = new Thickness(0, 4, 0, 4),
-            IsVisible = _discoveryHandle >= 0,
         };
 
         // Placeholder shown when the list is empty. Replaces silent
         // emptiness with the actual state — "Searching…" before the
-        // first scan returns, "No peers found" after. Hidden once any
-        // peer appears.
+        // first scan returns, "No peers found" after, and the reason
+        // discovery is unavailable when it is. Hidden once any peer
+        // appears.
         _nearbyPlaceholder = new TextBlock
         {
-            Text = "Searching…",
+            Text = _discoveryHandle >= 0
+                ? "Searching…"
+                : "Discovery is off — this peer has no listener. Relaunch with "
+                  + "--listen 0.0.0.0:PORT to announce on the LAN and see peers here.",
             FontSize = 11,
             FontStyle = FontStyle.Italic,
-            Opacity = 0.45,
+            Opacity = _discoveryHandle >= 0 ? 0.45 : 0.7,
+            TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 4),
-            IsVisible = _discoveryHandle >= 0,
         };
 
         _nearbyList = new ListBox

@@ -189,6 +189,12 @@ blurb = "Bridging a filesystem directory to a tree prefix via the shell's mount 
 group = "Usage guides"
 
 [[doc]]
+path  = "docs/architecture/USAGE-SHARE-A-FOLDER.md"
+title = "Share a Folder Between Two Devices — Usage"
+blurb = "The discover, share, authorize, mount, sync flow across two peers, in the order that works, with the reason for each step that is not obvious."
+group = "Usage guides"
+
+[[doc]]
 path  = "docs/architecture/USAGE-CROSS-IMPL-VALIDATION.md"
 title = "Cross-Impl Validation — Usage"
 blurb = "Validating interop against the other reference implementations."

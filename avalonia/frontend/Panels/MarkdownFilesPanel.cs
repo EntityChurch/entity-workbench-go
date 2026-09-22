@@ -21,8 +21,12 @@ namespace EntityAvalonia.Panels;
 // PublishSelectedPath so any DetailPanel / MarkdownViewPanel mounted
 // in a slot follows along. Folder rows broadcast nothing (the
 // markdown viewer's NotFound state isn't useful UX here).
-public sealed class MarkdownFilesPanel : UserControl, IDisposable
+public sealed class MarkdownFilesPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: the file list, which is the whole panel.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 320;
     // P3 (wake debounce) — file-list wakes are bursty during peer
     // bring-up (every discovered markdown-file fires one). Coalesce a
     // burst to a single render by restarting a 150ms timer per wake.

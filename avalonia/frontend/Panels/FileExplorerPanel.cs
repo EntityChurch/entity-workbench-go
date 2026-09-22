@@ -45,8 +45,12 @@ namespace EntityAvalonia.Panels;
 // here reports ingested and not-ingested separately for that reason, and
 // a mount with no known target prefix says *unknown* rather than
 // rendering every row as absent (AP45).
-public sealed class FileExplorerPanel : UserControl, IDisposable
+public sealed class FileExplorerPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
+    // Chrome floor: mount picker + file list beside a preview pane.
+    // Declared because the 200px stack default clipped this panel the
+    // moment a second one was open — see IPanelPreferredHeight.
+    public double PreferredSlotMinHeight => 440;
     // P3 (wake debounce). A watcher's initial scan of a large directory
     // fires thousands of tree events; the bridge coalesces them into a
     // one-deep channel and this coalesces the remainder into one render
@@ -99,7 +103,18 @@ public sealed class FileExplorerPanel : UserControl, IDisposable
     public string SummaryText => _summary.Text ?? "";
     public string PreviewText => _preview.Text ?? "";
     public string DetailText => _detail.Text ?? "";
+    public string PreviewHeaderText => _previewHeader.Text ?? "";
     public IReadOnlyList<string> MountRoots => _mountRoots;
+
+    // Selects a row the way the ListBox does, so `SelectionChanged` fires
+    // and `OnRowSelected` runs for real. Not a shortcut past the UI: the
+    // wiring at the other end of this event is a plain `+=` on
+    // `SelectionChanged`, which Avalonia does deliver (AP37 is about
+    // POINTER events on controls that mark them handled), and the
+    // operator's own clicks reached it. What no test reached was the
+    // handler's body — every file-explorer test asserted on row
+    // viewmodels and never selected one.
+    public void SelectRowForTests(int index) => _list.SelectedIndex = index;
 
     public FileExplorerPanel(long peerHandle, IPanelHost? host)
     {
@@ -417,9 +432,8 @@ public sealed class FileExplorerPanel : UserControl, IDisposable
         var bits = new List<string> { HumanBytes(vm.Size), vm.Kind };
         if (!string.IsNullOrEmpty(vm.Language)) bits.Add(vm.Language);
         if (!string.IsNullOrEmpty(vm.MediaType)) bits.Add(vm.MediaType);
-        if (vm.ModifiedAt > 0)
-            bits.Add(DateTimeOffset.FromUnixTimeSeconds(vm.ModifiedAt).LocalDateTime
-                .ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture));
+        var mtime = FormatMtime(vm.ModifiedAtMillis);
+        if (mtime.Length > 0) bits.Add(mtime);
         // Both tree paths, always. An operator debugging an ingest needs
         // to know where the source record is as well as where the
         // document is or is not.
@@ -429,6 +443,31 @@ public sealed class FileExplorerPanel : UserControl, IDisposable
         _detail.Foreground = vm.Ingested ? Brushes.DarkGray : Brushes.Orange;
 
         LoadPreview(vm);
+    }
+
+    // An mtime is a number a FILESYSTEM chose, not one we did, and it
+    // reaches this method having crossed the kernel's `*uint64` (which
+    // names no unit), CBOR, cgo and JSON. Rendering it must not be able
+    // to end the process.
+    //
+    // It could, and it did. The field was documented as seconds and every
+    // producer writes `UnixMilli()`, so `FromUnixTimeSeconds` threw
+    // `ArgumentOutOfRangeException` on every file row an operator clicked
+    // — nine of them, which is `MaxContainedUiFaults` + 1, and the ninth
+    // took the app down (`run-logs/run-20260902-083012.log`). The unit is
+    // fixed at the source and named in the field; this guard is the
+    // second half, because the next bad value will come from a real
+    // filesystem rather than from us. Returns "" when there is nothing
+    // honest to print — the row then simply carries no date, which is
+    // what a missing mtime already meant.
+    internal static string FormatMtime(long millis)
+    {
+        if (millis <= 0) return "";
+        if (millis < DateTimeOffset.MinValue.ToUnixTimeMilliseconds() ||
+            millis > DateTimeOffset.MaxValue.ToUnixTimeMilliseconds())
+            return $"mtime out of range ({millis})";
+        return DateTimeOffset.FromUnixTimeMilliseconds(millis).LocalDateTime
+            .ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
     }
 
     private void LoadPreview(EntryVm vm)
@@ -776,7 +815,7 @@ public sealed class FileExplorerPanel : UserControl, IDisposable
         [JsonPropertyName("childFiles")] public int ChildFiles { get; set; }
         [JsonPropertyName("childBytes")] public long ChildBytes { get; set; }
         [JsonPropertyName("size")] public long Size { get; set; }
-        [JsonPropertyName("modifiedAt")] public long ModifiedAt { get; set; }
+        [JsonPropertyName("modifiedAtMillis")] public long ModifiedAtMillis { get; set; }
         [JsonPropertyName("kind")] public string Kind { get; set; } = "";
         [JsonPropertyName("language")] public string Language { get; set; } = "";
         [JsonPropertyName("mediaType")] public string MediaType { get; set; } = "";

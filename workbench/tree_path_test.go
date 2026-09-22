@@ -153,3 +153,87 @@ func TestMountBindings_RoundTripOnAPeerBackedStore(t *testing.T) {
 		t.Error("binding survived removal — an unmount would undo itself at the next restart")
 	}
 }
+
+// TestSyncBindings_RoundTripOnAPeerBackedStore — the durable half of a
+// cross-peer sync, on a store that namespaces, which is the only kind a
+// real peer has.
+//
+// The restart failure this guards is the mount-binding bug reached from
+// the other side. After 2026-09-02 the SUBSCRIPTION comes back by itself
+// (the engine rebuilds its runtime index at open — see
+// entitysdk/app.go), so a restored sync that has no source→target
+// mapping is worse than a dead one: it is live, delivering, and
+// answering 404 no_mount_for_uri on every notification, while `syncs`
+// lists it as established.
+func TestSyncBindings_RoundTripOnAPeerBackedStore(t *testing.T) {
+	st := liveStore(t)
+
+	const remote = "2KexampleRemotePeerIdBase58"
+	if err := SaveSyncBinding(st, SyncBindingData{
+		RemotePeerID:   remote,
+		Root:           "shared",
+		SourcePrefix:   "local/files/shared/",
+		TargetPrefix:   "local/files/shared/",
+		SubscriptionID: "sub-1",
+	}); err != nil {
+		t.Fatalf("SaveSyncBinding: %v", err)
+	}
+
+	// The premise, stated out loud for the same reason the mount case
+	// states it: List returns QUALIFIED paths, and if it ever stops,
+	// RelativeUnder is dead code rather than a fix.
+	entries := st.List(SyncBindingPrefix)
+	if len(entries) != 1 {
+		t.Fatalf("List returned %d entries, want 1", len(entries))
+	}
+	if !strings.HasPrefix(entries[0].Path, "/") {
+		t.Fatalf("premise broken: List returned a relative path %q", entries[0].Path)
+	}
+
+	one, ok := LoadSyncBinding(st, remote, "shared")
+	if !ok || one.SubscriptionID != "sub-1" {
+		t.Fatalf("LoadSyncBinding = (%+v, %v)", one, ok)
+	}
+
+	all, problems := LoadSyncBindings(st)
+	if len(problems) != 0 {
+		t.Fatalf("problems: %v", problems)
+	}
+	if len(all) != 1 || all[0].Root != "shared" || all[0].RemotePeerID != remote {
+		t.Fatalf("LoadSyncBindings = %+v, want one row (shared, %s)", all, remote)
+	}
+
+	br := NewBlobResolveHandler()
+	restored, problems := RestoreSyncBindings(st, br)
+	if restored != 1 || len(problems) != 0 {
+		t.Fatalf("RestoreSyncBindings = (%d, %v), want (1, none)", restored, problems)
+	}
+	if got := br.LookupMount("local/files/shared/"); got != "local/files/shared/" {
+		t.Errorf("after restore, LookupMount = %q, want the target prefix — a restored "+
+			"sync with no routing delivers into a 404", got)
+	}
+
+	if !RemoveSyncBinding(st, remote, "shared") {
+		t.Error("RemoveSyncBinding reported nothing to remove")
+	}
+	if _, ok := LoadSyncBinding(st, remote, "shared"); ok {
+		t.Error("binding survived removal — an unsync would undo itself at the next restart")
+	}
+}
+
+// TestSyncBindingKey_SplitsOnTheLastDot pins the composite key, because
+// the whole scheme rests on a root name never containing a dot
+// (sanitizeRootName emits only [a-z0-9-]) and a Base58 peer-id never
+// containing one either.
+func TestSyncBindingKey_SplitsOnTheLastDot(t *testing.T) {
+	key := SyncBindingKey("2KabcPeer", "my-shared-folder")
+	peerID, root, ok := SplitSyncBindingKey(key)
+	if !ok || peerID != "2KabcPeer" || root != "my-shared-folder" {
+		t.Fatalf("SplitSyncBindingKey(%q) = (%q, %q, %v)", key, peerID, root, ok)
+	}
+	for _, bad := range []string{"", "nodot", ".leading", "trailing."} {
+		if _, _, ok := SplitSyncBindingKey(bad); ok {
+			t.Errorf("SplitSyncBindingKey(%q) reported ok on a malformed key", bad)
+		}
+	}
+}

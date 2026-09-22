@@ -32,12 +32,12 @@ This repo runs the entity-OS methodology at the **Full** tier for the Avalonia/.
 — held where conformance alone can't reach a GUI. The framework is `METHODOLOGY.md` (maintained
 upstream, identical in every repo); the charter below carries the local grounding, and **this repo is one of
 the worked instances the framework was reconciled from** — D1–D11 there are inherited verbatim,
-D12–D25 here are ours, earned on the eight crash-hunt commits, two feedback episodes, the
+D12–D26 here are ours, earned on the eight crash-hunt commits, two feedback episodes, the
 2026-08-18 publisher/connectivity pair, the v1.13 adoption trio, the 2026-08-19 cross-impl
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D25, the ten review questions, the anti-pattern catalog AP1–AP60, and the promotion
+  D1–D26, the ten review questions, the anti-pattern catalog AP1–AP64, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -432,8 +432,8 @@ one — name the recurring cycle first, then let each step own one lever of it.
   never a valid distinguishing claim** — if you reach for it to explain why something
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
-- The project measures everything against the **25 disciplines (D1–D25)**, ten review
-  questions, and anti-pattern catalog (AP1–AP60) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+- The project measures everything against the **26 disciplines (D1–D26)**, ten review
+  questions, and anti-pattern catalog (AP1–AP64) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A model with no shipped surface is not shipped** (D23). Landing a renderer-neutral model
   is half a feature; the other half is a verb, panel, or menu entry a user can reach, in the
   same session. Three times now — the name arc, the handler browser, `PeerLiveness` — every
@@ -470,6 +470,68 @@ one — name the recurring cycle first, then let each step own one lever of it.
   funcs under the lock, release, then call them. And when you gate a race, **loop it and run a
   control arm** — the first version of that gate passed against the deadlocking code, because one
   close under churn does not reliably catch the deliverer mid-contention.
+- **A WILDCARD TEST FIXTURE DELETES A STAGE OF THE PRODUCT FROM THE SUITE** (AP63). Every
+  cross-peer test in this repo — twenty-four of them — runs under `peer.OpenAccessGrants()`, so
+  the whole suite establishes that the transport works and **nothing at all** about permission.
+  The kernel's per-peer mechanism is the V7 v7.62 §8 policy table at
+  `system/capability/policy/{peer}`, unioned into the grant set by `AssembleInboundGrants`, keyed
+  on `hex(identityHash)` **or the Base58 peer-id** or `default`; it had zero uses here. Turning
+  the wildcard off surfaced four things, all measured in `shellboot/policy_probe_test.go`:
+  **(1) a sync is MUTUAL** — the receiver dispatches in to subscribe and fetch, the publisher
+  dispatches back to deliver, so both need an entry naming the other, and one direction alone
+  gives you an accepted subscription and an empty folder; **(2) the grant is assembled at
+  HANDSHAKE**, so a policy written on a live connection is inert until it is re-established;
+  **(3) the peer that DISPATCHES is the peer that must reconnect** — a granter's reconnect does
+  nothing for the grantee, who uses its own pooled outbound connection; **(4) a dial-by-address
+  authorizes the DIALER ONLY** (`sendReciprocalGrant` is gated on
+  `EstablishedViaRendezvousKey()`; *"a dial-by-address is asymmetric — one party requested
+  service"*), so a two-way sync needs both peers to dial, each after the other's policy exists.
+  The operator recipe is `docs/architecture/USAGE-SHARE-A-FOLDER.md`. The generalisation to
+  carry: **when a fixture disables a mechanism wholesale, that mechanism has zero coverage
+  however many tests run through it**, and the gap is invisible because everything downstream
+  passes.
+- **The flow verbs are `peers` / `share` / `offers` / `accept` / `shares` / `unshare` /
+  `access`** (`shellcmd/share_op.go` + `workbench/access_policy.go`, `workbench/share_offer.go`).
+  `share` writes the permission AND the offer record; `accept` writes the delivery permission and
+  syncs. **The offer is a LABEL, not an authority** — `APP-CONVENTION-SHARE` §2.2 forbids
+  inferring authorization from it, so seeing an offer and still getting a 403 is the two things
+  being correctly separate. **The authorization is the policy table and not `AuthorShare`'s
+  minted token**, because `ShareWithdrawalNotice` states a `request`-minted token is *not
+  recallable* — building `unshare` on it would make the verb unable to do what it is named after.
+  **`access` marks the peer's own kernel-seeded `*:*` row**: unlabelled it reads as a wildcard
+  grant to a stranger, and hidden it would conceal a real grant.
+- **A DERIVED RUNTIME INDEX over a persistent store must be rebuilt at open, and nothing in the
+  read path will tell you it wasn't** (D26, AP62). `subscription.Engine.Load` rebuilds the
+  engine's `pathIndex` from `system/subscription/{id}` entities; its doc comment says it "must be
+  called after SetLocationIndex and before StartDelivery", core-go's own daemon calls it, and
+  `entitysdk.assembleAppPeer` made both neighbouring calls and not that one. So **every
+  subscription a peer ever made was in its tree and dead after a restart** — and since every
+  mount here is driven by a subscription, a restarted peer resumed its watcher, listed the mount
+  as healthy, and never produced another document. That is the same end state
+  `workbench/mount_binding.go` fixes, by a second route that fix could not close, and the
+  mount-binding work was in this code and missed it. **This is AP39 one extension over** — same
+  shape as the query index, worse in kind, because a subscription is not a read path: it is what
+  makes a write *cause* something. Two rules. **Grep the dependency for a `Load`/`Rebuild`/
+  `Restore` you are not calling** before scoping a build — both instances were adopt, not build.
+  **And gate it across a process boundary, asserting on the DERIVED structure**: the tree keeps
+  its copy either way, so a test that re-reads the entity passes against the broken build
+  (`entitysdk/subscription_restart_test.go`).
+- **A test that drives data to the row and never SELECTS one has not tested the panel** (AP61).
+  The file explorer's end-to-end test crosses mount → watcher → subscription → ingest → model →
+  bridge → panel, and asserted on row viewmodels — one method call short of the code that renders
+  a row. So `OnRowSelected` shipped throwing on **every** file an operator clicked, at 138/138
+  green: the mtime field carried Unix **milliseconds** (all four producers write `UnixMilli()`),
+  was documented as "a Unix second", and `FromUnixTimeSeconds` throws for every date past year
+  9999. The preview pane never updated because the throw is upstream of `LoadPreview`, and the
+  **ninth** click killed the process — `MaxContainedUiFaults` is 8. The envelope test could not
+  catch it either: it hard-coded `1700000000`, a seconds value **no producer emits**, which is
+  AP58's shape at the level of a value rather than a wrapper. Three rules. **Put the unit in the
+  field name when it crosses a boundary** (`ModifiedAtMillis`) — a doc comment is invisible from
+  the far side of cgo and JSON. **A data value must never be able to end the process**: an mtime
+  is a number a *filesystem* chose, so the render path guards its range and prints `mtime out of
+  range (n)`. And **select the row in the test** — `SelectRowForTests` drives the real
+  `SelectionChanged` route, and the gate asserts the detail line carries the current year, so a
+  unit swap fails rather than silently printing 1970.
 - **A mount has TWO layers and a single count reads the one that cannot fail** (AP59). The
   watcher writes `local/files/{root}/{rel}` for every admitted file; the ingest chain lifts each
   into a `doc/*` at the target prefix. The mount row's `FileCount` read the *source* layer, so a
@@ -493,12 +555,54 @@ one — name the recurring cycle first, then let each step own one lever of it.
   `404 no_mount_for_uri` — a mount that listed as healthy and had silently stopped producing
   documents. `Mount` writes it, `Unmount` removes it (or the unmount undoes itself at the next
   launch), and every failure path in between unwinds it.
+- **`mount` bridges a local directory; `sync` attaches to a REMOTE peer's mount** (M2,
+  2026-09-02). `shellcmd/sync_op.go` holds `ShellWorkspace.Sync`/`Unsync`/`Syncs`; the verbs are
+  `sync <peer> <root> [-as <local-root>]`, `unsync`, `syncs`. The receiving chain is
+  *subscribe to their `local/files/{root}/*` with `include_payload` → `workbench/blob-resolve`
+  → pull the blob closure cross-peer → dispatch `local/files:write` locally*, and the durable
+  half is `app/workbench/syncs/{peerID}.{root}` (`workbench/sync_binding.go`), restored by
+  `shellboot`. **`sync` REFUSES without a local mount to receive into** — a sync writes into a
+  mount and does not create one, because a relationship that establishes cleanly and then 404s on
+  every delivery is the failure this repo shipped twice before it became a check.
+  **The finding that made M2 small: `BlobResolveHandler` had twelve test files and no
+  registration outside them.** `shellboot` wired ingest and chain-errors and not this, and
+  `subscription` has no create verb, so the entire cross-peer pipeline was built, tested, and
+  reachable from nothing a user could run. That is **D23 at the HANDLER layer, where
+  `make reachability` cannot see it** — the sweep asks whether a *model* has a surface, and a
+  handler is not a model. When you add a handler, the question the sweep will not ask for you is
+  *what registers this in a shipped binary, and what verb causes it to be used*. The gate is
+  `shellboot/sync_e2e_test.go`, which builds both peers through the real `shellboot.Bootstrap`
+  rather than assembling its own handler list — an earlier draft did the latter and would have
+  stayed green with the registration deleted.
 - **`Files` browses a mount; `Local Files` manages mounts.** Two panels, one question each, same
   rule as the browser trio. `FileExplorerPanel` joins the two layers above and is the only surface
   that shows an actual file; it holds a wake handle because mount *contents* churn, unlike mount
   *configs*. **Avalonia has no built-in file explorer** — the framework's own sample uses the
   separate `Avalonia.Controls.TreeDataGrid` package, and we deliberately do not take it: a new
   templating surface is AP46 re-opened where `Rows.Of`'s guard does not look.
+- **`Shared Folders` is the flow panel** (`SharePanel`, category Network) — discover, share out,
+  read a peer's offers, accept, and see what is arriving, in the order you do them. It is a thin
+  envelope over `ShellWorkspace.Share`/`Unshare`/`Accept`/`Offers`/`Sync`/`Unsync` via
+  `avalonia/bridge/share.go`; **do not reimplement any stage in the renderer** — the four
+  mutual-authorization facts in AP63 would then live in two places, and they are exactly the
+  ones nobody rediscovers by reading code. It renders three fields a paraphrase drops:
+  `reconnected` (a grant written on a live connection is inert), `publisherMustDial` (the step
+  neither side's verb can perform), and `caveat` (withdrawal binds the NEXT handshake).
+  Until 2026-09-02 the whole flow was shell-only and an operator reported, correctly, that
+  there was nowhere to share a folder.
+- **EVERY PANEL DECLARES `IPanelPreferredHeight`, AND A NEW ONE THAT FORGETS IS A LAYOUT BUG**
+  (AP64). `PanelStack` sizes its Grid to `max(viewport, sum-of-slot-minimums)`; a slot's minimum
+  is what its panel declares. `ProgramPanel` was the only implementer for six weeks, so every
+  other panel claimed the 200px default, three panels summed to less than the viewport, and each
+  got ~297px — **less than its own fixed chrome, clipped, with nothing to scroll** while the
+  stack's always-visible scrollbar sat inert. The only workaround was to close panels until one
+  was left, which is what an operator did before any test noticed. The interface's own doc had
+  told implementers to skip it; **a default that is wrong for every caller is a bug with a
+  docstring.** Pair the floor with the other half: never put an unbounded list in a docked
+  region — bound it (`MaxHeight`) so an under-estimate degrades to scrolling rather than to an
+  unreachable button. Gate: `PanelStackScrollTests`, which asserts `Extent > Viewport` at a real
+  window size (the only measurement that tells a scrollbar from a picture of one) and collects
+  every floorless panel before failing.
 - **A "no change needed" claim about another layer or repo is a hypothesis until the
   operation has been run end to end** (D19, AP10). Reading the code path establishes what
   that path does, not what the operation does — the two claims we routed on the strength of

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
@@ -58,7 +59,7 @@ public class FileExplorerPanelEnvelopeTests
             "childFiles": 0,
             "childBytes": 0,
             "size": 1234,
-            "modifiedAt": 1700000000,
+            "modifiedAtMillis": 1700000000000,
             "kind": "code",
             "language": "go",
             "mediaType": "text/x-go",
@@ -95,7 +96,14 @@ public class FileExplorerPanelEnvelopeTests
         Assert.Equal("src/deep/util.go", e.RelPath);
         Assert.False(e.IsDir);
         Assert.Equal(1234, e.Size);
-        Assert.Equal(1700000000, e.ModifiedAt);
+        // MILLISECONDS, and the old value here was the whole problem.
+        // This fixture used to carry `1700000000` — a plausible-looking
+        // number that no producer in either tree emits, because all four
+        // of them write `UnixMilli()`. A fixture holding a value the
+        // production writer never produces cannot fail on a unit
+        // mismatch, so this assertion passed while every file row an
+        // operator clicked threw.
+        Assert.Equal(1700000000000, e.ModifiedAtMillis);
         Assert.Equal("code", e.Kind);
         Assert.Equal("go", e.Language);
         Assert.Equal("text/x-go", e.MediaType);
@@ -152,6 +160,40 @@ public class FileExplorerPanelEnvelopeTests
         // what is on disk.
         Assert.True(dto.Truncated);
         Assert.Equal(999999, dto.Size);
+    }
+}
+
+// The mtime formatter, on its own. The unit bug is fixed at the source
+// and named in the field, and this is the other half: an mtime is a
+// number a FILESYSTEM chose, so the next absurd one will not be ours,
+// and rendering a row must not be able to end the process.
+//
+// Plain [Fact] — a static formatter touches no control.
+public class FileExplorerMtimeTests
+{
+    [Fact]
+    public void A_Millisecond_Mtime_Renders_As_A_Date()
+    {
+        // 2023-11-14T22:13:20Z in milliseconds. Read as SECONDS this
+        // value is year 55869 and throws, which is the shipped defect.
+        Assert.Contains("2023", FileExplorerPanel.FormatMtime(1700000000000));
+    }
+
+    [Fact]
+    public void A_Missing_Mtime_Renders_As_Nothing()
+    {
+        Assert.Equal("", FileExplorerPanel.FormatMtime(0));
+        Assert.Equal("", FileExplorerPanel.FormatMtime(-1));
+    }
+
+    // The guard. `long.MaxValue` is what a corrupt or hostile mtime looks
+    // like after it has crossed a `*uint64`; the row must lose its date,
+    // not the operator their session.
+    [Fact]
+    public void An_Absurd_Mtime_Is_Reported_Rather_Than_Thrown()
+    {
+        var s = FileExplorerPanel.FormatMtime(long.MaxValue);
+        Assert.Contains("out of range", s);
     }
 }
 
@@ -262,6 +304,46 @@ public class FileExplorerPanelMountTests
             var preview = Bridge.TakeString(Bridge.FileExplorerPreview(
                 panel.ExplorerHandleForTests, "notes.txt"));
             Assert.Contains("plain text here", preview);
+
+            // ---- SELECT the rows. Everything above this line drove data
+            // all the way to the row viewmodel and never touched a row.
+            //
+            // That one missing call is why 138/138 was green while the
+            // shipped panel threw on every file an operator clicked:
+            // `OnRowSelected` is reachable only from `SelectionChanged`,
+            // it read a millisecond mtime as seconds, and
+            // `FromUnixTimeSeconds` throws for every date past year 9999.
+            // The operator's report was two symptoms of this one fault —
+            // the preview pane never updated (the throw is upstream of
+            // `LoadPreview`) and the app died on the ninth click, which is
+            // `MaxContainedUiFaults` + 1.
+            //
+            // Verified to fail before it was trusted: restoring
+            // `FromUnixTimeSeconds` makes this throw
+            // ArgumentOutOfRangeException on the first file row.
+            for (var i = 0; i < settled.Count; i++)
+            {
+                panel.SelectRowForTests(i);
+                Assert.NotEqual("", panel.DetailText);
+            }
+
+            var textIndex = settled.FindIndex(r => r.Name == "notes.txt");
+            Assert.True(textIndex >= 0, "notes.txt row missing");
+            panel.SelectRowForTests(textIndex);
+
+            // The mtime renders, and renders as a DATE rather than as a
+            // number that happens not to have thrown. A real file written
+            // moments ago is in this century; asserting the year is what
+            // makes a seconds/milliseconds swap fail here rather than
+            // silently printing 1970.
+            Assert.Contains(DateTime.Now.Year.ToString(CultureInfo.InvariantCulture),
+                panel.DetailText);
+
+            // The preview pane updated. This is the operator's own words —
+            // "the little side panel that said select a file didn't ever
+            // update" — as an assertion.
+            Assert.NotEqual("select a file", panel.PreviewHeaderText);
+            Assert.Contains("plain text here", panel.PreviewText);
         }
         finally
         {
