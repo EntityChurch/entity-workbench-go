@@ -86,10 +86,18 @@ type ShellWorkspace struct {
 	// name through different authorities is a very good way to confuse
 	// someone about which one answered.
 	//
-	// It holds no peer. A Mode A2 consumer reading a static origin is not
-	// a peer and does not become one by being useful — the browser
-	// verifies signatures against keys it derives from peer-ids and never
-	// dispatches anything.
+	// **It holds this workspace's peer** (`bareBrowserOf`), which is what
+	// lets it take the live road when a binding advertises one. This
+	// comment said the opposite until the chooser landed — *"it holds no
+	// peer… and never dispatches anything"* — and that had been true and
+	// was the reason every surface read static origins only.
+	//
+	// A peer is what makes asking a publisher DIRECTLY possible. It is
+	// not a stronger check: an authenticated connection proves who, not
+	// what, and the same `fetch.Consumer` verifies both roads
+	// identically. What it removes is a third party in a position to
+	// withhold a newer root. A workspace with no peer still browses, as
+	// `entity-fetch` does.
 	Browser *workbench.BrowseModel
 
 	// browseAutoPinTried records that the start-up pin has been

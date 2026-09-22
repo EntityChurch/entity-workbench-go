@@ -202,13 +202,17 @@ type Consumer struct {
 	// that did not hash to its own key.
 	Cache *Cache
 
-	mu sync.Mutex
-	// minSeq is the highest published-root `seq` this consumer has
-	// accepted. §3-RES.4's freshness discipline is monotonic per peer,
-	// and enforcing it needs a memory that spans navigations — which is
-	// exactly what a consumer rebuilt per click does not have.
-	minSeq     uint64
-	haveMinSeq bool
+	// floor is the §3-RES.4 monotonicity memory, and it spans
+	// navigations — which is exactly what a consumer rebuilt per click
+	// does not have. Never nil after construction.
+	//
+	// **A pointer, and shareable, because the floor is per PUBLISHER and
+	// not per road.** One publisher reachable both statically and live is
+	// two Sources and therefore two Consumers; giving each its own floor
+	// would mean a fallback to the cheaper road starts from no memory at
+	// all, and accepts a rollback it has already seen through. See
+	// seqfloor.go, and [Consumer.ShareFloorWith].
+	floor *SeqFloor
 
 	// Now backs [VerifiedRoot.ObservedAt]. Nil means time.Now.
 	Now func() time.Time
@@ -225,7 +229,7 @@ func NewConsumerFromSource(src Source, cache *Cache) *Consumer {
 	if cache == nil {
 		cache = NewCache(0)
 	}
-	return &Consumer{src: src, Cache: cache}
+	return &Consumer{src: src, Cache: cache, floor: NewSeqFloor()}
 }
 
 // PeerID is the publisher this consumer reads — the key its signature
@@ -341,28 +345,60 @@ func (c *Consumer) now() time.Time {
 	return time.Now()
 }
 
-// acceptSeq is the §3-RES.4 monotonicity floor, and it is one function
-// so there is one copy of the comparison.
+// acceptSeq applies this consumer's floor, and it stays a method so the
+// call site in [Consumer.VerifiedRoot] keeps reading as one step of the
+// verification rather than as a reach into a collaborator.
 //
 // **Called deliberately AFTER the signature check**: a rollback is a
 // correctly-signed root being replayed, so refusing on `seq` before
 // establishing the signer would be refusing on an unsigned number.
-//
-// Equal is accepted — a republish of one root is not a rollback — and
-// only a strictly higher seq moves the floor.
 func (c *Consumer) acceptSeq(seq uint64, locator string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.haveMinSeq && seq < c.minSeq {
-		return fmt.Errorf("%w: %s served seq=%d and this session already accepted "+
-			"seq=%d from the same publisher — both roots are validly signed, which is what makes "+
-			"this a replay rather than a corruption",
-			ErrSeqRollback, locator, seq, c.minSeq)
+	if c.floor == nil {
+		// Every constructor installs one, so this is a Consumer built by
+		// a struct literal. **Refuse rather than pass**: an absent floor
+		// is an absent rollback check, and the whole failure mode here is
+		// a check that does not happen while everything looks green. Not
+		// a panic either — in the Avalonia runtime that is process death
+		// on the UI thread, and the honest outcome for a reader is one
+		// refused navigation, not a closed window.
+		return fmt.Errorf("this consumer has no %T, so §3-RES.4 monotonicity cannot be enforced "+
+			"and a replayed publication could not be refused — build consumers with "+
+			"NewConsumer/NewConsumerFromSource", &SeqFloor{})
 	}
-	if !c.haveMinSeq || seq > c.minSeq {
-		c.minSeq, c.haveMinSeq = seq, true
+	return c.floor.Accept(seq, locator)
+}
+
+// Floor is the monotonicity memory this consumer is enforcing.
+//
+// Exposed so a caller holding several roads to one publisher can give
+// them all the same one — see [Consumer.ShareFloorWith], which is the
+// spelling to prefer because it says what it is for.
+func (c *Consumer) Floor() *SeqFloor { return c.floor }
+
+// ShareFloorWith makes this consumer enforce another's floor, so two
+// roads to one publisher cannot each start from no memory.
+//
+// **Call it at construction and never mid-session.** Replacing a floor
+// that has already accepted something discards exactly the memory the
+// floor exists to keep, which is a rollback window opened by the call
+// that was supposed to close one. A nil argument is ignored rather than
+// installed, for the same reason.
+func (c *Consumer) ShareFloorWith(other *Consumer) {
+	if other == nil || other.floor == nil {
+		return
 	}
-	return nil
+	c.floor = other.floor
+}
+
+// UseFloor installs a caller-owned floor, for a caller that keeps one
+// per publisher rather than one per consumer.
+//
+// Same rule as [Consumer.ShareFloorWith]: at construction only.
+func (c *Consumer) UseFloor(f *SeqFloor) {
+	if f == nil {
+		return
+	}
+	c.floor = f
 }
 
 // Binding is one committed (key → content hash) pair, with key relative

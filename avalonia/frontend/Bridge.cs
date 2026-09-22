@@ -370,8 +370,15 @@ public static class Bridge
     // and verifies nothing, so there is no wake to wait for. Everything
     // that actually checks something is async.
 
+    // peerHandle is OPTIONAL: 0 opens a browser that reads static
+    // origins and nothing else, which is a complete consumer and not a
+    // degraded one. A real handle additionally lets a binding's live
+    // transports be taken — asking the publisher directly, which is a
+    // dispatch and therefore needs a peer. It buys the removal of a
+    // third party, never a stronger check: the same verifier runs on
+    // both roads.
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "BrowseOpen")]
-    public static extern IntPtr BrowseOpen();
+    public static extern IntPtr BrowseOpen(long peerHandle);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "BrowseRegisterWake")]
     public static extern IntPtr BrowseRegisterWake(long browseHandle, IntPtr callback);

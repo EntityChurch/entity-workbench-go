@@ -7,9 +7,16 @@ package main
 // **Same two departures as verify.go, for the same reasons, and a third
 // that is new.**
 //
-//  1. *No peer handle.* A Mode A2 consumer is not a peer (§6.5.3). The
-//     browser derives every key it verifies against from a peer-id and
-//     dispatches nothing.
+//  1. *The peer handle is OPTIONAL, and that is not the same as absent.*
+//     It was absent, on the reasoning that a Mode A2 consumer is not a
+//     peer (§6.5.3) and the browser derives every key it verifies from a
+//     peer-id and dispatches nothing. The first half is still true — a
+//     peer-less browser reads static origins correctly and completely,
+//     which is `entity-fetch`'s whole configuration — and the second half
+//     stopped being true when a binding's live transports became
+//     reachable: asking a publisher directly IS a dispatch and needs a
+//     peer. So `BrowseOpen` takes one, **0 means none**, and what a peer
+//     buys is the removal of a third party rather than a stronger check.
 //  2. *Operation-triggered wake.* Every other panel wakes on tree events
 //     at a rate we do not control; this one wakes when a navigation
 //     finishes, because a navigation is something an operator started.
@@ -141,11 +148,33 @@ func (p browsePin) pinned() bool {
 
 // BrowseOpen creates a browser panel handle.
 //
+// `peerHandle` is optional and **0 means none**: the browser then reads
+// static origins and nothing else, which is a complete and correct
+// consumer rather than a degraded one. A real handle additionally lets a
+// binding's live transports be taken — see `workbench/browse_road.go`.
+//
+// An unknown non-zero handle is an ERROR and not a silent fall back to
+// the peer-less mode (AP33). A caller that passed a handle asked for the
+// live road; opening without it would produce a browser that quietly
+// cannot do the thing it was configured for, and the symptom would be a
+// publisher looking unreachable.
+//
 //export BrowseOpen
-func BrowseOpen() (result *C.char) {
+func BrowseOpen(peerHandle C.int64_t) (result *C.char) {
 	defer recoverToErrorEnvelope("BrowseOpen", &result)
 
-	bh := &browseHandle{model: wb.NewBrowseModel(nil)}
+	model := wb.NewBrowseModel(nil)
+	if int64(peerHandle) != 0 {
+		if manager == nil {
+			return C.CString(errNotInit)
+		}
+		hp := manager.Get(int64(peerHandle))
+		if hp == nil {
+			return C.CString(errBadPeer)
+		}
+		model.SetPeer(hp.AppPeer)
+	}
+	bh := &browseHandle{model: model}
 	h := atomic.AddInt64(&browseCounter, 1)
 	browseMu.Lock()
 	browsers[h] = bh

@@ -7,7 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"go.entitychurch.org/entity-core-go/core/crypto"
+	"go.entitychurch.org/entity-core-go/core/hash"
 	"go.entitychurch.org/entity-core-go/core/store"
+	"go.entitychurch.org/entity-core-go/core/tree"
 
 	"entity-workbench-go/entitysdk"
 )
@@ -89,6 +92,40 @@ func MintRoot(ctx context.Context, opts MintOpts) (SignedRoot, error) {
 	}
 	signed.Bindings = len(entries)
 	return signed, nil
+}
+
+// RootNow computes what a root over `prefix` WOULD commit to if it were
+// minted this instant, and signs, binds and publishes nothing.
+//
+// # Why a surface needs this
+//
+// A published root commits to a trie root taken at the moment of the
+// publish. Every write under the prefix afterwards is invisible to it —
+// **not stale by a clock, but absent from the commitment** — so a
+// consumer on either road gets the old set and cannot tell that from a
+// publisher who has not posted. `publish status` re-derives the BINDING
+// COUNT for that reason and the count is the weaker signal: it moves
+// only when keys are added or removed, and says nothing when an existing
+// key's bytes change (an edited page, a rewritten index head).
+//
+// Comparing this against [types.PublishedRootData.RootHash] is the whole
+// question *"does what I published still describe what I have"*, and it
+// is the fact a feed needs most: one post rewrites the index head, which
+// changes no count at all.
+//
+// It is a pure read — the same call [mintSignedRoot] makes — so a status
+// surface may run it on a refresh where minting would be a publisher
+// claiming a release every time somebody looks.
+func RootNow(ap *entitysdk.AppPeer, prefix string) (hash.Hash, error) {
+	if ap == nil {
+		return hash.Hash{}, fmt.Errorf("publish: Peer required")
+	}
+	root, err := tree.BuildTrieForPrefix(ap.RawContentStore(), ap.RawLocationIndex(),
+		crypto.PeerID(ap.PeerID()), prefix)
+	if err != nil {
+		return hash.Hash{}, fmt.Errorf("publish: build trie for prefix %q: %w", prefix, err)
+	}
+	return root, nil
 }
 
 // prepareMint lists what the prefix binds and refuses to sign nothing.

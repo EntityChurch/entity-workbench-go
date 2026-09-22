@@ -74,8 +74,13 @@ namespace EntityAvalonia.Panels;
 //        Skia's paint recursion (AP8)
 //   P6 pinned wake   — explicit GCHandle.Alloc on the wake delegate
 //
-// No peer handle: a Mode A2 consumer is not a peer (§6.5.3). The
-// registry factory passes one and this panel ignores it, visibly.
+// The peer handle is passed through and used, which it was not until the
+// transport chooser landed. A Mode A2 consumer is still not a peer
+// (§6.5.3) and this panel browses fine without one — that is
+// `entity-fetch`'s configuration. What the peer enables is taking a
+// binding's LIVE transport: asking the publisher directly, which is a
+// dispatch. It removes a party who could be withholding a newer root; it
+// does not make anything more verified.
 public sealed class BrowserPanel : UserControl, IDisposable, IPanelPreferredHeight
 {
     // Chrome floor: three columns of chain detail beside a rendered page body.
@@ -203,9 +208,13 @@ public sealed class BrowserPanel : UserControl, IDisposable, IPanelPreferredHeig
 
     public BrowserPanel(long peerHandle, IPanelHost? host = null)
     {
-        _ = peerHandle; // see the class note: a verifying consumer is not a peer.
-
-        var openReply = Bridge.TakeString(Bridge.BrowseOpen());
+        // The peer is passed through now. A verifying consumer is still
+        // not a peer — this line used to discard the handle saying so,
+        // and that was right for as long as every road was static. What
+        // the peer adds is the option of ASKING the publisher when its
+        // binding advertises a live transport, which is a dispatch; the
+        // verification is the same either way.
+        var openReply = Bridge.TakeString(Bridge.BrowseOpen(peerHandle));
         _handle = ParseHandle(openReply);
 
         // Every control is constructed even on the failure path; only

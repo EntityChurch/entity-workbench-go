@@ -241,43 +241,86 @@ func TestCache_IncompleteWalkIsNotMemoized(t *testing.T) {
 	}
 }
 
-// TestConsumer_SeqFloorRefusesARollback is the security property a
-// per-navigation consumer does not have.
+// TestConsumer_SeqFloorIsPerPublisherNotPerRoad is the security property
+// a per-ROAD floor does not have.
 //
-// Both roots below are validly signed by the same publisher. That is
-// what makes this a replay and not a corruption: every check except
-// monotonicity passes on the older one, and monotonicity is the only one
-// that needs a memory spanning two reads. Before the consumer was
-// session-scoped, `BrowseModel` built a new one inside `goTo` on every
-// navigation, so the floor was one navigation deep — i.e. absent.
-func TestConsumer_SeqFloorRefusesARollback(t *testing.T) {
-	c := &Consumer{}
-	// Drive the floor directly: standing up two independently-signed
-	// published roots needs a keypair and a publisher, which
-	// publish/consume_walk_test.go already does end to end. What is
-	// under test here is the comparison and its direction.
-	accept := func(seq uint64) error {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if c.haveMinSeq && seq < c.minSeq {
-			return ErrSeqRollback
-		}
-		if !c.haveMinSeq || seq > c.minSeq {
-			c.minSeq, c.haveMinSeq = seq, true
-		}
-		return nil
-	}
-	if err := accept(5); err != nil {
+// # What used to be here, and why it is gone
+//
+// A test of the same name re-implemented the floor comparison inside its
+// own body, and said so: when it was written the comparison was six
+// lines inline in `VerifiedRoot` and there was nothing else to call.
+// `TestAcceptSeqIsTheRealFloor` (source_test.go) was added later to run
+// the real one over the same four cases, and the reimplementation was
+// deliberately left alone as the net for that refactor.
+//
+// It is retired now because **its stated reason expired**: the floor is
+// [SeqFloor], an ordinary callable, so a copy of the rule sitting in a
+// test can only fail to notice when the rule changes. What replaces it
+// is the case nothing covered — two consumers, one publisher.
+//
+// # The property
+//
+// A publisher reachable both live and statically is two [Source]s and
+// therefore two [Consumer]s. If each keeps its own floor, a reader that
+// verified seq=6 on one road and then falls back to the other starts
+// from **no memory**, and a correctly-signed seq=3 replayed by a static
+// origin is accepted in silence. The fallback road is the one a chooser
+// reaches for when the preferred one fails, and a third party serving a
+// stale root is exactly what the static mode exists to confess — so the
+// split points the wrong way in the case that matters.
+func TestConsumer_SeqFloorIsPerPublisherNotPerRoad(t *testing.T) {
+	live := NewConsumerFromSource(NewHTTPSource(Layout{PeerID: srcTestPeer}, nil), nil)
+	static := NewConsumerFromSource(NewHTTPSource(Layout{PeerID: srcTestPeer}, nil), nil)
+	static.ShareFloorWith(live)
+
+	if err := live.acceptSeq(6, "entity://publisher/system/peer/published-root"); err != nil {
 		t.Fatalf("first root refused: %v", err)
 	}
-	if err := accept(5); err != nil {
-		t.Fatalf("the SAME seq was refused: %v — a republish of one root is not a rollback", err)
+	if err := static.acceptSeq(6, "https://origin.test/manifest"); err != nil {
+		t.Fatalf("the SAME seq on the other road was refused: %v — one publisher republishing "+
+			"one root is not a rollback, whichever road carried it", err)
 	}
-	if err := accept(6); err != nil {
-		t.Fatalf("a forward seq was refused: %v", err)
+	err := static.acceptSeq(3, "https://origin.test/manifest")
+	if !errors.Is(err, ErrSeqRollback) {
+		t.Fatalf("seq 3 on the static road was accepted (%v) after seq 6 on the live road — "+
+			"a floor that resets when the road changes is not a floor", err)
 	}
-	if err := accept(3); !errors.Is(err, ErrSeqRollback) {
-		t.Fatalf("seq 3 after seq 6 was accepted (%v) — the origin can replay a previous "+
-			"publish one page at a time", err)
+
+	// Anti-vacuity: the same two consumers WITHOUT the shared floor must
+	// take the rollback. Without this arm the assertion above passes
+	// against any build where `ShareFloorWith` does nothing at all, which
+	// is the one way this fix can silently not be applied.
+	loneLive := NewConsumerFromSource(NewHTTPSource(Layout{PeerID: srcTestPeer}, nil), nil)
+	loneStatic := NewConsumerFromSource(NewHTTPSource(Layout{PeerID: srcTestPeer}, nil), nil)
+	if err := loneLive.acceptSeq(6, "entity://publisher/system/peer/published-root"); err != nil {
+		t.Fatalf("control arm: first root refused: %v", err)
+	}
+	if err := loneStatic.acceptSeq(3, "https://origin.test/manifest"); err != nil {
+		t.Fatalf("control arm: an unshared floor refused seq 3 (%v) — the two consumers are "+
+			"sharing state they were not given, so the positive arm above proves nothing", err)
+	}
+}
+
+// TestShareFloorWithRefusesToDiscardAMemory pins the one way this API can
+// be used to open the window it closes.
+//
+// Installing a floor is a construction-time act. Doing it after a
+// consumer has accepted something replaces the memory with an empty one,
+// so the call that was supposed to close a rollback window opens one.
+// The guard is that the OTHER consumer's floor is what gets installed —
+// so a caller who wires it late still ends up sharing rather than
+// resetting, and a nil argument is ignored outright.
+func TestShareFloorWithRefusesToDiscardAMemory(t *testing.T) {
+	a := NewConsumerFromSource(NewHTTPSource(Layout{PeerID: srcTestPeer}, nil), nil)
+	if err := a.acceptSeq(9, "entity://publisher/root"); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	a.ShareFloorWith(nil)
+	a.UseFloor(nil)
+	if err := a.acceptSeq(4, "entity://publisher/root"); !errors.Is(err, ErrSeqRollback) {
+		t.Fatalf("a nil floor was installed and wiped the memory (%v)", err)
+	}
+	if seq, known := a.Floor().Seq(); !known || seq != 9 {
+		t.Fatalf("floor reports (%d, %v), want (9, true)", seq, known)
 	}
 }

@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"sort"
 
+	"go.entitychurch.org/entity-core-go/core/ecf"
 	"go.entitychurch.org/entity-core-go/core/entity"
 	"go.entitychurch.org/entity-core-go/core/hash"
 	"go.entitychurch.org/entity-core-go/core/types"
@@ -129,19 +130,115 @@ func (t ShareTarget) Validate() error {
 // (§2.3). `Grantee` IS the audience — it matches the minted token's
 // grantee, which §5.2 step 3 hard-DENYs unless it equals the executing
 // author.
+//
+// This struct is the entry's `data` MAP ONLY. On the wire an audience entry
+// is a whole entity — see AudienceList.
 type AudienceEntryData struct {
 	Grantee string `cbor:"grantee"`
 	Via     string `cbor:"via,omitempty"`
 	AddedAt uint64 `cbor:"added_at"`
 }
 
+// AudienceList is a record's `audience` — and the reason it is its own type
+// with its own codec is that **each element is a WHOLE ENTITY on the wire**,
+// not the bare `data` map.
+//
+// §2.2 declares `audience: [* audience-entry]` and §2.3 declares
+//
+//	audience-entry = { type: "app/share/audience-entry",
+//	                   data: { grantee, ? via, added_at } }
+//
+// The convention distinguishes the two shapes one CDDL block apart, which is
+// the whole argument for this type existing: `share-target`'s arms are bare
+// inline maps with **no `type` key** (`blob-target = { tag, hash }`), and
+// `audience-entry` is not one. We emitted the bare form for as long as this
+// type has existed, and every gate we had was green because our hand-built
+// fixtures and our decoder were wrong in the same direction. It was caught by
+// entity-browser-rust's own bytes arriving (ask `B-7`) —
+// `share_crossimpl_test.go`.
+//
+// **Corrected here rather than routed**, because the convention decides it
+// outright: theirs matches the CDDL and ours did not. Same call as the `sites/`
+// placement (AP96).
+type AudienceList []AudienceEntryData
+
+// audienceEntryEnvelope is the wire form of one element. Key order is the
+// canonical one ECF produces (`data` before `type`); nothing here relies on
+// struct field order.
+type audienceEntryEnvelope struct {
+	Data AudienceEntryData `cbor:"data"`
+	Type string            `cbor:"type"`
+}
+
+// MarshalCBOR writes each entry as a whole `app/share/audience-entry` entity.
+//
+// A nil list still writes `[]` and never `null`: §2.2 gives the **present and
+// empty** array the meaning *"an authored share with no members yet"* — the
+// self-only state — and an absent or null key is a publication's shape, which
+// is the opposite meaning. SHARE-7 is the vector that fails on the confusion.
+func (l AudienceList) MarshalCBOR() ([]byte, error) {
+	out := make([]audienceEntryEnvelope, 0, len(l))
+	for _, a := range l {
+		out = append(out, audienceEntryEnvelope{Data: a, Type: TypeShareAudience})
+	}
+	return ecf.Encode(out)
+}
+
+// audienceWire admits both arms in one pass. The two shapes have disjoint key
+// sets, so the discrimination is exact rather than heuristic.
+type audienceWire struct {
+	// The conformant arm.
+	Type string            `cbor:"type"`
+	Data AudienceEntryData `cbor:"data"`
+	// The legacy arm — OUR OWN pre-2026-09-13 emission, which put the entry's
+	// data fields at the top level of the element.
+	Grantee string `cbor:"grantee"`
+	Via     string `cbor:"via"`
+	AddedAt uint64 `cbor:"added_at"`
+}
+
+// UnmarshalCBOR reads the conformant form and, READ-ONLY, the legacy bare-data
+// form this SDK used to write.
+//
+// The legacy arm is a migration, not leniency (cf. AP33): those bytes are in
+// real trees on real peers because we put them there, and every share offer an
+// operator has ever authored is in that shape. It is never written back — the
+// next `SaveShareOffer` for a root emits the conformant form — which is the
+// same posture as the `content-type` → `content_type` window-state fix: the
+// new spelling is written, the old one is read and then gone.
+//
+// A malformed element (neither arm) is an ERROR. Turning one into an entry
+// with an empty grantee would put a member nobody named into an audience.
+func (l *AudienceList) UnmarshalCBOR(b []byte) error {
+	var wire []audienceWire
+	if err := ecf.Decode(b, &wire); err != nil {
+		return err
+	}
+	out := make(AudienceList, 0, len(wire))
+	for i, w := range wire {
+		switch {
+		case w.Type == TypeShareAudience && w.Data.Grantee != "":
+			out = append(out, w.Data)
+		case w.Type == "" && w.Grantee != "":
+			// Legacy. See the doc comment.
+			out = append(out, AudienceEntryData{Grantee: w.Grantee, Via: w.Via, AddedAt: w.AddedAt})
+		default:
+			return NewError(400, "invalid_share_record",
+				fmt.Sprintf("audience element %d is neither an %s entity nor this SDK's legacy "+
+					"bare-data form (APP-CONVENTION-SHARE §2.3)", i, TypeShareAudience))
+		}
+	}
+	*l = out
+	return nil
+}
+
 // ShareRecordData is the share itself (§2.2).
 type ShareRecordData struct {
-	Title     string              `cbor:"title"`
-	Target    ShareTarget         `cbor:"target"`
-	Audience  []AudienceEntryData `cbor:"audience"`
-	Note      string              `cbor:"note,omitempty"`
-	CreatedAt uint64              `cbor:"created_at"`
+	Title     string       `cbor:"title"`
+	Target    ShareTarget  `cbor:"target"`
+	Audience  AudienceList `cbor:"audience"`
+	Note      string       `cbor:"note,omitempty"`
+	CreatedAt uint64       `cbor:"created_at"`
 }
 
 // SharePublicationData is §2.5's audience-less share — `ShareRecordData`

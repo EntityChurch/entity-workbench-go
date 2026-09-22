@@ -45,6 +45,23 @@ func encodeOfferEntity(t *testing.T, typeName string, data map[string]interface{
 // so a rename on our side fails this file instead of being invisible to it.
 // This is the cheap arm; it is not the arm that would catch a divergence in
 // *their* encoder, which needs their bytes — offered in the reply packet.
+//
+// ⛔ **PARTIAL RETRACTION, 2026-09-13 (AP101).** The paragraph above was the
+// argument for this file and it was **too strong about the `audience` field**.
+// A body here is hand-built, so it is only as right as the hand that built it —
+// and this file's audience elements were the bare `data` map, which is the
+// non-conformant shape `APP-CONVENTION-SHARE` §2.3 does not declare. **Our
+// fixture and our decoder were wrong in the same direction, so they agreed with
+// each other and this file stayed green** across the whole period the defect
+// shipped. (These two tests survive the correction untouched because neither
+// asserts on a *record's* audience elements: the publication type has no
+// `audience` field at all, and the self-only row's array is empty.)
+//
+// The real arm is `entitysdk/share_crossimpl_test.go`, against their frozen
+// bodies — which is what this comment already says is missing, and which is now
+// there. **Keep this file**: it is still the only thing that fails on a rename
+// of one of OUR struct tags, which their bytes cannot see. What it is not is
+// evidence about the shape.
 
 func publicationEntity(t *testing.T, data map[string]interface{}) entity.Entity {
 	t.Helper()

@@ -37,7 +37,7 @@ D12–D27 here are ours, earned on the eight crash-hunt commits, two feedback ep
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP99, and the promotion
+  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP102, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -70,6 +70,18 @@ Three rules about work that crosses a repo boundary, each earned the hard way:
   weeks later arch's board still carried a **⛔ blocker against us for the defect it reports as
   fixed**, source-read at a commit that predates the fix by hours. Archive on **delivery plus
   reply**, never on our own side of the work being finished.
+  **THIS RULE HAS A RECEIVING DIRECTION AND WE HAD ONLY EVER POINTED IT OUTWARD** (AP102,
+  2026-09-13). Every instance above is a packet of *ours* that never reached *them*. On 2026-09-12
+  `entity-browser-rust` routed us three, and the next day **none of the three was in this tree** —
+  measured, `grep -rl` over all of `docs/` for the three stems, zero hits — including the one
+  carrying a joint fixture **built, routed, and waiting on the seat that had accepted the producer
+  role.** The symptom was work not happening, on our side, with every gate green; nothing was
+  broken, because a missing packet is a *discovery you have not made yet*, which is the one
+  category a green tree cannot report on. **Reconcile against the counterpart's TRACKER on a
+  schedule you keep, not when you happen to be writing to them.** The tell is their
+  *last reconciled* line being newer than yours — theirs read our tip that morning, ours was three
+  days stale — and the structural cost is that *a party that reads more often than it is read
+  becomes the only one who knows the state.*
 - **There are exactly three counterpart seats, and each has ONE tracker at a PREDICTABLE PATH:
   `docs/status/TRACKER-<counterpart-repo>.md`** — `TRACKER-entity-core-go.md` (upstream substrate:
   a defect in an implementation of something already decided), `TRACKER-entity-system-architecture.md`
@@ -594,7 +606,7 @@ one — name the recurring cycle first, then let each step own one lever of it.
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
 - The project measures everything against the **27 disciplines (D1–D27)**, ten review
-  questions, and anti-pattern catalog (AP1–AP98) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+  questions, and anti-pattern catalog (AP1–AP100) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A COPY OF A LIVE SQLITE STORE IS NOT THE STORE, AND THE MISSING WRITES READ AS ZERO ROWS**
   (AP76). File-backed `SqliteStore` opens **WAL** (`core/store/sqlite.go`, `buildSqliteDSN`
   defaults `JournalMode` to `"WAL"`), so everything since the last checkpoint is in the `-wal`
@@ -1836,6 +1848,91 @@ entities):
   - **A workbench-published site is "verified as of `published_at`", never "verified"** — a quiet
     publisher and a withholding origin are indistinguishable at the consumer (§6.5.3.1, D6/D7).
   Result packet: `docs/architecture/reviews/archive/PUBLISHER-CONFORMANCE-RESULT-2026-08-18.md`.
+- **THE SOCIAL VOCABULARY IS BUILT — `entitysdk/embed.go` + `feed.go` — AND IT AGREES WITH THE
+  OTHER SEAT BYTE-FOR-BYTE** (W5, 2026-09-13). `APP-CONVENTION-EMBED` §3 (the node, `embed-data`,
+  the three-arm tagged payload union, the `.size (1..16384)` bound, the passive-only **render**
+  refusal) and `APP-CONVENTION-FEED` (`entry`, `index-head`, `index-page`, `follow`, the index
+  builder, `FEED-R2`'s detached signature). **Build order is forced by the documents, not chosen:**
+  reference → embed → feed, because a feed entry's `body` *is* an embed node and an embed's `child`
+  arm carries a reference atom.
+  `entitysdk/feed_crossimpl_test.go` produces against `entity-browser-rust`'s `J-4` fixture —
+  **five of five on the first run, no correction to either side**: peer id from the pinned seed, 5
+  entry hashes, 5 detached signatures *and* their invariant-pointer keys, 4 index bindings key by
+  key, and the trie root over the §4.2-pinned keys. Two code bases, two languages, one authored
+  input, so per [ADR-0012] this is **not cohort-consistent**.
+  Four rules, each of which costs a session if missed. **`signer` is the identity ENTITY's content
+  hash, never the peer-id string** — FEED's shorthand reads *"signer = author"* and
+  `system/signature` is the kernel's type; `MintEntrySignature` is the one place. **Pages fill
+  oldest-first and read newest-first WITHIN a page, and reversing BOTH round-trips perfectly**, so
+  a harness that re-reads its own index cannot see it — implemented as a reversal and never a sort,
+  because sorting consults `created_at`, which §2.3.2 forbids relying on. **A page's `updated_at`
+  is their reading of a field with no stated semantics** (arch `A-41`) and we match it
+  *deliberately and say so* — one seat becomes the baseline either way. **The fixture pins a SEED,
+  not a peer id**, because `FEED-R1` puts the author in the bytes; the SHARE fixture is the exact
+  inverse (no peer id anywhere — §4 makes the namespace the publisher). Two conventions, opposite
+  answers on one axis.
+  **§4 `EmbedOutput` is deliberately NOT built** and the file header says why: an entry stores what
+  was *authored* and the handler runs at the *reader*, so storing the output surface fixes the
+  rendition choice for every reader forever — and an output vocabulary with no renderer is D23's
+  violation carrying a closed enum we would then have to keep.
+  ⚠ **We have a producer and NO READER, so four reader-side `[MUST]`s have no gate here at all**
+  (§1.1's namespace check on receipt — `ValidateInNamespace` has no caller outside its own test;
+  §2.2.2's four resolution outcomes; §4.3 rule 6's fall-back-to-enumeration; §4.4's
+  resume-from-page). The evidence is one-directional and a green fixture does not change that.
+- **A PEER PUBLISHES A FEED NOW — `post` / `feed`, `entitysdk/feed_author.go` — AND THE THING THAT
+  ATTRIBUTES AN ENTRY IS OUTSIDE EVERY PREFIX A PUBLISHER CAN COMMIT TO** (2026-09-14; arch's
+  `AZ-s4` and our own surface question, which are one item from two sides). W5 shipped the
+  vocabulary with no verb and no pixel; this is the production path. **A post APPENDS** — entry →
+  its `FEED-R2` signature → the current index page → the head, in that order, because a head naming
+  a page whose entries are not bound yet is a feed that overstates itself and a reader cannot tell
+  that from a withholding origin. One post touches two index keys and **a full page is never read
+  or re-encoded again**, which is §4.3 rules 1 and 3 holding by construction. `BuildFeedIndex`
+  stays the reference and `TestFeedAuthor_AppendEqualsFullRebuild` asserts the appended index is
+  **byte-identical** to a full build across two page boundaries — the fixture measures a builder
+  and the product uses an appender, and nothing else in either tree compares them.
+  ⛔ **The finding: `FEED-R2`'s detached signature lives at `system/signature/{hex(entry_hash)}`
+  (V7 §3.5) and a feed publish commits to `app/feed/`.** No prefix contains both except the whole
+  tree, which `PublicSiteGrants` refuses for a public read and rightly. Measured, two arms
+  (`publish/feed_live_test.go`): absent from the committed key set; reachable by a **live** reader
+  only because the grant names `system/signature/*` separately. **A static reader has no second
+  channel**, so every entry arrives unattributable and `FEED-R4` cannot distinguish that from an
+  author who never signed. The other seat mints the same signature at the same key under the same
+  prefix, so it is a property of the convention — routed as our `A-36`, and **`feed` prints it as a
+  standing caveat** because the operator who publishes is the only party who can act on it.
+  Three rules the build earned. **POSTING IS NOT PUBLISHING and nothing in the substrate says so**
+  — a published root commits to a trie root taken at mint time, so a post is invisible to every
+  reader on both roads and looks exactly like not having posted; `publish.RootNow` is the check and
+  **the binding count is not**, because one post rewrites the index head in place and changes no
+  count at all. **A trie's keys are relative to its prefix**, so `app/feed` and `app/feed/` give
+  different roots over identical bytes — trimming the slash made `feed` report the root as stale
+  forever, which is a permanent line in a problems list, which is how an operator learns to skip
+  the list. And ⚠ **a walk's keys are relative to the PUBLISHED PREFIX while §4.2's pinned address
+  is not**: a root over `app/feed/` commits to `index`, not `app/feed/index` (§3.3a:
+  *`prefix + relative_key`*). Our own live gate asserted the wrong one and failed against a correct
+  feed; a reader that gets this wrong sees **an empty feed with a valid signature over it**, which
+  is the most confident wrong answer available.
+  `ValidateInNamespace` has callers now — the emitting side and the live gate's reading side — so
+  one of §40's four ungated reader `[MUST]`s is gated and **the other three are not**. `feed` is
+  **not a reader**: it reads this peer's own tree with this peer's own authority and says so.
+- **A LIST OF ENTITIES IS NOT A LIST OF MAPS, AND THE CDDL SAYS WHICH ONE BLOCK APART** (AP101,
+  fixed 2026-09-13). `APP-CONVENTION-SHARE` §2.2's `audience: [* audience-entry]` plus §2.3's
+  `audience-entry = { type: "app/share/audience-entry", data: {…} }` make each element a **whole
+  entity map**; we emitted the bare `data` map, on every `app/share/record` this product has ever
+  authored. **The same file's `share-target` arms are bare inline maps with no `type` key**, so the
+  convention does distinguish the two shapes in neighbouring declarations — which makes this our
+  non-conformance and not a cohort disagreement, so it was **fixed here and reported**, the
+  opposite call from AP92 where the text genuinely does not decide. The tell: **a CDDL production
+  carrying a `type:` key, used as a field's element type.**
+  **Why every gate was green is the half to carry.** `workbench/share_publication_crossimpl_test.go`
+  builds its bodies by hand from the CDDL and from their field spellings — and our hand-built
+  audience and our decoder were wrong in the *same direction*, so the pair agreed with itself
+  indefinitely. *A test population you generated cannot contain the shape you are missing.* Found
+  in the first hour of vendoring their own emission (`entitysdk/testdata/crossimpl-rust-share/`,
+  ask `B-7`), which we had filed **naming exactly this asymmetry**.
+  Migration: the conformant shape is written, the legacy bare-data shape is **read-only** and gone
+  at the next save — those bytes are on real machines — and an element in neither shape is an
+  **error**, never a zero-valued entry, because a silent zero puts a member nobody named into an
+  audience.
 - **A SITE LIVES AT `/{peer}/sites/{id}/`, AND THE SDK WROTE IT SOMEWHERE ELSE FOR FOUR MONTHS**
   (AP96, fixed 2026-09-12). `APP-CONVENTION-SEMANTIC-CONTENT-SITE` v0.5 §2 **drops
   `content/sites/` by name** — `system/content/*` is the CONTENT extension's namespace, where the
@@ -2028,11 +2125,60 @@ entities):
   the arm that matters in `publish/live_and_static_test.go`, where both sentences come out of **real
   verifications of one published act** rather than struct literals — the hand-built one cannot fail
   if `Describe` is never called on a real read.
-  ⛔ **Owed: nothing a user can reach takes the live road.** `BrowseModel` holds an `*http.Client`
-  and no peer, so `TransportsFor` reports live candidates and every shipped caller still picks
-  static. Named rather than absorbed (D23). **Sequence it behind W4's public grant** — a road that
-  exists and leads to a publisher who authorizes nobody fails as *"that machine is broken"* on the
-  reader's screen.
+  ~~⛔ **Owed: nothing a user can reach takes the live road.**~~ — **CLOSED 2026-09-13**, see the
+  chooser bullet below. It was correctly sequenced behind W4's public grant: a road that exists and
+  leads to a publisher who authorizes nobody fails as *"that machine is broken"* on the reader's
+  screen.
+- **THE CHOOSER: RANKING IS THE SPEC'S, PICKING A CLASS IS OURS, AND THE LADDER STOPS AT THE FIRST
+  VERIFIED ROOT** (`workbench/browse_road.go`, 2026-09-13). `TransportsFor` ranked and `PeerSource`
+  read, and between them sat nothing — `BrowseModel.goTo` called `OriginFor`, the static half, so
+  **every shipped surface took the static road however loudly a publisher advertised itself as
+  reachable.** Now `roadsFor` partitions the ranked candidates into roads this browser can drive and
+  `travel` walks them. Four rules, each earned:
+  **Live first, and it is not a stronger check.** D1 orders profiles *of the wanted transport_type*
+  and says nothing about static-vs-live, because that depends on what the consumer can do —
+  `entity-fetch` links no peer. So the class preference is ours, and its whole justification is that
+  a live read removes a party who could be withholding a newer root. An authenticated connection
+  proves WHO, not WHAT; one `fetch.Consumer` verifies both roads identically.
+  **Within a class the order is D1's and the chooser is a PARTITION, not a re-sort** — otherwise a
+  publisher's declared preference between two mirrors is discarded by the fix for discarding it.
+  **The ladder falls through on a decline and stops at the first VERIFIED root.** §6.5.1c rule 6
+  makes a profile *"not a promise that it currently answers"*, so a dial that fails moves to the next
+  road; but answering an incomplete walk on the live road with an origin's older copy would destroy a
+  finding **about the publisher** and put bytes on screen while doing it.
+  **A family we cannot dial is declined BY NAME** — core-go implements `Connect` (TCP) and
+  `ConnectWebSocket` and no other, so an `http` transport profile is conformant and undrivable;
+  handing it to `Connect` dies in `net.SplitHostPort` with *"too many colons"*, which reads as the
+  publisher's fault. The decline says *"this browser dials tcp and websocket"* — a fact about us.
+  **A peer-id address with no origin now works when we already hold a connection**
+  (`canReachLive`). The old refusal — *"a peer-id address needs an origin to fetch from"* — was true
+  about peer-ids (§6.5.4) and false about that situation, i.e. AP44 again, and it is the
+  configuration a laptop is permanently in. It never dials a guess and never invents an address; the
+  two qualifying cases are *it is us* and *we hold a connection*, and the pool tags neither direction
+  (AP82's neighbour) — acceptable here because the worst case is a dispatch that fails and a chain
+  row saying so, and **not** acceptable for minting a grant or binding an identity.
+  Surfaces, same change (D23): the shell's browser takes the workspace peer (`bareBrowserOf`) and
+  `BrowseOpen` takes a peer handle, **0 meaning none and an unknown one being an ERROR** (AP33) —
+  falling back to peer-less would make the live road silently unavailable and the symptom land on
+  the other machine. Gates: `workbench/browse_road_test.go` (order, declines, the no-peer arm, and
+  the undialable-family arm with its websocket anti-vacuity control) and
+  `publish/live_and_static_test.go`'s `TestBrowseModel_PeerIDAddressTakesTheLiveRoadWithNoOrigin`,
+  which drives the model every surface drives, over a real published act, with **no origin in
+  existence** and a peer-less control arm that must refuse.
+- **A CHECK'S MEMORY MUST BE KEYED BY WHAT THE RULE IS ABOUT, NOT BY THE OBJECT THAT PERFORMS IT**
+  (AP100, fixed 2026-09-13). The §3-RES.4 `seq` floor was a field on `fetch.Consumer`, which is a
+  per-publisher floor for exactly as long as a publisher is reachable one way. The chooser makes two
+  consumers per publisher deliberate, and **the split points the wrong way**: a reader that verified
+  seq=7 live and falls back to a static origin would start from no memory and accept a replayed
+  seq=3 in silence — the fallback being the road a chooser reaches for, and a third party serving a
+  stale root being what the static mode exists to confess. Now `fetch.SeqFloor`, shared through
+  `BrowseModel.floorFor`, keyed by peer-id **and nothing else**. Note the hazard had been named and
+  routed around rather than fixed — `consumerFor`'s own doc comment said *"two consumers for one peer
+  would each hold their own seq floor, which is how a floor stops being one"* and keyed defensively
+  against a narrower version of it, which is AP45's shape. Two gates because one cannot see the
+  other's failure: the mechanism in `fetch` (with the control arm proving an unshared pair still
+  takes the rollback) and the **wiring** in `workbench` — a correct `SeqFloor` reached by two
+  different keys is the defect wearing the fix.
 - **`publish` IS ONE ACT WITH TWO PROJECTIONS, AND THE GRANT IS THE DANGEROUS HALF** (W4, 2026-09-12).
   Publishing is signing a `system/peer/published-root` over a prefix; the static directory and the
   live serve are projections of that one act, which is why `publish.MintRoot` and `publish.Publish`

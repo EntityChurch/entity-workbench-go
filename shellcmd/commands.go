@@ -404,6 +404,20 @@ func init() {
 		Handler: cmdAccess,
 	})
 	r.Register(Command{
+		Name:  "post",
+		Usage: "post <text> | post -reply <entry-hash> <text>",
+		Help: "Write one entry into this peer's feed, signed individually. " +
+			"Posting is not publishing: run `publish` to move it into the signed root.",
+		Handler: cmdPost,
+	})
+	r.Register(Command{
+		Name:  "feed",
+		Usage: "feed [-limit N]",
+		Help: "This peer's own feed, newest first, with whether a signed root covers it " +
+			"and who is authorized to read it.",
+		Handler: cmdFeed,
+	})
+	r.Register(Command{
 		Name:  "publish",
 		Usage: "publish [-prefix P | -site ID] [-out DIR -origin URL] [-public|-private] | publish status",
 		Help: "Sign a root over this peer's sites and choose who may read it. " +

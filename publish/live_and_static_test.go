@@ -519,3 +519,87 @@ func TestLiveRead_UnpublishedPeerIsItsOwnState(t *testing.T) {
 	}
 	t.Logf("third state, named: %v", err)
 }
+
+// TestBrowseModel_PeerIDAddressTakesTheLiveRoadWithNoOrigin is W3's
+// chooser, end to end, through the model every shipped surface drives.
+//
+// # Why this arm and not another
+//
+// The unit gate (`workbench/browse_road_test.go`) asserts the ORDER of
+// the roads and the declines. What it cannot assert is that taking the
+// live road produces a page: `roadsFor` has no bytes in it. And the two
+// arms above construct their consumers directly, so nothing in this file
+// had ever *chosen* a road either.
+//
+// This one goes through `BrowseModel.Open`, which is what `entity-shell`'s
+// `open` verb and the Avalonia Browser panel's address box both call. A
+// green run means an operator typing a peer-id gets a verified page off a
+// machine with **no origin at all** — which is the configuration a laptop
+// is permanently in, and the one the static corridor structurally cannot
+// serve.
+//
+// # The refusal it replaces
+//
+// Before the chooser this returned *"a peer-id address needs an origin to
+// fetch from"*. That sentence was true about peer-ids (NETWORK §6.5.4)
+// and false about this situation — the reader was already connected to
+// the publisher — which is AP44's shape: a refusal asserting a fact about
+// the world, correct in general and wrong here, leaving no wrong answer
+// behind for anyone to catch.
+func TestBrowseModel_PeerIDAddressTakesTheLiveRoadWithNoOrigin(t *testing.T) {
+	pair := newLivePair(t, readSiteGrants())
+	ctx := context.Background()
+
+	m := workbench.NewBrowseModel(nil)
+	m.SetPeer(pair.reader)
+	// No registry pin and NO TARGET ORIGIN. The static corridor is
+	// deliberately unreachable from this model, so a green run cannot be
+	// the origin answering.
+	addr := "entity://" + pair.publisher.PeerID() + "/" + liveSiteID + "/index"
+	if err := m.Open(ctx, addr); err != nil {
+		t.Fatalf("Open(%s): %v", addr, err)
+	}
+
+	out := m.Render()
+	if out.Err != "" {
+		t.Fatalf("navigation reported: %s", out.Err)
+	}
+	if !strings.Contains(out.Content.BodyMarkdown, "Read this from a CDN or from the machine that wrote it") {
+		t.Fatalf("page body is not the published one:\n%s", out.Content.BodyMarkdown)
+	}
+
+	// The chain must say a LIVE peer answered, and must say it from the
+	// Source rather than from the model's memory of what it built — that
+	// is fetch/freshness.go's rule and the reason `Mode` rides on the
+	// root.
+	if !strings.Contains(out.Freshness, "the publisher answered for itself") {
+		t.Errorf("freshness sentence is not the live one:\n  %s", out.Freshness)
+	}
+	if strings.Contains(out.Freshness, "withholding origin") {
+		t.Errorf("a live read was captioned with the static sentence:\n  %s", out.Freshness)
+	}
+	var transport workbench.ConsumeStep
+	for _, s := range out.Steps {
+		if s.Name == "transport" {
+			transport = s
+		}
+	}
+	if transport.Status != workbench.StepOK || !strings.Contains(transport.Detail, "live peer") {
+		t.Errorf("transport step does not name the live road: %+v", transport)
+	}
+	if !strings.Contains(transport.Detail, "no origin consulted") {
+		t.Errorf("transport step does not say an origin was never consulted: %q", transport.Detail)
+	}
+
+	// Anti-vacuity, and it is the arm that matters: the SAME address on a
+	// browser with NO PEER must refuse, naming the missing origin. Without
+	// it, everything above is satisfied by a build in which the peer-id
+	// branch quietly reads the local store.
+	noPeer := workbench.NewBrowseModel(nil)
+	if err := noPeer.Open(ctx, addr); err == nil {
+		t.Fatal("a peer-less browser opened a peer-id address with no origin — the live road " +
+			"is being taken by something other than the peer")
+	} else if !strings.Contains(err.Error(), "needs an origin") {
+		t.Errorf("the peer-less refusal changed shape: %v", err)
+	}
+}

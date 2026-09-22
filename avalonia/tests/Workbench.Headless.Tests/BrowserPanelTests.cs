@@ -92,16 +92,40 @@ public sealed class BrowserPanelTests
     [AvaloniaFact]
     public void Mount_Opens_Valid_Handle_Without_A_Peer()
     {
-        // A Mode A2 consumer is not a peer. The registry factory passes a
-        // peer handle; the panel must not depend on it.
+        // A Mode A2 consumer is still not a peer: a browser with none
+        // reads static origins correctly and completely, which is
+        // `entity-fetch`'s whole configuration. What a peer adds is the
+        // option of asking a publisher DIRECTLY when its binding
+        // advertises a live transport — a dispatch, not a stronger check.
+        //
+        // So the handle is optional and **0 means none**. This arm used to
+        // pass -1 and assert the panel opened anyway; under the chooser
+        // that is the wrong contract, because an invalid handle means a
+        // caller asked for the live road and did not get it, and opening
+        // peer-less would make the live road silently unavailable forever.
+        // The refusal arm below is the half that matters.
         using var panel = new BrowserPanel(_bridge.DefaultPeer);
         Assert.True(panel.HandleForTests >= 0,
             $"expected a non-negative browse handle on mount; got {panel.HandleForTests}");
 
-        using var second = new BrowserPanel(-1);
+        using var second = new BrowserPanel(0);
         Assert.True(second.HandleForTests >= 0,
-            "the panel must open even with no valid peer handle at all");
+            "the panel must open with no peer at all — that is a complete consumer, not a broken one");
         Assert.NotEqual(panel.HandleForTests, second.HandleForTests);
+    }
+
+    [AvaloniaFact]
+    public void An_Invalid_Peer_Handle_Is_Refused_Rather_Than_Silently_Peerless()
+    {
+        // AP33 at this seam. A caller that passes a handle is asking for
+        // the live road; falling back to the peer-less mode would produce
+        // a browser that quietly cannot do the thing it was configured
+        // for, and the symptom lands on the OTHER machine — a publisher
+        // advertising a live transport would simply look unreachable.
+        using var panel = new BrowserPanel(-1);
+        Assert.True(panel.HandleForTests < 0,
+            "an unknown peer handle opened a browser anyway; a silent fall back to the peer-less " +
+            "mode is indistinguishable from a publisher being down");
     }
 
     [AvaloniaFact]

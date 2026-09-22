@@ -11,6 +11,7 @@ import (
 
 	"go.entitychurch.org/entity-core-go/core/types"
 
+	"entity-workbench-go/entitysdk"
 	"entity-workbench-go/entitysdk/publishedroot"
 	"entity-workbench-go/fetch"
 )
@@ -309,7 +310,27 @@ type BrowseModel struct {
 	// of the browser. Rebuilding one per navigation is what reset the
 	// seq floor to nothing (fetch.ErrSeqRollback) and threw away every
 	// verified byte between two clicks.
+	//
+	// A live road keys as `entity://{peer-id}` and a static one by
+	// layout, so one publisher reachable both ways has two entries here
+	// — deliberately, because they are two readers. What they must NOT
+	// have is two floors; see `floors` below.
 	consumers map[string]*fetch.Consumer
+	// floors is the §3-RES.4 monotonicity memory, one per PUBLISHER and
+	// shared by every consumer reading that publisher. See
+	// browse_road.go: keyed by peer-id because the road that carried a
+	// root is not part of the statement the floor makes.
+	floors map[string]*fetch.SeqFloor
+
+	// peer is what makes the live road available, and nil is the ordinary
+	// case rather than a degraded one.
+	//
+	// `entity-fetch` and a browser opened before a peer exists are
+	// genuinely peer-less Mode A2 consumers, and they read static origins
+	// correctly and completely. What a peer adds is the ABILITY to ask a
+	// publisher directly — one fewer party who could be withholding a
+	// newer root — never a stronger check. See browse_road.go.
+	peer *entitysdk.AppPeer
 
 	history []Address
 	hpos    int
@@ -339,7 +360,39 @@ func NewBrowseModel(client *http.Client) *BrowseModel {
 		hpos:      -1,
 		cache:     fetch.NewCache(0),
 		consumers: map[string]*fetch.Consumer{},
+		floors:    map[string]*fetch.SeqFloor{},
 	}
+}
+
+// SetPeer gives this browser the ability to take the live road.
+//
+// Optional, and a browser without one is not degraded — it is
+// `entity-fetch`'s configuration, which reads static origins correctly
+// and completely. What the peer adds is the option of asking a publisher
+// directly when the publisher's binding says it is reachable; see
+// browse_road.go for the choice and for what it is and is not worth.
+//
+// **Set it before the first navigation.** A consumer is cached per
+// publisher for the life of the browser, so a peer arriving mid-session
+// changes nothing about publishers already read — which is the honest
+// behaviour (a road is chosen once and the chain on screen describes the
+// one that answered) but would be surprising if it were discovered rather
+// than stated.
+func (m *BrowseModel) SetPeer(ap *entitysdk.AppPeer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.peer = ap
+}
+
+// HasPeer reports whether the live road is available at all.
+//
+// Exists for surfaces and for the refusal text: *"no live transport was
+// offered"* and *"a live transport was offered and this browser cannot
+// dispatch"* send an operator to two different machines.
+func (m *BrowseModel) HasPeer() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.peer != nil
 }
 
 // consumerFor returns the verifying reader for a layout, building it
@@ -348,16 +401,25 @@ func NewBrowseModel(client *http.Client) *BrowseModel {
 // Keyed by (peer-id, origin, manifest URL) rather than by peer-id alone:
 // a re-based layout and a discovered one can name the same peer through
 // different prefixes, and they are different readers of the same
-// publisher. Two consumers for one peer would each hold their own seq
-// floor, which is how a floor stops being one.
+// publisher.
+//
+// **The seq floor is NOT keyed that way and must not be.** This comment
+// used to end *"two consumers for one peer would each hold their own seq
+// floor, which is how a floor stops being one"*, and avoided the problem
+// by keying defensively. That stopped being enough the moment a
+// publisher could be read live AND statically, which is two consumers for
+// one peer on purpose — so the floor moved out to `floorFor`, one per
+// peer-id, and every consumer built here takes it.
 func (m *BrowseModel) consumerFor(layout fetch.Layout) *fetch.Consumer {
 	key := layout.PeerID + "|" + layout.Origin + "|" + layout.ManifestURL()
+	floor := m.floorFor(layout.PeerID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if c, ok := m.consumers[key]; ok {
 		return c
 	}
 	c := fetch.NewConsumerWithCache(layout, m.client, m.cache)
+	c.UseFloor(floor)
 	m.consumers[key] = c
 	return c
 }
@@ -704,9 +766,8 @@ func (m *BrowseModel) goTo(ctx context.Context, addr Address) error {
 	// hop 1 — the name
 	// ---------------------------------------------------------------
 	var (
-		res    fetch.NameResolution
-		origin fetch.Origin
-		err    error
+		res fetch.NameResolution
+		err error
 	)
 	if addr.Name == "" {
 		nav.skipAll(
@@ -766,16 +827,75 @@ func (m *BrowseModel) goTo(ctx context.Context, addr Address) error {
 	// ---------------------------------------------------------------
 	// hop 2 — the target
 	// ---------------------------------------------------------------
-	var layout fetch.Layout
+	var (
+		layout   fetch.Layout
+		consumer *fetch.Consumer
+		root     fetch.VerifiedRoot
+	)
+	// liveDecline is what the live road said when it was tried and did not
+	// answer. Kept so the fall-through to an origin still REPORTS it: a
+	// decline that vanishes because a second road worked is the one fact
+	// an operator needs in order to know their own peer is half-connected.
+	liveDecline := ""
 	if addr.Name == "" {
-		if targetOrigin == "" {
-			return m.failedChain(nav, errors.New(
+		// A peer-id address with a peer that can already reach that peer
+		// needs no origin at all — we ask them. This branch used to refuse
+		// outright whenever `targetOrigin` was empty, on the true premise
+		// that a peer-id says nothing about where its bytes are served
+		// (NETWORK §6.5.4). Once this browser holds a peer that has a
+		// connection to the target, that refusal is AP44's shape: a
+		// sentence asserting a fact about the world, made false by a
+		// capability on this side of it. A LAN peer's site has no origin
+		// and never will.
+		if why, ok := m.canReachLive(addr.PeerID); ok {
+			consumer, err = m.consumerForRoad(ctx, browseRoad{
+				Class:     fetch.ClassLive,
+				Candidate: fetch.TransportCandidate{Class: fetch.ClassLive, PeerID: addr.PeerID},
+			})
+			if err == nil {
+				root, err = consumer.VerifiedRoot(ctx)
+			}
+			if err == nil {
+				layout = fetch.Layout{PeerID: addr.PeerID}
+				nav.ok("transport", "live peer at entity://"+addr.PeerID+" (no origin consulted)",
+					"No name authority and no byte-server: this peer was asked directly over a "+
+						"connection we already hold. That removes every party except the publisher "+
+						"— and removes nobody's ability to be quiet, which is why the Freshness "+
+						"line below still does not say \"current\".")
+			}
+			// A live road that fails still falls through to an origin when
+			// one was supplied; see browse_road.go for why the ladder stops
+			// at the first VERIFIED root and not one step later.
+			if err != nil {
+				liveDecline = "live read at entity://" + addr.PeerID + " declined (" + err.Error() + ")"
+				if targetOrigin == "" {
+					nav.fail("transport", liveDecline+" and no origin was supplied",
+						"There was one road and it did not answer. An origin would be a second one.")
+					return m.failedChain(nav, err, res)
+				}
+			}
+		} else if targetOrigin == "" {
+			return m.failedChain(nav, fmt.Errorf(
 				"a peer-id address needs an origin to fetch from: nothing in a peer-id says where "+
 					"its bytes are served, and NETWORK §6.5.4 makes profile distribution "+
-					"out-of-band in v1"), res)
+					"out-of-band in v1 (%s)", why), res)
 		}
+	}
+	switch {
+	case consumer != nil && err == nil:
+		// The live road above answered. Nothing further to choose.
+
+	case addr.Name == "":
+		// Drop the failed live consumer rather than carrying it: the rest
+		// of this navigation reads from whatever answered, and a stale
+		// handle here would make the walk and the page fetch describe a
+		// road the chain says was declined.
+		consumer = nil
 		layout, err = fetch.LoadLayout(ctx, targetOrigin, m.client)
 		detail := fmt.Sprintf("discovered profile at %s", targetOrigin)
+		if liveDecline != "" {
+			detail = liveDecline + "; fell through to " + detail
+		}
 		// The origin's well-known profile features ONE peer, and the
 		// address named a peer. When they differ the origin is hosting
 		// several peers — re-base onto the one that was asked for, or we
@@ -794,30 +914,66 @@ func (m *BrowseModel) goTo(ctx context.Context, addr Address) error {
 		if err != nil {
 			return m.failedChain(nav, err, res)
 		}
-	} else {
-		origin, err = reg.OriginFor(ctx, res, targetOrigin)
-		detail := fmt.Sprintf("%d transport(s) on the binding", len(res.Transports()))
+		consumer = m.consumerFor(layout)
+		root, err = consumer.VerifiedRoot(ctx)
+
+	default:
+		// The binding's `transports` is a RANKED LIST, not an array whose
+		// first usable entry wins (§6.5.1a D1 via REGISTRY §4.1.1), and
+		// which CLASS to prefer is this consumer's call rather than the
+		// specification's — see browse_road.go for both halves.
+		opts := reg.TransportsFor(ctx, res, targetOrigin)
+		roads, declined := roadsFor(opts, m.HasPeer())
+		if len(roads) == 0 {
+			nav.fail("transport", "no usable transport: "+offeredSummary(nil, declined),
+				"The registry told us how to reach this peer and we can drive none of it. That is "+
+					"a statement about THIS browser as often as about the publisher, so the roads "+
+					"are named rather than summarised as \"unreachable\".")
+			return m.failedChain(nav, fmt.Errorf(
+				"this binding offers no transport this browser can use: %s",
+				offeredSummary(nil, declined)), res)
+		}
+
+		var (
+			used     browseRoad
+			attempts []string
+		)
+		consumer, root, used, attempts, err = m.travel(ctx, roads)
+		detail := fmt.Sprintf("%d road(s) offered, in §6.5.1a D1 order (priority asc); %s",
+			len(roads), strings.Join(attempts, "; "))
 		if err == nil {
-			detail = fmt.Sprintf("http-poll at %s (carried %s in the binding)",
-				origin.Layout.Origin, origin.Ref.Kind)
-			layout = origin.Layout
+			layout = used.Candidate.Layout
+			if used.Class == fetch.ClassLive {
+				// A live road has no Layout — there is no origin and no URL
+				// prefix. The publisher's peer-id is the whole address, and
+				// everything downstream that reads `layout.PeerID` (the site
+				// Location, the rendered host) needs it filled in.
+				layout = fetch.Layout{PeerID: used.Candidate.PeerID}
+			}
+		}
+		if len(declined) > 0 {
+			detail += ". Not tried: " + strings.Join(declined, "; ")
 		}
 		nav.record("transport", err, detail,
-			"The registry told us how to reach this peer and we followed it verbatim. Nothing "+
-				"here was derived from the peer-id — a consumer that derives a layout works "+
-				"against exactly one publisher.")
+			"The registry told us how to reach this peer and we followed it verbatim, in the "+
+				"order §6.5.1a D1 gives — never the array's. Nothing here was derived from the "+
+				"peer-id. Which ROAD answered changes what may be claimed about freshness and "+
+				"nothing about what was verified; the two are separate lines below on purpose.")
 		if err != nil {
 			return m.failedChain(nav, err, res)
 		}
 	}
 
-	consumer := m.consumerFor(layout)
-	root, err := consumer.VerifiedRoot(ctx)
-	nav.record("target root", err, fmt.Sprintf("%s seq=%d prefix=%q",
-		shortHash(root.Data.RootHash.String()), root.Data.Seq, root.Data.Prefix),
+	rootDetail := fmt.Sprintf("%s seq=%d prefix=%q",
+		shortHash(root.Data.RootHash.String()), root.Data.Seq, root.Data.Prefix)
+	if root.Authority != "" {
+		rootDetail += " from " + root.Authority
+	}
+	nav.record("target root", err, rootDetail,
 		"A DIFFERENT key from the registry's: this peer signs its own root, and the registry's "+
-			"signature has no standing over its content. Verified as of published_at — never "+
-			"fresh, because a quiet publisher and a withholding origin look identical from here.")
+			"signature has no standing over its content. What this verification is worth in TIME "+
+			"depends on which kind of party answered, which is the Freshness line and not this "+
+			"one — the two sentences are not interchangeable and neither may be typed here.")
 	if err != nil {
 		return m.failedChain(nav, err, res)
 	}

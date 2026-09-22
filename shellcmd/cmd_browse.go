@@ -93,6 +93,18 @@ func bareBrowserOf(sh *Shell) *workbench.BrowseModel {
 	if sh.Browser == nil {
 		sh.Browser = workbench.NewBrowseModel(nil)
 	}
+	// The browser takes the live road when a binding offers one and this
+	// workspace has a peer to dispatch from. Set on every call rather
+	// than at construction because the browser is workspace-scoped and
+	// long-lived while `Local` is bound during bootstrap — and because
+	// SetPeer is idempotent, so the alternative would be a one-shot flag
+	// recording something the assignment already says.
+	//
+	// A workspace with no local peer leaves it nil, which is the
+	// `entity-fetch` configuration and reads static origins correctly.
+	if sh.ShellWorkspace != nil && sh.Local != nil && sh.Local.Peer != nil {
+		sh.Browser.SetPeer(sh.Local.Peer)
+	}
 	return sh.Browser
 }
 

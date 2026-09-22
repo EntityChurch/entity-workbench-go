@@ -114,13 +114,14 @@ func TestConsumerReadsItsPublisherFromTheSource(t *testing.T) {
 
 // TestAcceptSeqIsTheRealFloor calls the function the product calls.
 //
-// `TestConsumer_SeqFloorRefusesARollback` in cache_test.go re-implements
-// the comparison inside the test and says so — it was written when the
-// floor was six lines inline in `VerifiedRoot` and there was nothing
-// else to call. It is left exactly as it is (it is the net for this
-// refactor and editing it would defeat the point), but a test that
-// asserts on its own copy of a rule cannot fail when the rule changes,
-// so this runs the extracted one over the same four cases.
+// It was written beside `TestConsumer_SeqFloorRefusesARollback`, which
+// re-implemented the comparison inside its own body because the floor
+// was six lines inline in `VerifiedRoot` and there was nothing else to
+// call. **That test is gone**: the floor is now [SeqFloor], so the copy
+// had nothing left justifying it, and its slot in cache_test.go is held
+// by `TestConsumer_SeqFloorIsPerPublisherNotPerRoad` — the case a copy
+// of the rule could never have reached. This one stays as the four-case
+// sweep over the real function.
 func TestAcceptSeqIsTheRealFloor(t *testing.T) {
 	c := NewConsumerFromSource(NewHTTPSource(Layout{PeerID: srcTestPeer}, nil), nil)
 	for _, step := range []struct {
