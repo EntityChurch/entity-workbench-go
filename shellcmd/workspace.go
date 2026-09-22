@@ -47,6 +47,13 @@ type ShellWorkspace struct {
 	// stay distinguishable.
 	catchUp catchUpState
 
+	// backfillCursors is where each oversized folder's walk stopped —
+	// see backfill_cursor.go. Same category as catchUp and
+	// historyBudget: process memory about a loop this workspace owns,
+	// deliberately not persisted, with the restart cost stated at its
+	// definition rather than discovered.
+	backfillCursors backfillCursorState
+
 	// historyBudget is the change-recording growth guard's state — see
 	// history_budget.go. Same shape and same reasons as catchUp: process
 	// memory about a watch this workspace owns, read through

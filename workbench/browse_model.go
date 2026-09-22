@@ -911,10 +911,16 @@ func (m *BrowseModel) goTo(ctx context.Context, addr Address) error {
 // cover, and the whole contract of this panel is that the chain
 // describes the bytes displayed and no others.
 //
-// Returns ok=false for a ref [AssetNameFromRef] rejects, for an asset
+// Returns ok=false for a ref [ClassifyAssetRef] rejects, for an asset
 // the signed root does not commit, and for a fetch that fails — three
 // different facts that are one answer here, because a renderer's move is
 // the same in all three: draw the fallback text, not a broken image.
+//
+// Collapsing them is defensible only while the first of the three is
+// *rare and correct*. It was neither until 2026-09-11: three of §3.4's
+// four reference forms landed in it, so a publisher writing
+// `/assets/figures/x.png` — the form §3.4 SHOULDs for generated links —
+// got a fallback caption and no way to find out why.
 func (m *BrowseModel) Asset(ref string) (SiteAsset, bool) {
 	m.mu.Lock()
 	res, loc := m.assets, Location{PeerID: m.out.hostPeer, SiteID: m.out.Site}

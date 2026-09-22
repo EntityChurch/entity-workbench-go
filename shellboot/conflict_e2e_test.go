@@ -1,6 +1,7 @@
 package shellboot_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -254,21 +255,51 @@ func TestM3_KeepBothPolicyLeavesBothVersionsInTheFolder(t *testing.T) {
 	}
 	enableHistoryFor(t, receiver, "local/files/*")
 
-	// The DECLARATION the handler reads. Written through the workspace
-	// operation and not by hand, because a test that writes the field
-	// directly cannot fail when the operation stops writing it.
-	if err := declareReceivedFolder(t, receiver, sender.id, root); err != nil {
-		t.Fatalf("declare folder: %v", err)
-	}
+	// THE RULE IS THE OWNER'S, AND IT HAS TO CROSS THE WIRE TO BE OBEYED.
+	//
+	// This used to set the policy on the RECEIVER, which is the peer the
+	// collision happens on — and that was the defect: a shared folder is
+	// one subject naming one reconciliation rule, and each side reading
+	// its own copy let two peers hold different rules for one folder and
+	// diverge with nothing noticing. So the sequence below is the feature,
+	// not fixture: the SENDER owns the folder and declares the rule, the
+	// receiver reads it on a reconcile pass, and only then does a
+	// collision at the receiver obey it.
 	folderID := workbench.FolderID(sender.id, root)
-	res, err := receiver.ws.SetFolderConflictPolicy(folderID, workbench.ConflictPolicyKeepBoth)
+	if err := declareOwnedFolder(t, sender, root); err != nil {
+		t.Fatalf("declare folder on the owner: %v", err)
+	}
+	res, err := sender.ws.SetFolderConflictPolicy(folderID, workbench.ConflictPolicyKeepBoth)
 	if err != nil {
-		t.Fatalf("set conflict policy: %v", err)
+		t.Fatalf("set conflict policy on the owner: %v", err)
 	}
 	if !res.Changed {
 		t.Fatalf("policy was already %q — this test cannot see what it is named after",
 			res.Policy)
 	}
+
+	// Written through the workspace operation and not by hand, because a
+	// test that writes the field directly cannot fail when the operation
+	// stops writing it.
+	if err := declareReceivedFolder(t, receiver, sender.id, root); err != nil {
+		t.Fatalf("declare folder: %v", err)
+	}
+
+	// The receiver must REFUSE to set it, because its copy is not
+	// consulted. Asserted here rather than in its own test: this is the
+	// exact call the old version of this test made and the old product
+	// accepted, so the arm that proves the model changed belongs where
+	// the old model lived.
+	if _, err := receiver.ws.SetFolderConflictPolicy(folderID, workbench.ConflictPolicyRecord); err == nil {
+		t.Error("the receiver was allowed to set a conflict policy for a folder it does " +
+			"not own. That write is not read by anything, so accepting it gives an " +
+			"operator a success line for an instruction the product will not carry out")
+	}
+
+	// The pass that carries the owner's rule across. Without it the
+	// receiver has never heard the rule, and a collision is HELD rather
+	// than resolved — which is the other arm, below.
+	reconcileOrFail(t, receiver)
 
 	const name = "contested.md"
 	senderPath := filepath.Join(senderMount, name)
@@ -428,4 +459,163 @@ func logChain(t *testing.T, p *syncTestPeer, root, name string) {
 	for i, tr := range trans {
 		t.Logf("  [%d] event=%-8s handler=%s:%s", i, tr.Event, tr.Handler, tr.Operation)
 	}
+}
+
+// declareOwnedFolder declares a folder on the peer that owns it.
+func declareOwnedFolder(t *testing.T, p *syncTestPeer, root string) error {
+	t.Helper()
+	return workbench.SaveFolder(p.ap.Store(), workbench.FolderData{
+		ID:     workbench.FolderID(p.id, root),
+		Label:  root,
+		Kind:   "files",
+		Root:   root,
+		Origin: "local",
+		Mode:   workbench.FolderModeSend,
+	})
+}
+
+// reconcileOrFail runs one real reconcile pass.
+//
+// The real loop and not a narrower hook: recording the owner's rule is a
+// derived output of the pass, and a test that reaches past the pass to
+// call the recorder directly would stay green if the pass stopped calling
+// it — which is exactly how a model with no edge to it ships.
+func reconcileOrFail(t *testing.T, p *syncTestPeer) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := p.ws.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+}
+
+// The refusal arm: a collision is HELD when the folder's owner has
+// declared a rule we have never read, and released when we read it.
+//
+// # Why this arm exists
+//
+// The ruling is *"a reader that cannot read the rule MUST refuse to
+// reconcile rather than guess"*, and a refusal nobody exercises is dead
+// code that reads as a safety property. Worse, the failure it guards
+// against is invisible: guessing produces a folder that looks fine on
+// both machines and has silently forked.
+//
+// # Why the second half is the half that matters
+//
+// A hold that never releases is an outage, and the difference between
+// the two is not visible in the moment — both look like "my file did not
+// arrive". So this asserts the release as well as the hold, through a
+// real reconcile pass and a real catch-up, which is the route an
+// operator's machine actually takes.
+func TestM3_AConflictIsHeldUntilTheOwnersRuleIsRead(t *testing.T) {
+	senderDir := t.TempDir()
+	receiverDir := t.TempDir()
+
+	sender := newSyncTestPeer(t, "hold-sender")
+	receiver := newSyncTestPeer(t, "hold-receiver")
+	connectPeers(t, sender, receiver)
+
+	const folder = "held"
+	senderMount := filepath.Join(senderDir, folder)
+	receiverMount := filepath.Join(receiverDir, folder)
+	mkdirOrFail(t, senderMount)
+	mkdirOrFail(t, receiverMount)
+
+	senderOut := mountOrFail(t, sender, senderMount, "archives/"+folder+"/")
+	mountOrFail(t, receiver, receiverMount, "archives/"+folder+"/")
+	root := senderOut.RootName
+
+	if _, err := receiver.ws.Sync(shellcmd.SyncRequest{Remote: sender.id, Root: root}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	enableHistoryFor(t, receiver, "local/files/*")
+
+	// A SUBJECT exists — the receiver holds a declaration naming the
+	// sender as owner — and the owner's rule has never been read. That
+	// pair is the state under test, and it is the ordinary state right
+	// after `accept` and before the first pass.
+	if err := declareReceivedFolder(t, receiver, sender.id, root); err != nil {
+		t.Fatalf("declare folder: %v", err)
+	}
+
+	const name = "contested.md"
+	senderPath := filepath.Join(senderMount, name)
+	receiverPath := filepath.Join(receiverMount, name)
+
+	const agreed = "shared starting point\n"
+	writeOrFail(t, senderPath, agreed)
+	if !awaitFileContent(receiverPath, agreed, 30*time.Second) {
+		t.Fatal("precondition: the seed never arrived")
+	}
+
+	const mine = "the receiver's own edit\n"
+	writeOrFail(t, receiverPath, mine)
+	if !awaitChainDepth(t, receiver, root, name, 2, 20*time.Second) {
+		t.Fatal("precondition: the local edit never reached the tree")
+	}
+
+	// --- the hold -------------------------------------------------------
+	const theirs = "the sender's edit\n"
+	writeOrFail(t, senderPath, theirs)
+
+	// Give the delivery every chance to land. The assertion is an ABSENCE,
+	// so a short wait would pass against a build with no hold at all — it
+	// would simply be measuring its own impatience.
+	if awaitFileContent(receiverPath, theirs, 15*time.Second) {
+		t.Fatalf("the delivery overwrote a local edit while the folder's reconciliation "+
+			"rule was unknown. The rule belongs to %s and had never been read; applying "+
+			"our own would be the guess the ruling forbids, and the two peers can then "+
+			"hold different rules for one folder and never converge", sender.id)
+	}
+	if got, _ := os.ReadFile(receiverPath); string(got) != mine {
+		t.Fatalf("the receiver's own edit is gone: on disk %q, want %q. A hold must "+
+			"overwrite NOTHING", got, mine)
+	}
+	t.Logf("HELD: the receiver's edit survived a delivery it had no rule for")
+
+	// A HOLD IS NOT A CONFLICT THIS PROCESS ACTED ON, and it must not
+	// spend the burst limiter's window.
+	//
+	// The limiter exists to catch our own comparison bug firing on every
+	// file. If holds fill its window, an unreachable peer trips it and the
+	// operator is told `conflict_storm` — a fault on THIS machine that
+	// clears by itself — when the cause is another machine they need to go
+	// and switch on. Two diagnoses, opposite destinations, and the wrong
+	// one is the reassuring one.
+	if h := receiver.ws.ConflictHealth(); h.Detected != 0 || h.Refused != 0 || h.Storming {
+		t.Errorf("a held delivery was accounted as a conflict: detected=%d refused=%d "+
+			"storming=%v. ConflictHealth.Detected is conflicts this process ACTED ON, "+
+			"and a hold acts on nothing; letting holds consume the window makes an "+
+			"unreachable peer present as a storm on this one",
+			h.Detected, h.Refused, h.Storming)
+	}
+
+	// --- the release ----------------------------------------------------
+	//
+	// The owner declares, the receiver reads it on a pass, and the
+	// catch-up re-derives. Nothing is replayed by the test: this is the
+	// route a real peer takes on its own timer.
+	if err := declareOwnedFolder(t, sender, root); err != nil {
+		t.Fatalf("declare folder on the owner: %v", err)
+	}
+	reconcileOrFail(t, receiver)
+
+	if _, err := receiver.ws.Resync(sender.id, root); err != nil {
+		t.Fatalf("resync: %v", err)
+	}
+	if !awaitFileContent(receiverPath, theirs, 30*time.Second) {
+		got, _ := os.ReadFile(receiverPath)
+		t.Fatalf("the hold never released: on disk %q, want %q. A hold that does not "+
+			"release is an outage, and it is indistinguishable from one in the moment — "+
+			"both present as a file that did not arrive", got, theirs)
+	}
+
+	conflicts := awaitConflicts(t, receiver, 1, 20*time.Second)
+	if len(conflicts) != 1 {
+		t.Fatalf("%d conflicts recorded after the release, want 1 — the delivery landed "+
+			"but the replaced version was not recorded, which makes a recoverable loss "+
+			"an unrecoverable one", len(conflicts))
+	}
+	t.Logf("RELEASED: after one reconcile pass read the owner's rule, the same delivery " +
+		"applied and recorded what it replaced. The hold was a delay, not a loss")
 }

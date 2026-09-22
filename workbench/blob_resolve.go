@@ -465,6 +465,20 @@ func (h *BlobResolveHandler) Handle(ctx context.Context, req *handler.Request) (
 	// is automatic — the catch-up supervisor re-derives the truth on its
 	// next pass, by which time the window has expired — so this refusal
 	// delays a delivery rather than dropping it.
+	// The folder's owner declares its reconciliation rule and we have not
+	// read it. Nothing is overwritten: a shared folder names ONE rule, and
+	// applying ours to somebody else's folder is the divergence the rule
+	// exists to prevent. Recovers by itself — the reconciler reads the
+	// owner's declaration on its next pass and records it.
+	if conflict == conflictRuleUnknown {
+		return handler.NewErrorResponse(409, "conflict_rule_unknown",
+			fmt.Sprintf("not resolving a conflict at %s: this folder belongs to another "+
+				"peer, its reconciliation rule is theirs, and we have not been able to "+
+				"read it. Nothing was overwritten and your version is untouched. This "+
+				"clears on the next pass once that peer is reachable; run `status` to "+
+				"force one", targetTreePath))
+	}
+
 	if conflict == conflictRefuse {
 		return handler.NewErrorResponse(429, "conflict_storm",
 			fmt.Sprintf("refusing to resolve a conflict at %s: more than %d "+
@@ -616,6 +630,28 @@ func (h *BlobResolveHandler) classifyConflict(hctx *handler.HandlerContext,
 		return conflictNone, false
 	}
 
+	policy, _, ruleKnown := folderConflictPolicy(hctx, targetPrefix)
+	if !ruleKnown {
+		// The rule belongs to the folder's owner and we have not read it,
+		// so this delivery is HELD — see folderConflictPolicy.
+		//
+		// Decided BEFORE the burst limiter, and that ordering is the
+		// point rather than an accident. A held delivery writes nothing,
+		// overwrites nothing and records nothing: it is already the
+		// safest outcome this function has, so spending storm budget on
+		// it is not a stricter check, it is a worse diagnosis. The
+		// limiter exists to catch OUR comparison bug firing on every
+		// file; letting holds fill its window means an unreachable peer
+		// trips it and the operator is told `conflict_storm` — a fault on
+		// this machine that clears by itself — when the actual cause is
+		// another machine they need to go and switch on.
+		//
+		// It is also why the detected counter is not incremented here:
+		// ConflictHealth.Detected is documented as conflicts this process
+		// ACTED ON, and this is the one branch that acts on nothing.
+		return conflictRuleUnknown, false
+	}
+
 	if !h.conflicts.admit() {
 		return conflictRefuse, false
 	}
@@ -623,7 +659,6 @@ func (h *BlobResolveHandler) classifyConflict(hctx *handler.HandlerContext,
 	h.conflictsDetected++
 	h.conflicts.mu.Unlock()
 
-	policy, _ := folderConflictPolicy(hctx, targetPrefix)
 	if policy == ConflictPolicyKeepBoth {
 		return conflictKeepBoth, true
 	}

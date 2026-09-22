@@ -189,10 +189,20 @@ func settledCeiling(passDuration time.Duration) time.Duration {
 // nextCatchUpInterval is the adaptive rule, as a pure function so it can
 // be tested without a clock.
 //
-// recovered > 0  → drop to the floor: we are behind and more is coming.
-// recovered == 0 → back off geometrically toward the ceiling, where the
-//                  ceiling is DERIVED from what a pass costs
-//                  (settledCeiling), not a flat constant.
+// A pass that RECOVERED something drops straight to the floor: we are
+// behind and more is coming.
+//
+// A pass that left a folder INCOMPLETE drops to the floor too, and that
+// arm is not a refinement of the first. A folder over `backfillWalkLimit`
+// is covered one segment per pass, and a segment whose files were all
+// already current recovers nothing while the folder is still thousands of
+// files short. Reading that as "settled" is how this loop would take the
+// C15 cursor fix and rebuild the defect on top of it — progress on every
+// pass, and an hour between passes.
+//
+// Anything else backs off geometrically toward the ceiling, where the
+// ceiling is DERIVED from what a pass costs (settledCeiling) rather than
+// being a flat constant.
 //
 // The ramp is a GRADIENT and the configured rate is only where it starts,
 // not a floor it snaps back to. An earlier version clamped the way up at
@@ -210,9 +220,9 @@ func settledCeiling(passDuration time.Duration) time.Duration {
 // passing back-to-back forever, which is the "don't churn on it"
 // failure — it burns the peer, and it re-reads a moving target instead
 // of letting the burst settle.
-func nextCatchUpInterval(current, passDuration time.Duration, recovered int) time.Duration {
+func nextCatchUpInterval(current, passDuration time.Duration, recovered, incomplete int) time.Duration {
 	var next time.Duration
-	if recovered > 0 {
+	if recovered > 0 || incomplete > 0 {
 		next = MinCatchUpInterval
 	} else {
 		next = current * catchUpBackoffFactor
@@ -247,6 +257,18 @@ type CatchUpResult struct {
 	AlreadyCurrent int
 	// Failed is per-file failures across all folders.
 	Failed int
+	// Incomplete is the number of folders whose walk hit
+	// `backfillWalkLimit`, i.e. folders this pass knowingly did not
+	// finish and will resume into on the next one.
+	//
+	// It exists because "recovered nothing" and "did not look at all of
+	// it" are different facts and the back-off must not confuse them —
+	// see nextCatchUpInterval. A pass over the first segment of a huge
+	// folder can legitimately recover zero (everything in that segment
+	// was already current) while the folder is still thousands of files
+	// short, and backing off to the ceiling there is the old defect
+	// wearing the loop's clothes.
+	Incomplete int
 	// Problems name folders the pass could not cover, and why.
 	Problems []string
 	// Duration is how long the pass took.
@@ -313,6 +335,9 @@ func (ws *ShellWorkspace) CatchUp(ctx context.Context) (CatchUpResult, error) {
 		res.Recovered += out.Materialized
 		res.AlreadyCurrent += out.AlreadyCurrent
 		res.Failed += out.Failed
+		if out.Truncated {
+			res.Incomplete++
+		}
 	}
 
 	res.Duration = time.Since(start)
@@ -406,7 +431,7 @@ func (ws *ShellWorkspace) StartCatchUp(ctx context.Context, base time.Duration) 
 			}
 			res, ran := ws.RunCatchUpOnce(ctx)
 			if ran {
-				interval = nextCatchUpInterval(interval, res.Duration, res.Recovered)
+				interval = nextCatchUpInterval(interval, res.Duration, res.Recovered, res.Incomplete)
 			}
 			ws.catchUp.mu.Lock()
 			ws.catchUp.interval = interval

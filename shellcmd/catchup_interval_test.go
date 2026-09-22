@@ -6,21 +6,22 @@ import (
 )
 
 // The adaptive rate is a pure function of (current interval, how long the
-// last pass took, how much it recovered), so it is tested without a clock
-// — no sleeps, no flakes, and the anti-churn property is provable rather
-// than sampled.
+// last pass took, how much it recovered, how many folders it did not
+// finish), so it is tested without a clock — no sleeps, no flakes, and the
+// anti-churn property is provable rather than sampled.
 //
 // Tier: unit (TESTING-STRATEGY §1).
 func TestNextCatchUpInterval(t *testing.T) {
 	base := DefaultCatchUpInterval
 
 	tests := []struct {
-		name      string
-		current   time.Duration
-		pass      time.Duration
-		recovered int
-		want      time.Duration
-		why       string
+		name       string
+		current    time.Duration
+		pass       time.Duration
+		recovered  int
+		incomplete int
+		want       time.Duration
+		why        string
 	}{
 		{
 			name: "recovering drops straight to the floor",
@@ -94,6 +95,19 @@ func TestNextCatchUpInterval(t *testing.T) {
 			why:  "a supervisor must never occupy more than half the wall clock",
 		},
 		{
+			name: "a TRUNCATED pass holds the floor even though it recovered nothing",
+			// The C15 joint. A folder over backfillWalkLimit is covered one
+			// segment per pass, and a segment whose files were all already
+			// current recovers zero — which reads as "settled" to the rule
+			// above while the folder is still thousands of files short. Left
+			// unhandled, the cursor fix delivers progress per pass and an
+			// hour between passes, which is the original defect with extra
+			// steps.
+			current: MaxCatchUpInterval, pass: time.Second, recovered: 0, incomplete: 1,
+			want: MinCatchUpInterval,
+			why:  "a pass that knowingly did not finish a folder has not settled anything",
+		},
+		{
 			name:    "ANTI-CHURN applies to the settled path too",
 			current: base, pass: 5 * time.Minute, recovered: 0,
 			want: 5 * time.Minute,
@@ -103,10 +117,10 @@ func TestNextCatchUpInterval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := nextCatchUpInterval(tt.current, tt.pass, tt.recovered)
+			got := nextCatchUpInterval(tt.current, tt.pass, tt.recovered, tt.incomplete)
 			if got != tt.want {
-				t.Errorf("nextCatchUpInterval(%v, %v, %d) = %v, want %v\n  %s",
-					tt.current, tt.pass, tt.recovered, got, tt.want, tt.why)
+				t.Errorf("nextCatchUpInterval(%v, %v, %d, %d) = %v, want %v\n  %s",
+					tt.current, tt.pass, tt.recovered, tt.incomplete, got, tt.want, tt.why)
 			}
 		})
 	}
@@ -128,7 +142,7 @@ func TestNextCatchUpInterval_ConvergesFromIdleToBusyInOneStep(t *testing.T) {
 	// rests at the base rate and never reaches the hard ceiling at all —
 	// which is settledCeiling working, not the ramp failing.
 	for i := 0; i < 30; i++ {
-		interval = nextCatchUpInterval(interval, 6*time.Second, 0)
+		interval = nextCatchUpInterval(interval, 6*time.Second, 0, 0)
 	}
 	if interval != MaxCatchUpInterval {
 		t.Fatalf("after 30 idle passes the interval is %v, want the %v ceiling",
@@ -136,7 +150,7 @@ func TestNextCatchUpInterval_ConvergesFromIdleToBusyInOneStep(t *testing.T) {
 	}
 
 	// One pass that finds something.
-	interval = nextCatchUpInterval(interval, 10*time.Millisecond, 1)
+	interval = nextCatchUpInterval(interval, 10*time.Millisecond, 1, 0)
 	if interval != MinCatchUpInterval {
 		t.Errorf("one recovering pass left the interval at %v; it must return to the "+
 			"%v floor in a single step, or a burst after a quiet spell waits out "+
@@ -157,7 +171,7 @@ func TestNextCatchUpInterval_DutyCycleIsBoundedUnderSustainedLoad(t *testing.T) 
 	// the sustained-burst regime.
 	const pass = 30 * time.Second
 	for i := 0; i < 50; i++ {
-		interval = nextCatchUpInterval(interval, pass, 500)
+		interval = nextCatchUpInterval(interval, pass, 500, 0)
 		if interval < pass {
 			t.Fatalf("pass %d: interval %v is shorter than the %v pass that "+
 				"produced it — the supervisor would run back-to-back", i, interval, pass)

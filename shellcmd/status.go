@@ -294,6 +294,19 @@ func (ws *ShellWorkspace) observeFolder(f workbench.FolderData) FolderStatus {
 	sort.Strings(fs.SyncingWith)
 
 	fs.FilesPresent, fs.FilesIngested, fs.FilesObservable = mountFileCounts(st, fs.LocalRoot)
+
+	// WHOSE rule applies, and whether we hold it. A LOCAL read: the
+	// question is what this peer knows, not what the other one currently
+	// says, so a status panel can answer it without becoming a dialer.
+	if owner := f.OwnerOf(local.PeerID()); owner == "" || owner == local.PeerID() {
+		// We own it. Our declaration IS the subject's rule.
+		fs.OwnerRuleKnown = true
+		fs.OwnerConflictPolicy = f.ConflictPolicy()
+	} else if o, heard := workbench.LoadObservedFolder(st, f.ID); heard {
+		fs.OwnerRuleKnown = true
+		fs.OwnerConflictPolicy = o.OwnerConflictPolicy()
+	}
+
 	return fs
 }
 
@@ -334,6 +347,22 @@ func (fs FolderStatus) problems() []string {
 		return []string{fmt.Sprintf(
 			"folder %q from %s is accepted and mounted but has no subscription — "+
 				"a re-check establishes it",
+			fs.Label, fs.Origin)}
+	case !fs.OwnerRuleKnown:
+		// Established and receiving, and we do not hold the rule for what
+		// happens when their change lands on an edit of yours. Deliveries
+		// still arrive; a COLLISION is held rather than resolved, so this
+		// is not "broken" and must not be worded as if it were.
+		//
+		// Said at all because the alternative is an operator watching one
+		// file fail to arrive with every row green — the shape this whole
+		// panel exists to stop.
+		return []string{fmt.Sprintf(
+			"folder %q from %s is established, but we have not been able to read their "+
+				"rule for what happens when their change lands on one of your edits — "+
+				"that rule is theirs, because a shared folder has one. Files still "+
+				"arrive; a COLLISION is held until we can read it, and a re-check with "+
+				"that peer reachable clears it",
 			fs.Label, fs.Origin)}
 	}
 	return nil

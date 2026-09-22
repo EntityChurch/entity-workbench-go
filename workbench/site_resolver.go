@@ -129,10 +129,12 @@ type ContentResolver interface {
 // visibly, rather than silently rendering broken ones.
 //
 // `ref` is the raw reference from the page body. The implementation MUST
-// put it through [AssetNameFromRef] rather than trusting it: that
-// function is the gate that stops a page from steering the process at
-// an arbitrary URL, and a resolver that skips it has opened the hole for
-// every renderer above it.
+// put it through [ClassifyAssetRef] rather than trusting it: that is the
+// gate that stops a page from steering the process at an arbitrary URL,
+// and a resolver that skips it has opened the hole for every renderer
+// above it. It is also what admits the three reference forms a bare
+// [AssetNameFromRef] call refuses — so skipping it fails in both
+// directions at once.
 type AssetResolver interface {
 	ResolveAsset(loc Location, ref string) (SiteAsset, bool)
 }

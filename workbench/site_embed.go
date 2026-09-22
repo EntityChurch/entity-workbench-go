@@ -42,8 +42,9 @@ type Embed struct {
 	// Fallback is the authored alt text / caption. May be empty.
 	Fallback string
 	// Ref is the raw reference exactly as the publisher wrote it. It has
-	// NOT been validated — pass it through [AssetNameFromRef], which is
-	// the gate, before it reaches anything that fetches.
+	// NOT been validated — pass it through [ClassifyAssetRef], which is
+	// the gate, before it reaches anything that fetches. It may be
+	// written in any of `APP-CONVENTION-REFERENCE` §3.4's four forms.
 	Ref string
 	// Start / End are the byte range of the directive in the body, so a
 	// renderer can splice around it.
@@ -115,7 +116,7 @@ func EmbedRefs(body string) []string {
 // (`embed_to_markdown_image`), and it exists here for the same reason:
 // it puts figures into the markdown parser's own image lane, so a
 // renderer needs one image code path rather than two. The refs are not
-// touched — validation stays at [AssetNameFromRef], where the renderer
+// touched — validation stays at [ClassifyAssetRef], where the renderer
 // applies it at fetch time.
 func EmbedsToMarkdownImages(body string) string {
 	embeds := ParseEmbeds(body)

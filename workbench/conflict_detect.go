@@ -368,6 +368,17 @@ const (
 	// collision in favour of their own version. Materialize nothing and
 	// say so; this is a decision being honoured, not a failure.
 	conflictDeclined
+	// conflictRuleUnknown — this folder's owner is another peer and we
+	// have not read their reconciliation rule. Materialize NOTHING.
+	//
+	// Its own outcome rather than a second use of conflictRefuse, because
+	// the two send an operator to opposite places: a storm is a fault on
+	// THIS peer that clears by itself, and this is a fact we have not
+	// obtained from ANOTHER peer. Rendering them the same would put
+	// "more than N conflicts on this peer" in front of someone whose
+	// actual problem is that the folder's owner has not been reachable
+	// since they declared its rule.
+	conflictRuleUnknown
 )
 
 // folderConflictPolicy reads the declared conflict policy for the folder
@@ -381,17 +392,48 @@ const (
 // costs one indexed list and a decode, and only on the conflict path, so
 // an ordinary delivery pays nothing for it.
 //
-// An unreadable or absent declaration yields the default policy. There is
-// no error return on purpose: a folder we cannot find a declaration for
-// still has a delivery to handle, and refusing it would make a missing
-// record into a delivery outage.
-func folderConflictPolicy(hctx *handler.HandlerContext, targetPrefix string) (policy, root string) {
+// # WHOSE rule it is, which is not always ours
+//
+// A shared folder is one subject and a subject names ONE reconciliation
+// rule — the OWNER's. `FolderID(owner, root)` designates that owner on
+// every peer, including under `Mode: both`, so the party is already named.
+// Before this, each side read its own `Conflict` field, which let two
+// peers hold different rules for one folder and diverge with nothing
+// noticing.
+//
+// So there are three cases and they are deliberately not collapsed:
+//
+//   - WE OWN IT — our declaration is the subject's rule. Known.
+//   - WE DO NOT, AND WE HAVE HEARD FROM THE OWNER — their rule, from the
+//     observation the reconciler records (see observed_state.go). Known.
+//   - WE DO NOT, AND WE HAVE NOT — `known` is false. The caller MUST
+//     refuse rather than guess; that refusal is the ruling, and a default
+//     here would be the guess it forbids.
+//
+// # `known` is still true when there is no folder declaration at all
+//
+// That case is not a missing rule, it is a missing SUBJECT: a bare
+// `sync` against a mounted directory, with no share flow and therefore no
+// second party whose rule could differ from ours. The local default
+// applies and nothing is being guessed about anybody. Treating it as
+// unknown would make every plain sync refuse its first conflict, which is
+// a delivery outage bought with no correctness at all.
+//
+// # Why the refusal is affordable, which is the part that decides it
+//
+// A delivery only exists because the owner reached us. So a conflicting
+// delivery arriving with no observation of that owner's rule means we
+// heard their FILES this pass and not their DECLARATION — rare, and it
+// resolves itself on the next reconcile pass, which reads it. The refusal
+// delays one delivery; the guess it replaces silently forks a folder.
+func folderConflictPolicy(hctx *handler.HandlerContext, targetPrefix string) (policy, root string, known bool) {
 	root = strings.TrimSuffix(strings.TrimPrefix(targetPrefix, LocalFilesSourcePrefix), "/")
 	policy = ConflictPolicyRecord
 	if hctx == nil || hctx.Store == nil || hctx.LocationIndex == nil || hctx.LocalPeerID == "" {
-		return policy, root
+		return policy, root, true
 	}
-	prefix := "/" + string(hctx.LocalPeerID) + "/" + FolderPrefix
+	self := string(hctx.LocalPeerID)
+	prefix := "/" + self + "/" + FolderPrefix
 	for _, e := range hctx.LocationIndex.List(prefix) {
 		ent, ok := hctx.Store.Get(e.Hash)
 		if !ok || ent.Type != FolderType {
@@ -406,11 +448,48 @@ func folderConflictPolicy(hctx *handler.HandlerContext, targetPrefix string) (po
 		// choosing, and reaching for Root gives the answer that is right
 		// in the symmetric case and silently wrong in the one the field
 		// exists for.
-		if f.ReceivingRoot() == root {
-			return f.ConflictPolicy(), root
+		if f.ReceivingRoot() != root {
+			continue
 		}
+		if owner := f.OwnerOf(self); owner == "" || owner == self {
+			return f.ConflictPolicy(), root, true
+		}
+		o, heard := observedFolder(hctx, self, f.ID)
+		if !heard {
+			return "", root, false
+		}
+		return o.OwnerConflictPolicy(), root, true
 	}
-	return policy, root
+	// No declaration: no subject, so no other party's rule to obtain.
+	return policy, root, true
+}
+
+// observedFolder reads what the owner of this folder last said about it,
+// through the handler's own store rather than through a dispatched read.
+//
+// A delivery handler must not make a network call to decide what to do
+// with the bytes it already has: the reconciler does the reading, on its
+// own pass, and this reads what it recorded.
+func observedFolder(hctx *handler.HandlerContext, self, folderID string) (ObservedFolderData, bool) {
+	if hctx == nil || hctx.Store == nil || hctx.LocationIndex == nil || folderID == "" {
+		return ObservedFolderData{}, false
+	}
+	path := "/" + self + "/" + ObservedFolderPrefix + folderID
+	for _, e := range hctx.LocationIndex.List(path) {
+		if e.Path != path {
+			continue
+		}
+		ent, ok := hctx.Store.Get(e.Hash)
+		if !ok || ent.Type != ObservedFolderType {
+			continue
+		}
+		var o ObservedFolderData
+		if err := ecf.Decode(ent.Data, &o); err != nil {
+			return ObservedFolderData{}, false
+		}
+		return o, true
+	}
+	return ObservedFolderData{}, false
 }
 
 // hashPrefix8 is the 8-hex-character form used in a keep-both sibling

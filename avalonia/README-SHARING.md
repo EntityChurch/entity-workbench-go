@@ -506,6 +506,16 @@ What is still true, and is the remaining gap:
   converging and the owner is never told, so the two machines diverge
   permanently. In a two-way folder it is the better setting, and the sibling
   is an ordinary file so it replicates to the other machine by itself.
+- **Run it on the machine that OWNS the folder.** A shared folder is one
+  object across two peers and it names ONE rule; the receiving side reads
+  the owner's and its own copy is not consulted, so the verb refuses there
+  and names the machine to use. If the owner has been unreachable since
+  before you accepted, files still arrive but a *collision* is HELD rather
+  than resolved — nothing is overwritten, `status` says so on that folder's
+  row, and it clears when that peer is next reachable.
+- **There is no GUI control for this yet.** The policy is shell-only: the
+  Sharing Status panel lists conflicts and resolves them, and cannot set the
+  folder's rule. Named here rather than left to be discovered.
 
 `../docs/architecture/SYNC-LIMITS-AND-FAILURE-MODES.md` §5 is the full
 discussion.

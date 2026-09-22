@@ -3,6 +3,7 @@ package shellcmd
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"entity-workbench-go/entitysdk"
 	"entity-workbench-go/workbench"
@@ -104,6 +105,18 @@ type RemoteFolderView struct {
 	// sentences to put in front of an operator.
 	Publishes bool
 
+	// Conflict is their declared reconciliation rule for this folder,
+	// VERBATIM — empty is a real answer meaning the default, and it is
+	// not defaulted here for the reason ObservedFolderData.Conflict is
+	// not: "they declared nothing" and "we never read it" are different
+	// facts and only Found can tell them apart.
+	//
+	// It matters because a shared folder names ONE rule and that rule is
+	// the OWNER's (S6 plus the specification seat's ruling). Before this
+	// field existed the rule travelled nowhere, so two peers could hold
+	// different rules for one folder and never converge.
+	Conflict string
+
 	// OurState is what their record says about US: offered / accepted /
 	// declined / withdrawn, or empty when they name us not at all.
 	//
@@ -171,6 +184,7 @@ func (ws *ShellWorkspace) ObserveRemoteFolder(peerID, folderID string) (RemoteFo
 	view.Root = f.ReceivingRoot()
 	view.Mode = f.EffectiveMode()
 	view.Publishes = f.Publishes()
+	view.Conflict = f.Conflict
 	if ps, ok := f.PeerState(local.PeerID()); ok {
 		view.OurState = ps.State
 	}
@@ -242,4 +256,109 @@ func (ws *ShellWorkspace) remoteRootForReverseLeg(f workbench.FolderData, peerID
 			"%s's record names no mount root for this folder", peerID)
 	}
 	return view.Root, true, ""
+}
+
+// recordOwnerConflictRule reads the OWNER's reconciliation rule for a
+// folder we receive, and records it where the delivery handler can find
+// it (workbench/observed_state.go).
+//
+// # Why the reconciler does this and the handler does not
+//
+// The handler runs at delivery time, inside somebody's file transfer. A
+// dispatched read there would put a network round trip — and a network
+// failure — on the path of every conflicting write. The reconciler
+// already runs on a timer, already dials, and already reads the
+// counterpart's record for the reverse leg; this is the same read aimed
+// the other way.
+//
+// # Why a failed read does NOT clear what we already have
+//
+// The last thing a peer said is still the last thing they said. Deleting
+// the observation because they are offline would convert a reachability
+// problem into a refusal to resolve anything, which is the failure the
+// refusal was supposed to prevent rather than cause.
+//
+// # Why the write is conditional
+//
+// A pass runs on a timer. An unconditional write would be one tree
+// mutation per received folder per pass, forever, to record that nothing
+// changed — and on a prefix a panel can watch. Only a CHANGED rule is
+// written, which is why ObservedFolderData.ObservedAtMillis means when
+// the value was first seen rather than when we last looked.
+// # It returns a NOTE and does not append a problem
+//
+// The standing sentence — *we do not hold this folder's rule* — is
+// FolderStatus.problems()'s, so a read and a pass cannot describe the
+// state differently. What a pass additionally knows is why the read
+// failed just now, which no local observation can supply, and that is a
+// Note rather than a second problem.
+func (ws *ShellWorkspace) recordOwnerConflictRule(f workbench.FolderData) string {
+	if ws == nil || ws.Local == nil || ws.Local.Peer == nil {
+		return ""
+	}
+	local := ws.Local.Peer
+	self := local.PeerID()
+
+	owner := f.OwnerOf(self)
+	if owner == "" || owner == self {
+		// We own it, so our own declaration IS the subject's rule and
+		// there is nobody to ask.
+		return ""
+	}
+
+	store := local.Store()
+	prev, heard := workbench.LoadObservedFolder(store, f.ID)
+
+	// ASK FOR THE CANONICAL ID, STORE UNDER OURS.
+	//
+	// The owner's record lives at FolderID(owner, their root) on their
+	// machine — which is our `f.ID` too, by construction, for every record
+	// written since S6. It is NOT our id for a pre-S6 record that
+	// `MigrateFolderIDs` could not move, because a migration whose target
+	// id already exists is deliberately left alone rather than clobbered.
+	//
+	// Deriving it here rather than reading `f.ID` is the difference
+	// between a rare recoverable state and a permanent one: with the
+	// local id, such a folder asks the owner for a path they do not have,
+	// is answered "no record", and HOLDS every collision forever while
+	// files keep flowing — a folder that looks alive and silently stops
+	// resolving. `f.Root` is the originating peer's own root for a
+	// received folder, so this is derived from facts both sides hold.
+	//
+	// The observation is still stored under `f.ID`, because that is the
+	// key the delivery handler looks it up by.
+	askID := workbench.FolderID(owner, f.Root)
+	view, err := ws.ObserveRemoteFolder(owner, askID)
+	if err != nil || !view.Found {
+		if heard {
+			// We already know their rule. Being unable to re-read it
+			// changes nothing about what they last declared, and saying so
+			// every pass would be noise about a folder that works.
+			return ""
+		}
+		// NEVER heard. problems() carries the standing sentence; this adds
+		// the one fact only the pass has — what happened when we just
+		// tried.
+		if err != nil {
+			return fmt.Sprintf("could not read %s's rule for this folder: %v",
+				shortPeer(owner), err)
+		}
+		return fmt.Sprintf("%s holds no record of this folder, so there is no rule of "+
+			"theirs to read yet", shortPeer(owner))
+	}
+
+	if heard && prev.OwnerPeerID == owner && prev.Conflict == view.Conflict {
+		return ""
+	}
+	o := workbench.ObservedFolderData{
+		FolderID:         f.ID,
+		OwnerPeerID:      owner,
+		Conflict:         view.Conflict,
+		ObservedAtMillis: uint64(time.Now().UnixMilli()),
+	}
+	if err := workbench.SaveObservedFolder(store, o); err != nil {
+		return fmt.Sprintf("read %s's reconciliation rule and could not record it: %v",
+			shortPeer(owner), err)
+	}
+	return ""
 }

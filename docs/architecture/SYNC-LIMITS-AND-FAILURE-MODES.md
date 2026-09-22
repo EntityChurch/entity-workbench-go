@@ -277,6 +277,36 @@ on the next pass.
 because the two regimes produce an identical folder listing and an operator looking at a stale
 folder needs to know which one they are in.
 
+### A pass covers at most 20,000 entries, and RESUMES
+
+`backfillWalkLimit` bounds what one catch-up pass enumerates from the far side. The cap is
+deliberate and is not a performance tuning knob: a sync points at somebody else's machine, and
+*"how many entries are under this prefix"* is **their** answer — an unbounded walk driven by a
+remote response is a denial of service with our own CPU.
+
+**`20,000` is UNMEASURED, and is labelled so deliberately.** It is a policy choice about how much
+remote-driven work one pass may do, not a benchmark result, and nothing in this document should be
+read as claiming a measurement behind it. (Every other figure in this file is measured and says
+where. The distinction is the discipline the specification seat adopted after a cost claim of
+theirs travelled three documents with no measurement anywhere.)
+
+**What was wrong until 2026-09-11 is that the bound had no memory.** The walk restarted from the
+base prefix every pass and the traversal is deterministic, so a folder over the cap converged to
+a fixed, permanently incomplete prefix. Measured — 25,000 entities, two passes: **0 new paths on
+the second, 5,000 unreachable** for as long as they did not change again, with truncation
+honestly reported and every gate green. A folder now resumes after a cursor: 20,500 entries in
+two passes, none unreachable.
+
+Two consequences an operator can see. A truncated pass **says where the next one picks up**
+rather than only that it stopped, and `resync` names the action because the supervisor only runs
+on a long-running peer — a `resync` typed at a shell that is about to exit gets no second pass
+unless you run one. And a truncated pass **holds the supervisor at its floor**: "recovered
+nothing" and "did not look at all of it" are different facts, and a folder covered one segment
+per pass with an hour between passes would be the old defect rebuilt on top of its own repair.
+
+The cursor is process memory, so a restart re-walks from the top. That costs round trips and
+loses nothing: every file in the re-walked segment short-circuits on the content-hash check.
+
 ### What it still does not do
 
 The supervisor makes a dropped delivery a **delay**, not a loss — up to one interval, longer
@@ -363,7 +393,26 @@ The default converges — the arriving version wins on disk, as it always has �
 it replaced. **Both versions are recoverable either way; the difference is whether both are
 PRESENT.** `keep-both` stays the word for the sibling form only, because it is
 EXTENSION-REVISION's word for exactly that and blurring it would make a cross-impl term mean two
-things. Set per folder: `conflicts -folder <id> -policy keep-both`.
+things. Set per folder, **on the peer that OWNS the folder**:
+`conflicts -folder <id> -policy keep-both`.
+
+**A shared folder is one subject and names ONE reconciliation rule — the
+owner's.** Until 2026-09-11 each peer read its own copy of the field, so two
+peers could hold different rules for one folder and diverge with nothing
+noticing; the receiving side's verb now refuses and names the machine to run
+it on. The receiver obtains the rule by reading the owner's declaration on a
+reconcile pass and records it as an OBSERVATION, kept apart from its own
+declarations (`workbench/observed_state.go`) because hearsay merged into a
+declaration is a field that means two different things depending on which
+side of the folder you read it from.
+
+**A rule we have never read holds a collision rather than guessing one.**
+Deliveries continue; a delivery that lands on a local edit answers `409
+conflict_rule_unknown`, overwrites nothing, and is re-derived by the next
+catch-up pass once the owner is reachable. The state is reported on the
+folder's row by `status` AND by a read-only panel, from one sentence with
+one writer — a refusal an operator can only discover from a failed transfer
+is the failure this whole document is about.
 
 ### The discriminator, and the version of it that did not work
 
@@ -463,6 +512,9 @@ silent.
 | Concurrent-edit conflicts | **Detected, recorded, listable and resolvable 2026-09-07** (§5). Not propagated to the other peer, and not merged. |
 | `Mode: both` does not sync receiver → owner | **CLOSED 2026-09-10.** Both legs run, and the two peers no longer have to name the directory the same thing. The 2026-09-08 cause was right about the mechanism and wrong about the remedy: acceptance still does not travel, and it never needed to — `offered` on a folder *we own* is our own act of sharing, and the receiver's root name is READ from their tree when the leg is built. **Both sides must declare `both`**; a receive-only counterpart publishes nothing, and the verb now says so and names the command to run on the far machine. Gates: `shellboot/mode_both_asymmetric_roots_test.go` (bytes on disk, asymmetric roots, symmetric control arm), `mode_both_reverse_leg_test.go`. |
 | Receiver → owner propagation of anything OTHER than file changes | **Open.** Conflict records do not reach the other peer (§5). The 2026-09-08 write-up bundled this with `Mode: both` as one piece of work; that was wrong — the reverse leg needed a READ, not a channel — so this is smaller and separate now, and still owed. |
+| A backfill pass covers at most 20,000 entries | **Resumable since 2026-09-11** (§3). Before that the bound had no memory and a folder over the cap was permanently incomplete: measured at 25,000 entities, 5,000 unreachable across identical passes. A truncated pass now says where the next resumes and holds the supervisor at its floor. |
+| **The sync leg accepts a stale delivery — no rollback floor** | **OPEN, and measured 2026-09-11.** A delivery carrying an older version of a file is applied over a newer one: replayed v1 after v2, `status=200`, no error, newer file gone from disk. `fetch.Consumer.acceptSeq` refuses exactly this on the STATIC leg. What is measured is that the delivery handler has no ordering check, at the entry point a live delivery and a backfill both reach — so an **out-of-order live delivery lands here by accident, with no attacker**. What is NOT measured is whether an unauthorized party can trigger it; the probe does not cross the wire. A fix cannot key on content or on "older mtime" alone: a sender that genuinely reverts its own file must still be followed, and a restored backup carries an old mtime. `shellboot/sync_rollback_probe_test.go` pins the measurement. |
+| A shared folder's reconciliation rule | **CLOSED 2026-09-11.** It was stored per peer and read locally by whichever side the collision hit, so two peers could hold different rules for one folder and diverge unnoticed. The rule is the OWNER's; the receiver reads it and records it as an observation, the receiving side's verb refuses, and a rule we have never read HOLDS the collision instead of guessing (§5). |
 | Four or more peers, and triangles | **Untested.** |
 
 ---

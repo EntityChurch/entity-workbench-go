@@ -487,7 +487,8 @@ exports the model being wrong.
 - **Conflict semantics are unchanged *by this document*, and were changed on
   2026-09-07** — this row used to end *"a concurrent edit still loses a write
   silently"*, and that is no longer true. A delivery landing on a local edit is
-  detected, recorded and undoable; `keep-both` is available per folder;
+  detected, recorded and undoable; `keep-both` is available per folder, set
+  by the folder's OWNER and read by the other side (one subject, one rule);
   `SYNC-LIMITS-AND-FAILURE-MODES.md` §5 is now the discussion rather than
   `FILE-REPLICATION-LANDSCAPE.md` §3. What the reconciler contributes is
   unchanged: it makes the layer above usable enough that the question can be

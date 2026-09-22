@@ -125,6 +125,23 @@ var (
 type Registry struct {
 	*Consumer
 
+	// Layout is the registry origin's advertised endpoint.
+	//
+	// **Held here rather than read off the embedded [Consumer], because a
+	// registry is HTTP by construction and a consumer no longer is.** A
+	// registry is a signed root served over HTTP and it stays that way
+	// even when the publisher it points you at is a live peer: the
+	// binding is the orthogonal, static half. So this type keeps the URL
+	// builders it needs — `ListingURL` above all, which has no analogue
+	// on a dispatched read — and the seam under `Consumer` is free to
+	// carry something else.
+	Layout Layout
+	// client serves the one read that has no [Source] analogue: the
+	// `.list` convenience artifact, which is a URL suffix convention and
+	// not a tree or content read. Same pointer the embedded Consumer's
+	// source holds, set once in the constructor.
+	client *http.Client
+
 	pub     []byte
 	keyType byte
 
@@ -160,8 +177,11 @@ func NewRegistryWithCache(layout Layout, client *http.Client, cache *Cache) (*Re
 	if err != nil {
 		return nil, fmt.Errorf("fetch: pinning registry %s: %w", layout.PeerID, err)
 	}
+	src := NewHTTPSource(layout, client)
 	return &Registry{
-		Consumer: NewConsumerWithCache(layout, client, cache),
+		Consumer: NewConsumerFromSource(src, cache),
+		Layout:   layout,
+		client:   src.Client,
 		pub:      pub, keyType: keyType,
 	}, nil
 }
@@ -425,7 +445,7 @@ func (n *NameSet) diagnose(absPrefix string, l Layout) {
 func (r *Registry) listNames(ctx context.Context) ([]string, string, error) {
 	rel := strings.TrimSuffix(types.PeerIssuedByNamePrefix, "/")
 	url := r.Layout.ListingURL(rel)
-	body, err := httpGet(ctx, r.Client, url)
+	body, err := httpGet(ctx, r.client, url)
 	if err != nil {
 		return nil, url, err
 	}
@@ -786,8 +806,7 @@ func (r *Registry) Resolve(ctx context.Context, name string) (NameResolution, er
 		return NameResolution{}, err
 	}
 	rel := types.PeerIssuedByNamePath(normalized)
-	url := r.Layout.TreeLeafURL(rel)
-	raw, err := httpGet(ctx, r.Client, url)
+	raw, url, err := r.src.Leaf(ctx, rel)
 	if err != nil {
 		return NameResolution{}, fmt.Errorf("%w: %s: %w", ErrNameNotFound, url, err)
 	}
@@ -856,7 +875,7 @@ func (r *Registry) verify(ctx context.Context, asked, normalized string, binding
 
 	// The signature, at the §5.2 invariant pointer, resolved from the
 	// hash we asked for rather than one the origin offered.
-	sigEnt, err := r.leafAt(ctx, publishedroot.SignatureRelPath(bindingHash))
+	sigEnt, _, err := r.leafAt(ctx, publishedroot.SignatureRelPath(bindingHash))
 	if err != nil {
 		return res, fmt.Errorf("registry binding %s: resolving its §5.2 signature pointer: %w",
 			bindingHash, err)
@@ -959,7 +978,7 @@ func (r *Registry) checkRevoked(ctx context.Context, bindingHash hash.Hash, set 
 		}
 	}
 
-	revEnt, err := r.leafAt(ctx, rel)
+	revEnt, _, err := r.leafAt(ctx, rel)
 	if err != nil {
 		// Absent — which proves nothing, and Bound() says so.
 		return out, nil
@@ -968,7 +987,7 @@ func (r *Registry) checkRevoked(ctx context.Context, bindingHash hash.Hash, set 
 		return out, fmt.Errorf("revocation index for %s holds type %q, want %s",
 			bindingHash, revEnt.Type, types.TypeRegistryRevocation)
 	}
-	sigEnt, err := r.leafAt(ctx, publishedroot.SignatureRelPath(revEnt.ContentHash))
+	sigEnt, _, err := r.leafAt(ctx, publishedroot.SignatureRelPath(revEnt.ContentHash))
 	if err != nil {
 		// A revocation nobody signed is not a revocation. Refuse to act
 		// on it rather than letting the origin revoke by assertion.

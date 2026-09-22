@@ -321,6 +321,30 @@ type FolderStatus struct {
 	// arrived" and "there is nowhere for it to arrive" are different
 	// claims and this folder's whole problem is usually the second one.
 	FilesObservable bool
+
+	// OwnerRuleKnown reports whether this peer holds the OWNER's
+	// reconciliation rule for this folder — what happens when their
+	// change lands on a local edit.
+	//
+	// A shared folder names ONE rule and it is the owner's, so for a
+	// RECEIVED folder this is hearsay we have to have obtained
+	// (workbench.ObservedFolderData). Always true for a folder we own,
+	// where our own declaration is the rule and there is nobody to ask.
+	//
+	// It is observed from LOCAL state — do we hold the observation — so a
+	// read can report it without dialing anybody, which is why it lives
+	// here and not only in the pass. When it is false a collision is HELD
+	// rather than resolved, and an operator whose file has not arrived
+	// needs that sentence from whichever surface they happen to have
+	// open.
+	OwnerRuleKnown bool
+
+	// OwnerConflictPolicy is the rule that will actually be applied,
+	// resolved through the same defaulting both sides use. Empty when
+	// OwnerRuleKnown is false — and a renderer must not print a default
+	// there, because "record" and "we do not know" are the two states
+	// this field exists to keep apart.
+	OwnerConflictPolicy string
 }
 
 // Reconcile runs one pass. Safe to call at startup, after any change to
@@ -944,7 +968,31 @@ func (ws *ShellWorkspace) reconcileFolder(f workbench.FolderData, out *Reconcile
 	// The diagnostics come from FolderStatus.problems() so the pass and
 	// the read produce the SAME sentence for the same state — two copies
 	// of a diagnostic drift the moment one of them is improved.
+	// Read the OWNER's reconciliation rule BEFORE observing, and before
+	// any of the early returns below. A shared folder names ONE rule and
+	// it is the owner's, and the handler that needs it at delivery time
+	// cannot go and ask (remote_declaration.go).
+	//
+	// Before observeFolder because the pass may have just obtained it,
+	// and a status computed first would report a gap this pass closed.
+	// Above the accepted/mounted checks because whether we have heard the
+	// owner's rule has nothing to do with whether our own mount is
+	// healthy — and putting it below them would mean a folder that
+	// becomes receivable later starts receiving before it has ever
+	// learned the rule, which is precisely the window a collision is held
+	// in.
+	ownerRuleNote := ws.recordOwnerConflictRule(f)
+
 	fs := ws.observeFolder(f)
+
+	// The standing sentence is problems()'s, so the read and the pass
+	// cannot describe this state differently. What the PASS additionally
+	// knows is WHY the read failed just now, which no local observation
+	// can supply — so it goes in the Note, which is where this type
+	// already carries pass-specific detail.
+	if ownerRuleNote != "" {
+		fs.Note = ownerRuleNote
+	}
 
 	if f.IsLocal() {
 		if !fs.Mounted {

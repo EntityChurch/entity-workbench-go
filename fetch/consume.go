@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -84,6 +83,19 @@ var (
 	// with the hash the publisher's own tree-leaf URL advertises.
 	ErrContractMismatch = errors.New("trie-routed hash disagrees with the advertised leaf pointer")
 
+	// errNoManifestPrefix is an HTTP publisher that advertises no
+	// `manifest_url_prefix`, so this origin has no signed entry point.
+	//
+	// It is a sentinel rather than a formatted string because it now
+	// crosses the [Source] seam: [HTTPSource.Root] is where the fact
+	// lives and [Consumer.VerifiedRoot] is where it must NOT be wrapped
+	// in "fetch manifest:", which would read as a network failure. §6.5.3
+	// reserves that location and does not make it derivable, so there is
+	// nothing to fall back to — and a derived manifest URL is
+	// byte-identical to a withholding origin at the consumer (AP21).
+	errNoManifestPrefix = errors.New("fetch: publisher advertises no manifest_url_prefix, " +
+		"so this origin has no signed entry point (§6.5.3 reserves the location; it is not derivable)")
+
 	// ErrSeqRollback is a published-root whose `seq` is below one this
 	// consumer already accepted from the same publisher.
 	//
@@ -151,9 +163,18 @@ const WalkConcurrency = 8
 // everything under it is content-addressed and is held in [Cache]. See
 // cache.go for the measurement and for the security property a
 // per-navigation consumer silently gives up (the seq floor, below).
+// **Its bytes come from a [Source] and its verification does not.** The
+// seam is under the byte source and nowhere else — see source.go. Every
+// check below (the recomputed hash, the two-hop signature, the seq
+// floor, the fail-closed walk) is transport-neutral and runs identically
+// whatever answered, because a second verification path would be two
+// code paths for one trust argument with the weaker one wearing the same
+// UI.
 type Consumer struct {
-	Layout Layout
-	Client *http.Client
+	// src is the byte source. Unexported on purpose: a caller reaching
+	// past the consumer to fetch from the source directly gets bytes that
+	// nothing checked, which is the one way to use this package wrongly.
+	src Source
 	// Cache is shared, and sharing it across publishers is correct: the
 	// key space is content hashes, so two publishers who committed the
 	// same bytes name the same entry, and neither can put anything in it
@@ -169,18 +190,23 @@ type Consumer struct {
 	haveMinSeq bool
 }
 
-// NewConsumer binds a consumer to a layout, with its own cache.
-func NewConsumer(layout Layout, client *http.Client) *Consumer {
-	return NewConsumerWithCache(layout, client, NewCache(0))
+// NewConsumerFromSource binds a consumer to any byte source.
+//
+// This is the general door. `NewConsumer` / `NewConsumerWithCache` are
+// it with [HTTPSource] filled in and live in source.go, so that **this
+// file names no transport at all** — which is the property the seam
+// exists for and the one a reader should be able to check by looking at
+// the imports.
+func NewConsumerFromSource(src Source, cache *Cache) *Consumer {
+	if cache == nil {
+		cache = NewCache(0)
+	}
+	return &Consumer{src: src, Cache: cache}
 }
 
-// NewConsumerWithCache binds a consumer to a layout over a shared cache.
-func NewConsumerWithCache(layout Layout, client *http.Client, cache *Cache) *Consumer {
-	if client == nil {
-		client = http.DefaultClient
-	}
-	return &Consumer{Layout: layout, Client: client, Cache: cache}
-}
+// PeerID is the publisher this consumer reads — the key its signature
+// checks verify against.
+func (c *Consumer) PeerID() string { return c.src.PeerID() }
 
 // VerifiedRoot is a published-root that verified over the wire.
 //
@@ -215,13 +241,11 @@ type VerifiedRoot struct {
 // origin are indistinguishable from here, and no freshness field closes
 // that. The caller decides what age it will accept.
 func (c *Consumer) VerifiedRoot(ctx context.Context) (VerifiedRoot, error) {
-	manifestURL := c.Layout.ManifestURL()
-	if manifestURL == "" {
-		return VerifiedRoot{}, fmt.Errorf("fetch: publisher advertises no manifest_url_prefix, " +
-			"so this origin has no signed entry point (§6.5.3 reserves the location; it is not derivable)")
-	}
-	raw, err := httpGet(ctx, c.Client, manifestURL)
+	raw, manifestURL, err := c.src.Root(ctx)
 	if err != nil {
+		if errors.Is(err, errNoManifestPrefix) {
+			return VerifiedRoot{}, err
+		}
 		return VerifiedRoot{}, fmt.Errorf("fetch manifest: %w", err)
 	}
 	var ent entity.Entity
@@ -229,19 +253,19 @@ func (c *Consumer) VerifiedRoot(ctx context.Context) (VerifiedRoot, error) {
 		return VerifiedRoot{}, fmt.Errorf("fetch: decode manifest %s: %w", manifestURL, err)
 	}
 
-	ent, data, err := publishedroot.Check(c.Layout.PeerID, manifestURL, ent)
+	peerID := c.src.PeerID()
+	ent, data, err := publishedroot.Check(peerID, manifestURL, ent)
 	if err != nil {
 		return VerifiedRoot{}, err
 	}
 
-	pub, keyType, err := publishedroot.DeriveKey(c.Layout.PeerID)
+	pub, keyType, err := publishedroot.DeriveKey(peerID)
 	if err != nil {
 		return VerifiedRoot{}, err
 	}
 
 	sigRel := publishedroot.SignatureRelPath(ent.ContentHash)
-	sigURL := c.Layout.TreeLeafURL(sigRel)
-	sigEnt, err := c.leafAt(ctx, sigRel)
+	sigEnt, sigURL, err := c.leafAt(ctx, sigRel)
 	if err != nil {
 		return VerifiedRoot{}, fmt.Errorf("fetch: resolving the §5.2 signature pointer at %s: %w — "+
 			"a published-root whose signature cannot be reached is unverifiable, not unsigned", sigURL, err)
@@ -252,22 +276,9 @@ func (c *Consumer) VerifiedRoot(ctx context.Context) (VerifiedRoot, error) {
 		return VerifiedRoot{}, err
 	}
 
-	// The seq floor. Deliberately AFTER the signature: a rollback is a
-	// correctly-signed root being replayed, so refusing on seq before
-	// establishing the signer would refuse on an unsigned number.
-	c.mu.Lock()
-	if c.haveMinSeq && data.Seq < c.minSeq {
-		floor := c.minSeq
-		c.mu.Unlock()
-		return VerifiedRoot{}, fmt.Errorf("%w: %s served seq=%d and this session already accepted "+
-			"seq=%d from the same publisher — both roots are validly signed, which is what makes "+
-			"this a replay rather than a corruption",
-			ErrSeqRollback, manifestURL, data.Seq, floor)
+	if err := c.acceptSeq(data.Seq, manifestURL); err != nil {
+		return VerifiedRoot{}, err
 	}
-	if !c.haveMinSeq || data.Seq > c.minSeq {
-		c.minSeq, c.haveMinSeq = data.Seq, true
-	}
-	c.mu.Unlock()
 
 	return VerifiedRoot{
 		Entity:       ent,
@@ -276,6 +287,30 @@ func (c *Consumer) VerifiedRoot(ctx context.Context) (VerifiedRoot, error) {
 		ManifestURL:  manifestURL,
 		SignatureURL: sigURL,
 	}, nil
+}
+
+// acceptSeq is the §3-RES.4 monotonicity floor, and it is one function
+// so there is one copy of the comparison.
+//
+// **Called deliberately AFTER the signature check**: a rollback is a
+// correctly-signed root being replayed, so refusing on `seq` before
+// establishing the signer would be refusing on an unsigned number.
+//
+// Equal is accepted — a republish of one root is not a rollback — and
+// only a strictly higher seq moves the floor.
+func (c *Consumer) acceptSeq(seq uint64, locator string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.haveMinSeq && seq < c.minSeq {
+		return fmt.Errorf("%w: %s served seq=%d and this session already accepted "+
+			"seq=%d from the same publisher — both roots are validly signed, which is what makes "+
+			"this a replay rather than a corruption",
+			ErrSeqRollback, locator, seq, c.minSeq)
+	}
+	if !c.haveMinSeq || seq > c.minSeq {
+		c.minSeq, c.haveMinSeq = seq, true
+	}
+	return nil
 }
 
 // Binding is one committed (key → content hash) pair, with key relative
@@ -442,11 +477,7 @@ func (c *Consumer) Blob(ctx context.Context, h hash.Hash) (entity.Entity, error)
 	if ent, ok := c.Cache.Blob(h); ok {
 		return ent, nil
 	}
-	url, err := c.Layout.ContentURL(h)
-	if err != nil {
-		return entity.Entity{}, err
-	}
-	body, err := httpGet(ctx, c.Client, url)
+	body, _, err := c.src.Blob(ctx, h)
 	if err != nil {
 		return entity.Entity{}, err
 	}
@@ -459,21 +490,25 @@ func (c *Consumer) Blob(ctx context.Context, h hash.Hash) (entity.Entity, error)
 }
 
 // leafAt resolves a peer-relative tree path the advertised way: the
-// two-hop `system/hash` pointer at the leaf URL, then the content blob
-// it names. This is `Fetch`'s path, reused — the tree-leaf surface is
-// how the SIGNATURE is reached (§5.2 makes it an invariant pointer, not
-// a trie key), so the consumer needs both resolution paths, not one.
-func (c *Consumer) leafAt(ctx context.Context, treePath string) (entity.Entity, error) {
-	url := c.Layout.TreeLeafURL(treePath)
-	raw, err := httpGet(ctx, c.Client, url)
+// two-hop `system/hash` pointer at the leaf, then the content blob it
+// names. This is `Fetch`'s path, reused — the tree-leaf surface is how
+// the SIGNATURE is reached (§5.2 makes it an invariant pointer, not a
+// trie key), so the consumer needs both resolution paths, not one.
+//
+// The locator is returned on the failure paths too, because the caller's
+// error message names where it looked and a failed lookup is exactly
+// when that matters.
+func (c *Consumer) leafAt(ctx context.Context, treePath string) (entity.Entity, string, error) {
+	raw, locator, err := c.src.Leaf(ctx, treePath)
 	if err != nil {
-		return entity.Entity{}, err
+		return entity.Entity{}, locator, err
 	}
 	h, err := crackPointer(raw)
 	if err != nil {
-		return entity.Entity{}, fmt.Errorf("%s: %w", url, err)
+		return entity.Entity{}, locator, fmt.Errorf("%s: %w", locator, err)
 	}
-	return c.Blob(ctx, h)
+	ent, err := c.Blob(ctx, h)
+	return ent, locator, err
 }
 
 // AbsolutePrefix resolves a published root's **configured** `prefix`
@@ -527,17 +562,17 @@ func AbsolutePath(prefix, peerID, key string) string {
 // peer-relative path, so the key is reconstructed to absolute and the
 // peer segment stripped back off.
 func (c *Consumer) PointerFor(ctx context.Context, prefix, key string) (hash.Hash, string, error) {
-	rel := peerRelative(AbsolutePath(prefix, c.Layout.PeerID, key), c.Layout.PeerID)
-	url := c.Layout.TreeLeafURL(rel)
-	raw, err := httpGet(ctx, c.Client, url)
+	peerID := c.src.PeerID()
+	rel := peerRelative(AbsolutePath(prefix, peerID, key), peerID)
+	raw, locator, err := c.src.Leaf(ctx, rel)
 	if err != nil {
-		return hash.Hash{}, url, err
+		return hash.Hash{}, locator, err
 	}
 	h, err := crackPointer(raw)
 	if err != nil {
-		return hash.Hash{}, url, fmt.Errorf("%s: %w", url, err)
+		return hash.Hash{}, locator, fmt.Errorf("%s: %w", locator, err)
 	}
-	return h, url, nil
+	return h, locator, nil
 }
 
 // peerRelative turns an absolute `/{peer}/a/b` tree path into the

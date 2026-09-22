@@ -487,11 +487,14 @@ func BrowseRender(handle C.int64_t) (result *C.char) {
 // drives it off a worker.
 //
 // The ref is passed through UNINTERPRETED, for the same reason
-// BrowseFollow does it: [wb.AssetNameFromRef] is the security gate that
+// BrowseFollow does it: [wb.ClassifyAssetRef] is the security gate that
 // decides whether a string in someone else's page body may cause a
-// fetch, it is Layer-2 contract shared with entity-browser-rust, and a
-// C# copy of it would be a second implementation of a rule whose failure
-// mode is "the renderer fetched a tracking URL".
+// fetch, its containment check is Layer-2 contract shared with
+// entity-browser-rust, and a C# copy of it would be a second
+// implementation of a rule whose failure mode is "the renderer fetched a
+// tracking URL". It is also where `APP-CONVENTION-REFERENCE` §3.4's four
+// reference forms are discriminated, so a copy would diverge on the
+// grammar as well as on the refusals.
 //
 // The site is NOT a parameter. It is the page on screen, read inside the
 // model — see [wb.BrowseModel.Asset].

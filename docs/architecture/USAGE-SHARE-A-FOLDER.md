@@ -205,7 +205,8 @@ names the version it replaced; `-keep mine` writes yours back and declines
 that one delivery, so a catch-up pass will not undo your choice.
 
 If you would rather have both versions **present** — the Dropbox /
-Syncthing "conflicted copy" behaviour — declare it per folder:
+Syncthing "conflicted copy" behaviour — declare it per folder, **on the
+machine that owns the folder**:
 
 ```
 conflicts -folder <folder-id> -policy keep-both
@@ -216,6 +217,20 @@ The replaced version is then written beside the original as
 a **one-way** share it stops that folder converging and the owner is never
 told: they still hold their version, you now hold both, and nothing brings
 the two back together. In a two-way folder it is the better choice.
+
+**A shared folder has ONE rule, and it belongs to whoever owns the folder.**
+Run the command above on the machine the folder came from; the other side
+reads it and obeys it. If you run it on the receiving machine it refuses and
+tells you which machine to use — deliberately, because a folder where each
+side picked its own rule is a folder the two machines quietly stop agreeing
+about, and nothing would ever tell you.
+
+The consequence is worth knowing before you meet it: if the owning machine
+has been unreachable since before you accepted the folder, your peer has
+never read its rule. **Files still arrive.** A *collision* — their change
+landing on an edit of yours — is **held** instead, nothing is overwritten,
+and `status` says so on the folder's row. It clears the next time that peer
+is reachable.
 
 Two limits worth knowing before you rely on this:
 

@@ -96,9 +96,29 @@ type BackfillResult struct {
 	Errors []string
 
 	// Truncated reports that the remote enumeration hit
-	// backfillWalkLimit and this result describes a PREFIX of the
+	// backfillWalkLimit and this result describes a SEGMENT of the
 	// folder, not the folder.
+	//
+	// It no longer means the rest is unreachable — see NextAfter — but
+	// it still means this pass did not cover the folder, which is why
+	// Complete() keeps reading it.
 	Truncated bool
+
+	// ResumedAfter is the cursor this pass STARTED after: the last path
+	// the previous pass processed. Empty means it started from the top,
+	// which is both the first pass over a folder and the pass after a
+	// completed cycle.
+	ResumedAfter string
+
+	// NextAfter is where the next pass will resume. Empty means the top,
+	// i.e. this pass finished the folder and the cycle wraps.
+	//
+	// Carried in the RESULT rather than left in the workspace's memory
+	// for the reason ReconcileOutcome.Reconciled is: how much of the
+	// folder a reading covered is a property of that reading, and a
+	// surface that has to recall which pass it was looking at in order to
+	// caption the number will eventually caption it wrong.
+	NextAfter string
 
 	// Unreachable reports that the remote folder could not be LISTED at
 	// all, so this result describes nothing about their folder.
@@ -148,7 +168,14 @@ func (r BackfillResult) Summary() string {
 		parts = append(parts, fmt.Sprintf("%d FAILED", r.Failed))
 	}
 	if r.Truncated {
-		parts = append(parts, fmt.Sprintf("stopped at the %d-entry walk limit — this is a PREFIX of the folder", backfillWalkLimit))
+		// Never "this is a PREFIX of the folder" full stop, which is what
+		// this said while the walk had no memory: it stated the
+		// incompleteness and left an operator to assume the rest was
+		// lost. Say where the next pass picks up, because that is the
+		// difference between a segment and a ceiling.
+		parts = append(parts, fmt.Sprintf(
+			"stopped at the %d-entry walk limit — a SEGMENT of the folder; the next pass resumes after %s",
+			backfillWalkLimit, trimPeerQualified(r.NextAfter)))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -177,7 +204,13 @@ func (ws *ShellWorkspace) backfill(
 	// current folder, not our cached idea of it — but it is also why
 	// every one of these calls can fail for their reasons, and why the
 	// error text names the peer.
-	paths, truncated, listErr := ws.walkRemoteFiles(local, remotePeerID, sourcePrefix)
+	// Resume where the last pass stopped. A folder smaller than the walk
+	// limit never has a cursor, so this is a no-op for every ordinary
+	// folder and the cost is one map read.
+	res.ResumedAfter = ws.backfillCursor(remotePeerID, sourcePrefix)
+
+	paths, truncated, listErr := ws.walkRemoteFilesAfter(
+		local, remotePeerID, sourcePrefix, res.ResumedAfter)
 	res.Truncated = truncated
 	if listErr != nil {
 		// The BASE prefix failed, so we learned nothing about their
@@ -221,73 +254,36 @@ func (ws *ShellWorkspace) backfill(
 		}
 	}
 
+	// Advance the cursor over everything this pass PROCESSED — failures
+	// included, for the reason backfill_cursor.go states: holding at the
+	// first failure turns one unreadable file into a wall the folder
+	// never gets past.
+	//
+	// A pass that was NOT truncated covered the rest of the folder, so
+	// the cycle wraps to the top. That wrap is what makes the loop
+	// idempotent in the operator-visible sense: run `resync` twice on a
+	// folder under the cap and the second reports everything already
+	// current, which is this flow's only positive confirmation.
+	res.NextAfter = nextBackfillCursor(paths, truncated)
+	ws.setBackfillCursor(remotePeerID, sourcePrefix, res.NextAfter)
+
 	sort.Strings(res.Errors)
 	return res
 }
 
-// walkRemoteFiles enumerates leaf paths under a remote prefix,
-// descending into subdirectories. Returns the paths and whether the
-// walk was cut short by backfillWalkLimit.
+// walkRemoteFiles enumerates leaf paths under a remote prefix from the
+// TOP, descending into subdirectories.
 //
-// Listing is breadth-first with an explicit queue rather than
-// recursion: the depth is chosen by the remote peer, and a recursive
-// walk over a remote-supplied tree is a stack overflow with someone
-// else's finger on the trigger.
+// It is `walkRemoteFilesAfter` with no cursor, and it is kept as its own
+// name for two readers: callers that genuinely want the whole folder from
+// the start, and `TestProbe_BoundedWalkMakesNoProgress`, which is the
+// control arm for the resumable walk — it measures that a walk WITHOUT a
+// cursor still converges to a fixed incomplete prefix, so the cursor
+// cannot pass vacuously.
 func (ws *ShellWorkspace) walkRemoteFiles(
 	local *entitysdk.AppPeer, remotePeerID, sourcePrefix string,
 ) ([]string, bool, error) {
-	base := "/" + remotePeerID + "/" + sourcePrefix
-	queue := []string{base}
-	var out []string
-	seen := map[string]bool{base: true}
-
-	for len(queue) > 0 {
-		if len(out) >= backfillWalkLimit {
-			return out, true, nil
-		}
-		dir := queue[0]
-		queue = queue[1:]
-
-		entries, err := local.List(dir)
-		if err != nil {
-			// The BASE prefix is special: failing it means we never saw
-			// their folder, and a caller that reports that as "zero
-			// files" states a fact about their machine that it does not
-			// have. A SUBDIRECTORY that fails mid-walk is different —
-			// the rest of the walk is still real — so it contributes
-			// nothing and does not abort.
-			if dir == base {
-				return nil, false, err
-			}
-			continue
-		}
-		for _, e := range entries {
-			// Normalize to the peer-qualified form explicitly rather
-			// than trusting whatever shape List happened to return.
-			// This is AP58's neighbourhood: entries come back qualified
-			// today, but a RELATIVE path handed to `local.Get` would
-			// read our OWN tree instead of theirs — a local read
-			// wearing a remote read's clothes, which would "succeed",
-			// materialize nothing new, and report every file as
-			// already-current. Cheap to make unambiguous; expensive to
-			// debug if it ever changes.
-			p := qualifyTo(remotePeerID, e.Path)
-			if p == "" || seen[p] {
-				continue
-			}
-			seen[p] = true
-			if e.HasChildren {
-				queue = append(queue, strings.TrimSuffix(p, "/")+"/")
-				continue
-			}
-			out = append(out, p)
-			if len(out) >= backfillWalkLimit {
-				return out, true, nil
-			}
-		}
-	}
-	sort.Strings(out)
-	return out, false, nil
+	return ws.walkRemoteFilesAfter(local, remotePeerID, sourcePrefix, "")
 }
 
 type materializeOutcome int

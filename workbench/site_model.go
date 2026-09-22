@@ -3,6 +3,8 @@ package workbench
 import (
 	"strings"
 	"sync"
+
+	"entity-workbench-go/entitysdk"
 )
 
 // SiteModel is the renderer-neutral model for one site-view surface.
@@ -145,39 +147,87 @@ const (
 
 // ClassifyTarget turns a raw link string into a Location + kind. The
 // `current` location supplies the inherited peer + site for relative
-// links. Returns ok=false for malformed entity:// URIs (caller should
-// treat as external).
+// links. Returns ok=false for a reference whose own form refused it
+// (caller should treat as external and never re-anchor it).
 //
-// Mirrors egui-rust src/content_site/location.rs::classify_link.
+// Mirrors egui-rust src/content_site/location.rs::classify_link, and
+// the form discrimination is [ClassifyRefForm]'s so the link position
+// and the asset position cannot disagree about what a string is.
+//
+// # The two arms added 2026-09-11, and what they were doing before
+//
+// **`entity+ref://` is `APP-CONVENTION-REFERENCE` §3.4's absolute form
+// and the one a conformant producer emits in a link position
+// (`REF-R17`).** It was not tested for here, so it fell through to
+// [resolveInSitePage] and became an in-site page slug:
+// `entity+ref://PEER/sites/lab/pages/intro` resolved to the page
+// `entity+ref:/PEER/sites/lab/pages/intro`, which is a well-formed
+// address of something nobody published. That is `REF-R20`'s named
+// failure exactly — *"a tolerant re-anchoring scan produces a
+// well-formed wrong location and cannot report that it did"* — and it
+// reports as *page missing*, a diagnosis pointing at the publisher.
+//
+// **Everything scheme-bearing that is not ours now leaves the system.**
+// The old arm named `http`, `https` and `mailto` and let every other
+// scheme fall through to the same re-anchoring: `data:`, `ftp:`,
+// `javascript:` all became in-site slugs. RFC 3986 §4.2 forbids a colon
+// in the first segment of a relative-path reference for this reason, so
+// the strict reading is also the compatible one.
 func ClassifyTarget(target string, current Location) (Location, LinkKind, bool) {
 	t := strings.TrimSpace(target)
 	if t == "" {
 		return Location{}, LinkExternal, false
 	}
-	if strings.HasPrefix(t, "http://") ||
-		strings.HasPrefix(t, "https://") ||
-		strings.HasPrefix(t, "mailto:") {
+	switch ClassifyRefForm(t) {
+	case RefFormExternal:
 		return Location{}, LinkExternal, true
-	}
-	if rest, ok := strings.CutPrefix(t, "entity://"); ok {
-		return parseEntityURI(rest, current)
-	}
-	if rest, ok := strings.CutPrefix(t, "site:"); ok {
-		siteID, page := splitFirstSlash(rest)
+	case RefFormEntityRef:
+		return parseEntityRefURI(t)
+	case RefFormLegacyDispatch:
+		return parseEntityURI(t[len(legacyDispatchScheme):], current)
+	case RefFormSite:
+		siteID, page := splitFirstSlash(t[len(SiteRefScheme):])
 		return Location{
 			PeerID: current.PeerID,
 			SiteID: siteID,
 			Page:   page,
 		}, LinkCrossSite, true
 	}
-	// In-site link — resolved RELATIVE TO THE CURRENT PAGE'S DIRECTORY,
-	// per the reference implementation. See [resolveInSitePage].
+	// In-site link — relative or root-absolute, both resolved RELATIVE
+	// TO THE CURRENT PAGE'S DIRECTORY, per the reference implementation.
+	// See [resolveInSitePage], which consumes the dot segments: `REF-V9`
+	// requires a relative `..` to resolve rather than be refused.
 	p := resolveInSitePage(t, current.Page)
 	return Location{
 		PeerID: current.PeerID,
 		SiteID: current.SiteID,
 		Page:   p,
 	}, LinkInSite, true
+}
+
+// parseEntityRefURI turns §3.1's absolute form into a cross-peer
+// location.
+//
+// A PINNED reference is refused rather than resolved. It names bytes by
+// hash and has no path-shaped identity at all (§3.1: its path is empty
+// on purpose), so there is no page to navigate to — and manufacturing
+// one from the hash would be the guess this whole grammar exists to
+// stop. A surface that wants to follow a pin needs content-addressed
+// retrieval, which is a different route and not this one.
+func parseEntityRefURI(target string) (Location, LinkKind, bool) {
+	r, err := entitysdk.ParseRefURI(target)
+	if err != nil || r.IsPinned() {
+		return Location{}, LinkExternal, false
+	}
+	siteID, rest, ok := refSiteSubpath(r.Path)
+	if !ok || siteID == "" {
+		return Location{}, LinkExternal, false
+	}
+	page := ""
+	if p, found := strings.CutPrefix(rest, "pages/"); found {
+		page = p
+	}
+	return Location{PeerID: r.Peer, SiteID: siteID, Page: page}, LinkCrossPeer, true
 }
 
 // parseEntityURI parses the part after `entity://` into a cross-peer

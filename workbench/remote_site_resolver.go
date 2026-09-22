@@ -79,7 +79,7 @@ type RemoteSiteResolver struct {
 func NewRemoteSiteResolver(ctx context.Context, c *fetch.Consumer, root fetch.VerifiedRoot, walk fetch.WalkResult) *RemoteSiteResolver {
 	r := &RemoteSiteResolver{
 		consumer: c,
-		peerID:   c.Layout.PeerID,
+		peerID:   c.PeerID(),
 		prefix:   root.Data.Prefix,
 		keys:     make(map[string]hash.Hash, len(walk.Bindings)),
 		cache:    map[hash.Hash][]byte{},
@@ -210,28 +210,50 @@ func (r *RemoteSiteResolver) ResolvePage(loc Location) ResolveOutcome {
 // ResolveAsset implements [AssetResolver].
 //
 // The whole security argument sits in the two lines that reject: the
-// name comes from [AssetNameFromRef], so a page body cannot point this
-// at another origin, and the path is then looked up in `r.keys` — the
-// SIGNED key set. An asset the publisher did not commit does not
+// address comes from [ClassifyAssetRef], so a page body cannot point
+// this at another origin, and the path is then looked up in `r.keys` —
+// the SIGNED key set. An asset the publisher did not commit does not
 // resolve, however the page refers to it, and the bytes that come back
 // are hash-verified by [fetch.Consumer.Blob] like every other body.
 //
 // Assets are why the blob cache is byte-bounded rather than
 // entry-bounded: billslab's methodology site commits 665 figures, and a
 // gallery page pulls thirteen at a time.
+//
+// # What this resolver can and cannot reach, which are different
+// sentences
+//
+// It is bound to ONE publisher's completed walk, and `r.keys` covers
+// that publisher's whole root — every site under it, not only the one
+// on screen. So a `site:other-site/assets/x.png` ref resolves here: the
+// bytes are inside the same signed key set, committed by the same
+// signature the chain on screen already describes. This file's standing
+// rule is that structure comes from the signed key set, and the key set
+// does not stop at a site boundary.
+//
+// A ref naming ANOTHER PEER does not resolve here, and that is a
+// reachability answer rather than a refusal of the reference: a
+// different publisher means a different signed root, and reading one is
+// the live/cross-origin path, not this one. Keeping those two sentences
+// apart is the point of the classification — collapsing them is how
+// three legal reference forms came to be reported as hostile.
 func (r *RemoteSiteResolver) ResolveAsset(loc Location, ref string) (SiteAsset, bool) {
-	pid := loc.PeerID
+	if loc.PeerID == "" {
+		loc.PeerID = r.peerID
+	}
+	ar, ok := ClassifyAssetRef(ref, loc)
+	if !ok {
+		return SiteAsset{}, false
+	}
+	pid := ar.PeerID
 	if pid == "" {
 		pid = r.peerID
 	}
 	if pid != r.peerID {
 		return SiteAsset{}, false
 	}
-	name, ok := AssetNameFromRef(ref)
-	if !ok {
-		return SiteAsset{}, false
-	}
-	raw, ok := r.at(relPath(AssetPath(pid, loc.SiteID, name), pid))
+	name := ar.Name
+	raw, ok := r.at(relPath(AssetPath(pid, ar.SiteID, name), pid))
 	if !ok {
 		return SiteAsset{}, false
 	}

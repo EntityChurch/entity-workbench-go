@@ -17,11 +17,20 @@ import "strings"
 // to find any image links, which is exactly right: there were none,
 // because the images are not links (see site_embed.go).
 //
-// # AssetNameFromRef is a SECURITY GATE, not a path helper
+// # AssetNameFromRef is ONE ARM of a security gate, not the gate
 //
-// It decides whether a string written in someone else's page body may
-// cause this process to fetch something. Everything it rejects is a way
-// to point a renderer at a URL the publisher did not commit:
+// **Read site_ref.go before using this.** This function answers a
+// narrow question — *is this a directory-relative ref naming a file in
+// this site's own `assets/` subgraph* — and for a long time it was the
+// only answer any caller had, with its `false` documented as a refusal.
+// Three of `APP-CONVENTION-REFERENCE` §3.4's four forms landed in that
+// `false`, so three legal references were declined by a function
+// reporting a security property. [ClassifyAssetRef] is the gate;
+// this is the arm of it that handles the common case and performs the
+// containment check for all four.
+//
+// What it rejects is still a real list, and every entry is a way to
+// point a renderer at a URL the publisher did not commit:
 //
 //	https://tracker/x.png   an arbitrary origin — a read receipt for
 //	                        every reader of the page
@@ -55,14 +64,29 @@ func AssetPath(peerID, siteID, name string) string {
 	return AssetsPrefix(peerID, siteID) + name
 }
 
-// AssetNameFromRef maps an embed's `ref` to the site-local asset name,
-// or reports false if the ref is not a resolvable site-local asset.
+// AssetNameFromRef maps a SITE-ROOT-RELATIVE embed ref to the site-local
+// asset name, or reports false if it does not name a file inside the
+// site's own `assets/` subgraph.
 //
-// See the file note: this is the gate that stops a page body from
-// steering the renderer at an arbitrary URL. It refuses rather than
-// sanitizes — there is no useful repair of `https://tracker/x.png` into
-// something the publisher committed, and a "cleaned up" version of a
-// hostile ref is a hostile ref that now looks legitimate (AP33).
+// **Callers want [ClassifyAssetRef].** This is its relative arm and its
+// containment check, kept as its own function because it is Layer-2
+// algorithm contract: byte-identical with `entity-browser-rust`'s
+// `asset_name_from_ref`, vectors lifted verbatim, a divergence routed.
+// Called directly it answers one of §3.4's four forms and reports the
+// other three as refusals, which is the defect site_ref.go exists to
+// fix.
+//
+// The base is the SITE ROOT, not the referring page's directory — an
+// asset ref names the same bytes from every page in the site, which is
+// what the live corpus publishes. So a `..` segment here can only
+// escape the subgraph, and refusing it outright is correct at this
+// position while `REF-V9` requires a relative `..` to resolve at the
+// LINK position, where [resolveInSitePage] consumes it.
+//
+// It refuses rather than sanitizes — there is no useful repair of
+// `https://tracker/x.png` into something the publisher committed, and a
+// "cleaned up" version of a hostile ref is a hostile ref that now looks
+// legitimate (AP33).
 func AssetNameFromRef(ref string) (string, bool) {
 	r := strings.TrimSpace(ref)
 	if r == "" ||

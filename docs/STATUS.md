@@ -1,6 +1,6 @@
 # entity-workbench-go — status
 
-_Updated: 2026-09-10 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
+_Updated: 2026-09-11 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
 > **STARTING WORK? Read
 > `docs/status/HANDOFF-2026-09-10-d-the-live-peer-implementation-plan.md`** — its §0 is the
@@ -19,7 +19,17 @@ _Updated: 2026-09-10 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > into ours / waiting-on-architecture / waiting-on-core-go, in the order to do them, with the
 > one piece of work that is deliberately sequenced behind somebody else named as such.
 >
-> **Start here:** **§30 — the pin died with the process, and the whole consume path
+> **Start here:** **§35 — three defects the specification round handed back, and one of them ate
+> 5,000 files** (two fixed, one measured and still open), then
+> **§34 — the closure path holds, and the witness we were handed costs 1000× the
+> spec's claim** (three measurements against the revision-3 draft), then
+> **§33 — seven requests over fifty thousand entries, and an axis with a missing
+> value** (the measurement that answers the specification seat's first review round), then
+> **§32 — we built the same loop three times, and each one is missing a
+> different layer** (the design pass it came out of), then
+> **§31 — the gate that refused three legal reference forms while
+> reporting a security property** (the plan's W0, landed), then
+> **§30 — the pin died with the process, and the whole consume path
 > points at static origins** (and the plan that came out of it,
 > `docs/architecture/LIVE-PEER-DIRECTION.md`), then
 > **§29 — the social vocabulary starts here, and three findings
@@ -79,7 +89,383 @@ _Updated: 2026-09-10 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
 
-## §30 NEW (2026-09-10) — the pin died with the process, and the whole consume path points at static origins
+## §35 NEW (2026-09-11) — three defects the specification round handed back, and one of them ate 5,000 files
+
+**The specification seat ruled all six of our open asks in our favour and named three consequences as
+ours to fix.** All three are shipped or measured here. They are unrelated to each other except in
+provenance: each one is a place where a rule we argued for turned out to indict our own code.
+
+### 1. A bounded walk with no memory bounds the FOLDER, not the pass ✅ FIXED
+
+`walkRemoteFiles` restarted from the base prefix every pass and stopped at 20,000 entries. The
+traversal is deterministic, so a folder over the cap converged to a **fixed, permanently incomplete
+prefix**. Measured: 25,000 entities, two passes, **0 new paths on the second, 5,000 unreachable** —
+truncation honestly reported, loop making no progress, every gate green, for as long as those files
+did not change again.
+
+The cap is not the bug and was not raised: an unbounded walk driven by a remote response is a denial
+of service with our own CPU. The walk now **resumes after a cursor**, and the ordering subtlety is
+the whole fix — leaves under a directory `d` all begin with `d + "/"`, so a directory must sort under
+*that* key and not its bare name. With siblings `a` (a directory) and `a.txt`, sorting by bare name
+emits `a/x.txt` before `a.txt`, and `a.txt < a/x.txt` because `.` is `0x2E` and `/` is `0x2F`. **One
+transposed pair is a file the cursor skips forever.** Mutation-tested: with the bare-name key the
+resume gate loses `a.txt`.
+
+⚠ **And the loop had to learn the difference too.** The catch-up supervisor backs off on *"recovered
+nothing"*, which the first segment of a huge folder can legitimately report while the folder is
+thousands of files short. Left alone it would have taken the fix and rebuilt the defect on top of it:
+progress on every pass, an hour between passes. A truncated pass now holds the floor.
+
+20,500 entries, 2 passes, none unreachable. The control arm still measures 5,000 unreachable through
+the cursorless entry point, so the fix cannot pass vacuously.
+
+### 2. The sync leg has no rollback floor — MEASURED, not yet fixed
+
+`fetch.Consumer.acceptSeq` refuses a published root whose `seq` went backwards. The sync leg has
+nothing. We routed that as a source reading and marked it **unperformed**, and the specification seat
+then narrowed a clause partly on the strength of it — so our unrun reading became load-bearing for
+somebody else's text. Performed:
+
+> `REPLAY: dispatch status=200, err=nil` · file on disk after the replay: **`version one`**
+
+Two peers, a real connection. v1 propagates, the v1 delivery is captured while current, v2
+propagates, the captured v1 is re-dispatched — and it lands. The newer file is gone, silently, with a
+200.
+
+**What is measured is that the HANDLER has no ordering check.** It is the same entry point a live
+delivery and a backfill both reach, so an out-of-order live delivery lands here **by accident, with
+no attacker**. **What is NOT measured is that an unauthorized remote party can trigger it** — the
+probe does not cross the wire. The two sentences are kept apart in the source, because only the first
+is run.
+
+The control arm is what stops a naive fix: a sender that genuinely reverts its own file must still be
+followed, so *"refuse content we have seen before"* passes the probe and breaks the product. The
+sender's mtime is the only local monotone scalar and a restored backup carries an old one — which is
+why the floor is not built blind. **Still ours, still open.**
+
+### 3. A shared folder had two reconciliation rules ✅ FIXED
+
+`FolderData.Conflict` was stored per peer, carried by no wire field, and read by each side from its
+own record — so A could declare `record` while B declared `keep-both`, for one folder, and diverge
+with nothing noticing. Our own ask is what exposed it, and the ruling is our own proposal: the
+authority declaration names a party, that party's copy of the rule **is** the subject's, and a reader
+that cannot read it **refuses rather than guesses**.
+
+`FolderID(owner, root)` already designates the owner on every peer, including under `Mode: both`, so
+nothing had to be invented. Now: `RemoteFolderView` carries the rule, the reconciler reads the
+owner's declaration and records it as an **observation** — kept in its own prefix and its own type,
+never merged into a declaration, because hearsay inside a declaration is a field that means two
+different things depending on which side of the folder you read it from. The delivery handler reads
+what the reconciler recorded; it never dials.
+
+**A rule we have never read HOLDS a collision** (`409 conflict_rule_unknown`). Nothing is
+overwritten, deliveries keep arriving, and the next pass releases it. Gated both ways — the hold and
+the release — and mutation-tested: disabling the refusal fails the hold arm in 6 s.
+
+Two consequences worth stating plainly. **The receiving side's verb now refuses**, naming the machine
+to run it on: it would otherwise write a field nothing reads and hand the operator a success line for
+an instruction the product will not carry out. And **the sentence has one writer** — it is on
+`FolderStatus.problems()`, so a read and a pass cannot describe the state differently, with the pass
+adding only the one fact it alone has (what happened when it just tried). An earlier draft put it in
+the pass only, which is the exact divergence this repository forbids.
+
+**Two more the review pass caught, and both were ours.** A held delivery was being accounted against
+the conflict-storm burst limiter, on the reasoning that an unknown rule should not bypass storm
+accounting — **wrong, and backwards**: a hold writes nothing and overwrites nothing, so it is already
+the safest outcome the function has, and spending storm budget on it means an unreachable peer fills
+the window and the operator is told *"conflict storm"* — a fault on **their own** machine that clears
+by itself — when the cause is another machine they need to go and switch on. Two diagnoses, opposite
+destinations, and the wrong one is the reassuring one. ⇒ **A safety outcome must not consume a safety
+budget.** Gated, and mutation-checked. Separately, the owner's record is now asked for by the
+**canonical** folder id derived from (owner, root) rather than by our local record's id: they differ
+only for a pre-S6 record `MigrateFolderIDs` could not move, and there the local id asks for a path
+the owner does not have — answered *"no record"*, holding every collision **forever** while files
+keep flowing. A rare state made recoverable instead of permanent.
+
+⚠ **Known gap, named rather than discovered:** there is no GUI control for the conflict rule at all.
+It is shell-only, and the Sharing Status panel lists conflicts it cannot set the rule for.
+
+**Suites:** `shellboot` fully green (335 s). `workbench` green. `shellcmd` 17 failures, signature
+identical to the documented set — the 16 E1-stranded tests and the `F9_SelfLoop` intermittent.
+
+---
+
+## §34 (2026-09-11) — the closure path holds, and the witness we were handed costs 1000× the spec's claim
+
+**Revision 3 of the data-exchange proposal restored the property the whole thing turns on, and asked
+us to build it first.** Built. Four answers went back, three of them against the text.
+
+⭐⭐ **THE CLOSURE PATH HOLDS — run, and it is the first time anyone has.** The claim is *what a peer
+obtains it may publish, as the same kind of object, consumable by the identical code path* — the
+argument being that every system which centralized did so because its aggregator's output was a
+different **type** from its input, so there could only be one of them.
+`publish/closure_probe_test.go`: A authors three entries and publishes a signed root; B consumes it
+and **republishes byte-preserving into its own namespace** via `AppPeer.PutEntity`; C consumes B with
+the same `fetch.Consumer`, no branch, no knowledge that B wrote none of it. **Hashes byte-identical
+at both hops.**
+
+⭐ **And the unplanned result is the better one: both peers published the IDENTICAL trie root**
+(`ecf-sha256:fa5887f3e37281b4…`) under different peer-ids, because trie keys are prefix-relative and
+CHAMP canonicalization is permutation-invariant. That matters because the draft says *"witnesses from
+two sources are not comparable"* while another of its `MUST`s requires that two sources both serving
+**be** comparable. The measurement gives the split that resolves it: a **content-derived** witness (a
+trie root) is comparable across sources; a **source-minted** one (a signed pointer carrying `seq`, an
+entity-tag) is not. Note the trap inside our own chain — the *manifest* differs per peer and the
+`root_hash` it commits to does not, so a reader comparing manifests sees disagreement where there is
+none.
+
+⛔ **The control arm is what earns it: the naive republish moved 3 of 3 hashes.** Decode the body
+through a struct that does not declare one of the publisher's fields — **the realistic gatherer, which
+aggregates types it has never heard of** — and the field is dropped in silence (AP49), the entity
+re-encodes, the hash moves. **The consequence is not a lost field, it is attribution**: a detached
+signature is bound at `system/signature/{hex(entry_hash)}`, so every republished entry becomes
+*unattributed*, which the feed convention then obliges a renderer to say. A complete, verifiable,
+correctly-walked publication in which nobody wrote anything. Filed as A-27: the closure property needs
+a byte-preservation `MUST`, and the SDK needs to name the bind-an-obtained-entity operation, because
+the ordinary `Put(path, type, data)` shape is the one a developer reaches for and it is the broken one.
+
+⛔⛔ **The witness they recommended is three orders of magnitude more expensive than the spec claims.**
+They pointed us at `EXTENSION-TREE` §3.7.1 — reconstruct a trie over the bindings under a prefix,
+*"O(n log n), microseconds to low milliseconds"* — as the answer to our live-peer gap, and rejected
+§3.7.2's maintained sidecar as an over-priced proof. Measured (`shellcmd/exchange_probe_test.go`, best
+of 5, core-go's only builder): **34 ms / 455 ms / 2.62 s over 1,000 / 10,000 / 50,000 bindings.** The
+asymptotic is right and the constant is ~10⁴ out, because **each of those operations is a CBOR encode
+plus a SHA-256 plus a content-store put, not an arithmetic step** — per-binding cost grows 34 → 46 →
+52 µs exactly as n log n predicts. ⇒ **as a per-pass witness the trade inverts**: the source pays
+seconds of CPU per reader per pass where today it pays one B-tree range scan, and the sidecar
+(O(log n)/write, O(1)/read) is the cheap shape. Reconstruction is right for a **one-off** comparison.
+⚠ Stated as a limit on our own number: that is core-go's incremental builder, not a lower bound — a
+bulk bottom-up builder would be faster and **nobody has written one anywhere.** Our build order is
+unchanged and still right for our topology: let a live peer publish a root for the prefix it shares,
+and the witness is a fixed-key pointer at 2 requests.
+
+✅ **C15 is a measurement now.** 25,000 entities, cap 20,000, two passes: **identical sets, 0 new
+paths, 5,000 unreachable** until they change again. The prediction we routed as unperformed is
+performed, and it is ours to fix.
+
+⛔ **`FolderData.Conflict` does not survive contact, and we are non-conformant.** The new `MUST` says a
+`shared` subject's reconciliation rule belongs to the **subject**. Ours is written at
+`app/workbench/folders/{folder-id}` **in each peer's own tree**, and `RemoteFolderView`
+(`shellcmd/remote_declaration.go:81`) — the only thing that reads the other side's record — carries
+`Root`, `Mode`, `Publishes`, `OurState` and **not `Conflict`**. So A can declare `record` while B
+declares `keep-both`, one delivery lands on an edit at each, **A ends with one file and B with two, and
+they do not converge** — the exact failure the `MUST` exists to prevent. The fix is available because
+`FolderID` is `{owner-peer-id}.{sender-root}` and therefore designates a party even under
+`Mode: both`: the owner's declaration is the subject's rule, receivers read it over the channel that
+already exists, and a receiver who cannot read it **refuses rather than guessing**. A-29.
+
+⛔ **Three more against the text, each one clause.** The six source outcomes **have no row whose owner
+is the reader** — `fetch`'s `ErrSeqRollback` is served, authentic, verified and refused on *our*
+monotonicity policy, and by their own generative rule it merges with none of the six (A-30). §6.3.3's
+three clauses — ours, adopted verbatim — name trie nodes in a section whose opacity rule exists so a
+plain web origin with entity-tags can be a source, which cannot satisfy them. And *"a monotonic floor
+is not a valid witness for `shared`"* **deletes the only rollback defence**: a `shared` subject's legs
+are each `owned` by one writer, which is precisely the granularity a floor is meaningful at, so as
+written the row makes our own missing sync-leg floor *conformant* (A-31).
+
+**Four of our asks closed in our favour** — the third authority value is adopted as `shared`, D6 lands
+with the feed correction as `D6a`, the submit path is in scope after all (only multi-peer *atomic*
+commit is out), and A-13's placement question is answered by their four-document layer map. Packet:
+`docs/status/ROUTING-2026-09-11-d-…-the-closure-path-holds-…`. **Nothing blocks us; `W2`/`W3`
+continues, and their §15.6 confirms the rung work and this mechanism are one arc rather than two.**
+
+## §33 (2026-09-11) — seven requests over fifty thousand entries, and an axis with a missing value
+
+**The specification seat turned §32's derivation into a drafted mechanism and sent it back for
+review with seven questions.** This section is what we measured in order to answer them, and the
+two things we are asking them to change.
+
+**The measurement, because nobody had one.** The largest tree anywhere in this repository is a
+51-node site, which is too small to tell an expensive design from a cheap one. A published feed
+prefix, three scales, a reader holding the previous walk's nodes in the content-addressed cache:
+
+| entries | trie nodes | cold walk | no-op currency check | **1-entry delta** |
+|---|---|---|---|---|
+| 1,000 | 53 | 56 requests | **2** | **5 requests** |
+| 10,000 | 1,054 | 1,057 requests | **2** | **6 requests** |
+| 50,000 | 3,342 | 3,345 requests | **2** | **7 requests** |
+
+⭐ **A returning reader pays the root-to-leaf path, not the tree.** Fifty times more data costs two
+more requests. **The control arm is what makes that a measurement**: the same one-entry delta read
+by a cacheless reader costs **3,346 requests**. Gate: `publish/feedscale_probe_test.go` — it is kept
+rather than thrown away because the whole result rests on the blob cache surviving a root move, and
+a 51-node fixture cannot tell 5 requests from 56.
+
+**What it decides.** *Answering "what is new?" by comparison* is affordable at social scale, so a
+publication index does not need to be the change-detection mechanism. It also makes one landed
+sentence false: `APP-CONVENTION-FEED` §4.1's *"discovering what is new under a prefix costs the whole
+tree … the index is not a convenience added after the fact"* is true of a first read and of local
+traversal, and **false of the case it was written about.** Filed as A-25, because that sentence is
+what someone will cite in two years to re-add the index as a change detector.
+
+**The cost that is still O(n) is local traversal of already-cached nodes** — 63 ms over 3,343 nodes
+at 50k entries, because a walk is memoized per root hash and a moved root re-walks. Network is what
+a reader is charged for. Do not quote the good number for the other thing.
+
+⛔ **The axis with a missing value, and we ship a counterexample to it.** The drafted mechanism
+classifies every subject as **owned** (exactly one writer, convergence required) or **ownerless**
+(many writers, convergence *forbidden*). **A folder shared `Mode: both` is neither** — two writers,
+and convergence is the entire feature. So is one person's notes across their own laptop and phone,
+and so is a turn-based game with an authoritative host and N submitters. **The third value is
+*many writers, convergence REQUIRED, and the subject declares its reconciliation rule* — and we
+already ship the declaration**, as `FolderData.Conflict` (`workbench/desired_state.go:326`). Filed
+as A-23. The social convention's own `F-10` records the same empty cell from the other tier.
+
+⚠ **A defect of ours, found by answering their question about walk bounds, and NOT yet run.**
+`walkRemoteFiles` (`shellcmd/sync_backfill.go:228`) starts from the base prefix every pass and stops
+at 20,000 entries, deterministically — so **a folder over the cap converges to a fixed, permanently
+incomplete prefix**, truncation honestly reported, loop making no progress. The predicted failing
+case (two passes over a >20,000-file folder, assert the second reaches paths the first did not) is
+**a source reading and has not been performed.** Ours to run.
+
+**Also answered:** comparison-primary is right for our file sync and does not reintroduce the
+saturation blind spot — but its *cheap* arm assumes a published root, and neither peer in a LAN
+share publishes one, so the affordable check is unavailable in the topology the product ships in.
+And their generalization of our *every field is MINE, THEIRS or OURS* rule into a per-subject owner
+axis is **not faithful**: our actual defect was a THEIRS field inside a subject their axis classifies
+correctly as owned, so the two are orthogonal and both are needed.
+
+Packet: `docs/status/ROUTING-2026-09-11-c-entity-system-architecture-seven-requests-over-fifty-thousand-entries-and-the-owner-axis-has-a-third-value-we-ship.md`.
+**Nothing in it blocks us and nothing in it changes what we are building** — `W2`/`W3`, the
+live-peer consume chain, continues.
+
+## §32 (2026-09-11) — we built the same loop three times, and each one is missing a different layer
+
+**Implementation paused for a design pass, on purpose.** The question is whether the layer we keep
+building by hand is at the right altitude, or whether one application's vocabulary has been standing
+in for a general mechanism. This section is the derivation, and the evidence turned out to be
+already in the tree.
+
+**Three instances, not one.** This repository contains three independent implementations of *"keep
+a local view current against a remote one"* — **static consume** (`fetch/`, against a signed root
+over HTTP), **file sync** (`shellcmd/` + `workbench/`, against a live peer over subscriptions), and
+**discovery** (a LAN scan). Three sessions, three transports, three meanings-of-arrival, and
+**they share no code at all.** They were never compared until now.
+
+**They converged on the same answer to the only question that matters** — *am I current?* All three
+**re-derive current state and compare by hash**; none of them replays a change log. That is not a
+style preference, it is what content-addressing makes cheapest: when identity is a hash, currency is
+answerable by comparison, and a change stream becomes an optimization rather than a requirement.
+**The practical consequence is that a cursor is a liveness accelerator, not a correctness
+primitive** — file sync has never had one and converges anyway, which is a sentence worth being able
+to say about any such design.
+
+⭐ **The finding is that each instance is missing a different piece, and each one's known defects are
+exactly that absence.** Laid against a seven-layer reading — byte source · commitment · identity of
+the replicated thing · position · intent · convergence · lowering:
+
+- **Static consume** has commitment and position (a signed root, a monotonic floor that refuses a
+  rollback) and **no durable intent and nothing that reconciles.** Its defect family is the registry
+  pin that died with the process (§30): success reported, nothing persisted, two surfaces unable to
+  share one trust decision.
+- **File sync** has intent, convergence and lowering — the declare-then-reconcile loop, the catch-up
+  supervisor, the adapter that turns an arriving change into bytes on disk — and **no ordering
+  primitive at all.** Measured this session: the receive path's currency check is an *equality* test,
+  so an older version arriving is indistinguishable from a newer one. The static side refuses that
+  case by design; the sync side cannot see it. *(A source read of the path, not a run — it predicts
+  a specific failing case nobody has performed, and it is the next thing to measure.)*
+- **Discovery** **fuses identity with position**: the observation timestamp is a field of the
+  observed entity, so every re-observation of an unchanged peer mints a new content hash. *Nothing
+  changed* and *everything changed* become byte-identical, which is why no amount of downstream
+  deduplication helped the render churn.
+
+**The rule that came out of it, earned on three instances rather than argued:** *position belongs to
+the reader/thing pair. It may live inside the thing only when the thing has exactly one writer and
+the position is that writer's own.* A published root's sequence number satisfies that and is correct.
+An observer's timestamp written into the observed thing multiplies the thing's identity. A reader's
+cursor written into the reader's own declaration turns a declaration into a log — and that one is the
+shape this repository already removed once, when the sharing flow became declare-then-reconcile.
+
+**And the second rule, which a layer diagram will not give you.** Layers say *what job*; they do not
+say *who can know it*. Every defect in the sharing area for a month was one move: **a fact that
+neither peer can hold alone, stored as a private one, then read as authoritative.** We had written
+that rule down and enforced it only where things are *rendered*, never where they are *recorded*,
+which is where it decides behaviour.
+
+**Nothing in the product moved.** Measured at `ddf99a0`: the application vocabulary under discussion
+appears **zero** times in this repository's Go code. The one built piece — the reference atom, eleven
+of eleven vectors — is the piece that is not application-specific. So this is a design pass with no
+migration attached, taken at a checkpoint deliberately.
+
+**One correction landed with it, and it is the uncomfortable kind.** A review this repository wrote
+on 2026-09-04 warns that we cannot guarantee delivery. **That severity was retracted four days later**
+— it is a delay of about 107 seconds, not a loss, and no operator action is needed — **and the
+retraction reached six documents and not that one**, which was the copy addressed to another team and
+aimed at a requirement that could have hardened around a defect we do not have. The document is now
+corrected at the top and at the claim. What survives is narrower and still true: we can meet
+*delivered*; we cannot yet bound *delivered within N*.
+
+## §31 (2026-09-11) — the gate that refused three legal reference forms while reporting a security property
+
+**`APP-CONVENTION-REFERENCE` §3.4 names four spellings a reference may be written in. Both places
+this program reads one admitted a single form**, and the function doing the refusing is documented —
+correctly, as far as it went — as the security gate that stops a page body steering the renderer at
+a tracking URL. So three legal forms were declined by a refusal phrased as protection, which is the
+one nobody goes back and questions.
+
+```
+entity+ref://{peer}/sites/lab/assets/x.png   caught by the `://` arm
+/assets/figures/x.png                        caught by the leading-`/` arm
+site:other-site/assets/x.png                 never reached at all
+```
+
+The middle one is the one that bites: §3.4 **SHOULDs** root-absolute form for
+application-generated links, precisely so a link resolves identically from whatever page it is
+rendered on. A publisher following that SHOULD got a fallback caption and no way to find out why.
+
+**At the link position it was worse than a refusal — it was a wrong answer.** `entity+ref://` matched
+no arm and fell through to the relative resolver, so
+`entity+ref://PEER/sites/lab/pages/intro` came out as the in-site page slug
+`entity+ref:/PEER/sites/lab/pages/intro` — a well-formed address of something nobody published,
+reported to the operator as *page missing*, i.e. as the publisher's fault. That is §3.4's own named
+failure: *"a tolerant re-anchoring scan produces a well-formed wrong location and cannot report that
+it did."* The same fall-through caught `data:`, `ftp:` and `javascript:`, which the old code let
+past by naming only `http`, `https` and `mailto` as external.
+
+**The fix is a split, not a loosening.** One predicate answers *which of §3.4's forms is this*
+(`ClassifyRefForm`); a second answers *does this leave the system* (`RefLeavesSystem`) and is
+**derived from** the first rather than written beside it, because two predicates maintained
+independently are two chances to disagree about one string and the disagreement would be invisible.
+`ClassifyAssetRef` is the gate now, and every one of its four arms funnels through the existing
+containment check, so *"is this inside the site's assets subgraph"* still has exactly one
+implementation.
+
+**What was deliberately not touched: `AssetNameFromRef`.** It is cross-implementation algorithm
+contract — the output selects bytes in a content-addressed tree — and its vectors are carried
+verbatim from the reference implementation. The fix went *around* it. A test asserts it still
+refuses all three forms on its own, so a future session cannot satisfy the new gate by widening the
+shared function, which would convert a fixed bug into a silent divergence.
+
+**Every refusal that was doing real work still fires**, and that half is gated explicitly, because
+*"stop refusing three legal forms"* has an implementation that refuses nothing and it would pass
+everything else. `/etc/passwd` is still refused — now for not being under `assets/` rather than for
+being absolute, which is the rule that was carrying the argument all along.
+
+Two things carried out of it. **A pinned reference is a third state**: well-formed, neither hostile
+nor malformed, naming bytes rather than a place in a site — so it refuses under its own name rather
+than being folded into either of the other two. And **a colon is only a scheme when it precedes any
+`/` and follows an `ALPHA` start**, or the fix for over-refusal invents its own: a published figure
+named `a:b.png` would otherwise stop rendering.
+
+**One thing measured on the way out, because it will otherwise be read as somebody's regression.**
+The `shellcmd` suite's failing set has been recorded as a flat *16, none ours* since the kernel's
+capability change. Two full runs at the same commit on the same machine disagreed: one 16, one 17.
+The extra is `TestStage3_F9_SelfLoop_SinglePeer`, it passes when run alone, and `-count=12`
+reproduces it on a tree that predates this change — **byte-identical signature**, so it is
+pre-existing and load-dependent. Two things worth keeping. Its failure message says *"RUNAWAY LOOP.
+F9 has regressed"* and names two source lines to go and check, so an intermittent reads as a
+serious regression and sends the reader somewhere correct and irrelevant; and **a red count taken
+from one completed run is a lower bound**, which is the familiar anti-pattern arriving with no
+early-exit anywhere in it. The settled set is still 16.
+
+**Open and stated rather than assumed:** we now resolve asset refs the other application-tier
+implementation refuses, so one page could render different figures in the two readers. That is filed
+as an ask the day it landed rather than left to be discovered, along with a question neither seat can
+settle — §3.4 says a relative reference is directory-relative to the current *page*, while both
+implementations and the live corpus resolve an asset ref against the **site root**, and those agree
+only when the page is at the root.
+
+## §30 (2026-09-10) — the pin died with the process, and the whole consume path points at static origins
 
 **Written after running the product instead of reading it**, which is the only reason any of this
 is here.

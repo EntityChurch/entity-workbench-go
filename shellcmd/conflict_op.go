@@ -374,6 +374,21 @@ type SetFolderConflictPolicyResult struct {
 // re-establish. Writing a policy anywhere other than the declaration
 // would be undone by the next pass — that is how `unshare` once reversed
 // itself at the next launch.
+//
+// # IT REFUSES ON A FOLDER THIS PEER DOES NOT OWN, and that is the ruling
+//
+// A shared folder is ONE subject and a subject names ONE reconciliation
+// rule: the OWNER's. Before that was true, this verb wrote a field the
+// local handler then obeyed, so two peers could hold different rules for
+// one folder and diverge with nothing noticing.
+//
+// Now the receiving side's copy of the field is not consulted — so
+// accepting the write here would be worse than refusing it. The operator
+// would set a policy, get a success line and a caveat describing what
+// will happen, and nothing would happen. A surface that accepts an
+// instruction it cannot carry out is the failure mode this repository
+// keeps cataloguing; refusing and naming the machine to run it on is the
+// only honest answer.
 func (ws *ShellWorkspace) SetFolderConflictPolicy(folderID, policy string) (SetFolderConflictPolicyResult, error) {
 	if ws == nil || ws.Local == nil || ws.Local.Peer == nil {
 		return SetFolderConflictPolicyResult{}, fmt.Errorf("workspace has no local peer")
@@ -387,6 +402,15 @@ func (ws *ShellWorkspace) SetFolderConflictPolicy(folderID, policy string) (SetF
 	if !ok {
 		return SetFolderConflictPolicyResult{}, fmt.Errorf(
 			"no folder %q is declared on this peer — `status` lists the ids", folderID)
+	}
+	self := ws.Local.Peer.PeerID()
+	if owner := f.OwnerOf(self); owner != "" && owner != self {
+		return SetFolderConflictPolicyResult{}, fmt.Errorf(
+			"this folder belongs to %s, and a shared folder has ONE rule for what "+
+				"happens when a change lands on an edit — theirs. Setting it here would "+
+				"write a field nothing reads, and the two peers would disagree about one "+
+				"folder. Run this on their machine: `conflicts -folder %s -policy %s`",
+			shortPeer(owner), f.ID, p)
 	}
 	res := SetFolderConflictPolicyResult{
 		FolderID: f.ID,

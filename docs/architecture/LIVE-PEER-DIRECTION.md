@@ -114,20 +114,40 @@ it. A design that picks one is wrong in the case the other exists for.
 So the seam goes under the byte source and nowhere else:
 
 ```go
-// Source is where a consumer's bytes come from.
-//
-// Two operations, because the verification layer above needs exactly two:
-// content-addressed bytes, and the invariant-pointer leaves that live
-// OUTSIDE the trie (V7 §5.2 puts a signature at an invariant pointer, not
-// at a trie key, so a consumer needs both resolution paths).
+// Source is where a consumer's bytes come from. It answers "give me these
+// bytes" and nothing else: no method on it can express a verdict, because
+// every check lives above.
 type Source interface {
-    BlobByHash(ctx context.Context, h hash.Hash) ([]byte, error)
-    InvariantLeaf(ctx context.Context, treePath string) ([]byte, error)
-    Describe() SourceDescription   // what the chain line says
+    PeerID() string
+    Root(ctx context.Context) (raw []byte, locator string, err error)
+    Leaf(ctx context.Context, treePath string) (raw []byte, locator string, err error)
+    Blob(ctx context.Context, h hash.Hash) (raw []byte, locator string, err error)
 }
 ```
 
-`HTTPSource` is today's `Layout`+`Client`, moved behind it with no behaviour change.
+**Three primitives, not two, and building it is what established that.** An earlier draft of this
+section sketched two — content-addressed bytes, and the invariant-pointer leaves that live *outside*
+the trie, since V7 §5.2 puts a signature at an invariant pointer rather than at a trie key, so a
+consumer must hold both resolution paths. That is true of the **tree** and it is one short: the
+**published-root manifest is reached a third way**, served as an entity at a location §6.5.3
+*reserves* and does not make derivable. It is neither a content hash nor a tree-leaf pointer, and
+folding it into either would mean deriving its address — which is the one thing this layer refuses
+to do, because a derived address and a withholding origin are byte-identical at a consumer.
+
+**`PeerID` is on the seam because it is the key every signature verifies against**, not a routing
+detail. A source that cannot name its publisher leaves the verification above it with no subject.
+
+**Every method returns a locator** — the transport's own name for what it fetched, a URL here and an
+address elsewhere. The chain an operator reads names where each step looked, and a verification layer
+that cannot see a URL cannot print one.
+
+There is no `Describe()` yet. A description of *which mode answered* belongs with the freshness
+sentence in §4.3, and until that sentence exists it would be a method with no reader — the shape this
+project keeps catching in its own models.
+
+`HTTPSource` is today's `Layout`+`Client`, moved behind it with no behaviour change. ✅ *Landed
+2026-09-11; it is the only implementation, and a seam with one side is justified by what goes on
+the other rather than by itself.*
 `PeerSource` dispatches at a connected peer. **Both are adoption, not construction** — `AppPeer.Get`
 already routes a peer-qualified path to *that peer's* tree — a dispatched read of a peer-qualified
 path is a remote read — and `workbench/blob_resolve.go` already pulls a blob closure across peers

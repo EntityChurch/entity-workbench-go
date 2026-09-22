@@ -37,7 +37,7 @@ D12–D27 here are ours, earned on the eight crash-hunt commits, two feedback ep
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP91, and the promotion
+  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP94, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -206,6 +206,18 @@ one — name the recurring cycle first, then let each step own one lever of it.
   full-suite load and passes when run alone, so a targeted re-run is **not** evidence a
   `test-each` failure was spurious. Check `docs/STATUS.md`'s green line before
   attributing a red suite to your own diff.
+  **`TestStage3_F9_SelfLoop_SinglePeer` is the second one** (added 2026-09-11), and it is the
+  instructive one because *the failing arm is a real assertion about a real invariant*: it reports
+  `Δentities=11 Δbindings=1 … RUNAWAY LOOP. F9 has regressed`, which reads as a serious regression
+  rather than as a flake, and its own message sends you to two named source lines that are fine.
+  **`-count=12` reproduces it on a clean tree**, which is the check that settles it in a minute —
+  and note that *passing alone* did not, because one run of a 1-in-12 flake is not a measurement.
+  **The procedure that actually converged: loop the suspect test with `-count=N` at your HEAD AND
+  at `HEAD~1`, and compare the failure SIGNATURE, not the pass/fail.** A single full-suite run at
+  each is one observation each way and settles nothing; two full-suite runs at the same commit
+  disagreed with each other here. **So a red count taken from one run is a lower bound even when
+  the suite completed** — that is AP15 with no `Fatalf` in sight, and both numbers in a scorecard
+  row got quoted as facts before a second run contradicted them.
 - **`make lint` is `go vet` only — it does not check formatting.** Nothing gates gofmt, so
   drift accumulates silently (60 files at the 2026-08-18 audit). Run `make fmt` as its own
   commit, never folded into a feature diff.
@@ -582,7 +594,7 @@ one — name the recurring cycle first, then let each step own one lever of it.
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
 - The project measures everything against the **27 disciplines (D1–D27)**, ten review
-  questions, and anti-pattern catalog (AP1–AP91) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+  questions, and anti-pattern catalog (AP1–AP94) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A COPY OF A LIVE SQLITE STORE IS NOT THE STORE, AND THE MISSING WRITES READ AS ZERO ROWS**
   (AP76). File-backed `SqliteStore` opens **WAL** (`core/store/sqlite.go`, `buildSqliteDSN`
   defaults `JournalMode` to `"WAL"`), so everything since the last checkpoint is in the `-wal`
@@ -1221,6 +1233,35 @@ one — name the recurring cycle first, then let each step own one lever of it.
   delivery** — the resolved record is keyed on (path, mine, theirs), which is the identity of
   one collision — so a pass cannot re-materialize it. Gated by restoring and then running two
   `resync` passes.
+  **THE RULE IS THE FOLDER OWNER'S, AND EACH SIDE USED TO READ ITS OWN COPY** (AP94, fixed
+  2026-09-11). `FolderData.Conflict` is per peer, travels on no wire field, and was read locally by
+  whichever side the collision landed on — so A could declare `record` while B declared `keep-both`,
+  for one folder, and **neither machine could notice**: each side's surfaces are correct about its own
+  declaration and blind to the other's. Found by arguing for the rule that forbids it; the ask we
+  routed came back as *a `shared` subject MUST name its reconciliation rule*, and the first thing it
+  indicted was us. `FolderID(owner, root)` already designates the owner on every peer, including
+  under `Mode: both`, so no wire change was needed. Now: the reconciler reads the owner's declaration
+  and records it as an **observation** (`workbench/observed_state.go` — its own prefix, its own type,
+  **never a field on the declaration**, because hearsay merged into a declaration means two different
+  things depending on which side of the folder you read it from), and the delivery handler reads what
+  the reconciler recorded rather than dialing. **A rule we have never read HOLDS the collision**
+  (`409 conflict_rule_unknown`) — nothing overwritten, deliveries unaffected, released by the next
+  pass. **The receiving side's verb REFUSES** and names the machine to run it on: its copy is not
+  consulted, so accepting the write would hand an operator a success line for an instruction the
+  product will not carry out. **Scope the refusal to RESOLVING, never to delivering** — a hold that
+  stopped the folder is a worse failure than the divergence and is indistinguishable from it in the
+  moment, which is why the release is gated as carefully as the hold. **And the sentence has ONE
+  writer**, on `FolderStatus.problems()`, so a read and a pass cannot describe the state differently;
+  the pass adds only the fact it alone has, in the Note. **A SAFETY OUTCOME MUST NOT CONSUME A SAFETY
+  BUDGET** — a held delivery was first accounted against the conflict-storm burst limiter, which is
+  backwards: a hold writes nothing, so spending budget on it does not make the check stricter, it
+  makes the diagnosis worse (an unreachable peer fills the window and the operator is told
+  *"conflict storm"*, a fault on their own machine, when the cause is another machine). The tell is
+  a counter documented as *things this process acted on*. **And ask the owner by the CANONICAL
+  folder id** (`FolderID(owner, root)`), not by our local record's id — they differ only for a
+  pre-S6 record `MigrateFolderIDs` could not move, and there the local id asks for a path the owner
+  does not have, holding every collision **forever** while files keep flowing. Known gap, named
+  rather than left to be found: **there is no GUI control for the rule at all.**
   **A path with no chain is NOT a conflict**, and that is the storm rule, not caution: recording
   is what the classification reads, so treating an absence as a collision conflicts a whole
   folder on the first pass after an upgrade. Carried on the record as `recoverable: false`.
@@ -1308,6 +1349,41 @@ one — name the recurring cycle first, then let each step own one lever of it.
   burns the peer *and* re-reads a moving target. Settling first is not just cheaper, it is more
   correct — a catch-up reads CURRENT STATE rather than replaying a change stream, so one pass
   over a settled folder gets everything.
+- **A BOUND WITH NO MEMORY BOUNDS THE FOLDER, NOT THE PASS** (AP93, fixed 2026-09-11). The backfill
+  walk stopped at `backfillWalkLimit` (20,000) for a real reason — an unbounded walk driven by a
+  remote response is a denial of service with our own CPU — reported the truncation honestly, and
+  restarted from the base prefix every pass. The traversal is deterministic, so **every pass returned
+  the identical prefix**: 25,000 entities, two passes, **0 new paths, 5,000 unreachable** for as long
+  as they did not change again, with every gate green and the limit shown in the UI. **The tell is a
+  cap on a REPEATED operation with no cursor beside it**, and the giveaway is a disclosure in the
+  present tense (*"this is a prefix of the folder"*) where the honest sentence needs a future one.
+  The walk now resumes after a cursor (`shellcmd/backfill_cursor.go`). Three things it cost, each
+  worth knowing before touching it: **a directory must sort under its own name plus a separator, not
+  its bare name** — leaves under `d` all begin with `d + "/"`, so with siblings `a` and `a.txt` the
+  bare-name key emits `a/x.txt` before `a.txt` while `a.txt < a/x.txt`, and one transposed pair is a
+  file the cursor skips forever, invisible in any fixture whose names do not collide at a separator;
+  **the subtree prune is what makes a resumed pass cheap in ROUND TRIPS**, and its off-by-one drops a
+  whole subtree while reporting a clean, complete, shorter folder, so the gate asserts the tail
+  property at EVERY position rather than one; and **the supervisor had to learn the same
+  distinction** — it backs off on *"recovered nothing"*, which the first segment of an oversized
+  folder legitimately reports, so `CatchUpResult.Incomplete` holds the floor. Without that last part
+  the fix delivers progress on every pass and an hour between passes, which is the defect rebuilt on
+  top of its own repair. The cursor is **process memory** (restart re-walks from the top, files
+  short-circuit on F9) because persisting it means one tree write per truncated pass on a watched
+  prefix. Control arm: `TestProbe_BoundedWalkMakesNoProgress` stays pointed at the cursorless entry
+  point and still measures 5,000 unreachable.
+- **THE SYNC LEG HAS NO ROLLBACK FLOOR, MEASURED, AND IT IS STILL OPEN.** `fetch.Consumer.acceptSeq`
+  refuses a published root whose `seq` went backwards; the sync leg has nothing. Measured
+  2026-09-11 (`shellboot/sync_rollback_probe_test.go`): capture a v1 delivery while current, let v2
+  land, re-dispatch v1 — **status 200, no error, and v2 is gone from disk.** What is measured is that
+  the HANDLER has no ordering check, at the entry point a live delivery and a backfill both reach, so
+  an **out-of-order live delivery lands here by accident with no attacker**. What is NOT measured is
+  that an unauthorized remote party can trigger it — the probe does not cross the wire, and the two
+  sentences are kept apart in the source because only the first is run. The probe **pins** the
+  measurement rather than logging it, because the claim is carried in the specification seat's text
+  (their floor row is now per-leg, partly on our reading). **Do not build the floor on content or on
+  "older mtime" alone**: the control arm is a sender genuinely reverting its own file, which must
+  still be followed, and a restored backup carries an old mtime.
 - **RECORDING IS FLAT AND UNBOUNDED; AUTO-VERSIONING IS NEITHER — and the difference decides an
   API.** Measured (`make perfreview ARGS="-run TestFeatureCost"`). History recording: **2
   entities and ~1.2 KB per write, with latency that does not grow** (p50 141 µs at 1k writes,

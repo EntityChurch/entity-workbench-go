@@ -116,6 +116,18 @@ func backfillLines(res BackfillResult, skipped bool) []string {
 			"  a failure here is usually their grant not having reached this peer yet —",
 			"  the subscription is established regardless; run `resync` to retry.")
 	}
+	if res.Truncated {
+		// Name the ACTION, not just the state. The catch-up supervisor
+		// continues from the cursor on its own — and it only runs on a
+		// long-running peer, so a `resync` typed at a shell that is about
+		// to exit gets no second pass unless the operator runs one. AP71:
+		// the operator reads what the program prints, not what the loop
+		// would have done.
+		lines = append(lines,
+			fmt.Sprintf("  a folder this large is covered %d entries per pass; the catch-up loop",
+				backfillWalkLimit),
+			"  continues from where this one stopped. Run `resync` again to continue now.")
+	}
 	return lines
 }
 
