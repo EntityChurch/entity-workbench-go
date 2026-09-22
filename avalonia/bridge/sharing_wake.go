@@ -133,7 +133,12 @@ func SharingRegisterWake(peerHandle C.int64_t, cb unsafe.Pointer) (result *C.cha
 	// store has no watch hub, and the callback takes this same mutex —
 	// attaching under it is AP60's deadlock, which is silent.
 	if !existed {
-		watcher := wb.WatchDeclarations(hp.AppPeer.Store(), func() {
+		// Sharing state, NOT declarations alone: these panels display
+		// file counts over `local/files/{root}/` and a mount's target
+		// prefix, and a declaration-only watcher leaves those numbers
+		// frozen while the rows beside them update. See
+		// workbench.ObservedPrefixes.
+		watcher := wb.WatchSharingState(hp.AppPeer.Store(), func() {
 			fanOutSharingWake(handleID)
 		})
 		sharingWakeMu.Lock()

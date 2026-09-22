@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
@@ -9,6 +10,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 
 namespace EntityAvalonia.Panels;
 
@@ -66,6 +68,11 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
     public double PreferredSlotMinHeight => 620;
 
     private readonly long _peerHandle;
+    private long _wakeRegistration = -1;
+    private SharingWake? _wakeCallback;
+    private delegate void SharingWake(long handle);
+    private GCHandle _wakeHandle;
+    private bool _closed;
 
     private readonly SelectableTextBlock _identityLine;
     private readonly TextBlock _caption;
@@ -216,10 +223,71 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         // without one. On open is exactly where a pass belongs: the
         // operator asked, by opening it.
         Refresh();
+        OpenWake();
         if (AutoReconcileOnOpen)
         {
             _ = ReconcileAsync();
         }
+    }
+
+    // --- Reactivity --------------------------------------------------------
+    //
+    // This panel shipped with NO tree subscription and a Refresh button,
+    // which is AP73's exact tell — and the mechanism it needed already
+    // existed, because SyncPanel was using it. So an operator watching a
+    // share land saw the row update nowhere and the file counts freeze,
+    // while a second panel they opened later showed different numbers.
+    //
+    // Only the READ is wired. `StatusReconcile` dials every declared
+    // device; hanging that off a wake would make a dialer out of an open
+    // panel and it would wake itself forever. Re-check now stays a button
+    // on purpose — it reaches the network, and the operator asks for it.
+    private void OpenWake()
+    {
+        _wakeCallback = OnSharingWake;
+        _wakeHandle = GCHandle.Alloc(_wakeCallback);
+        var ptr = Marshal.GetFunctionPointerForDelegate(_wakeCallback);
+        var reply = Bridge.TakeString(Bridge.SharingRegisterWake(_peerHandle, ptr));
+        _wakeRegistration = ParseWakeRegistration(reply);
+    }
+
+    // Runs on a Go-owned goroutine — must not touch a control from here.
+    private void OnSharingWake(long handle)
+    {
+        if (_closed) return;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_closed) return;
+            Refresh();
+        });
+    }
+
+    private static long ParseWakeRegistration(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("registration", out var r)
+                && r.TryGetInt64(out var id))
+            {
+                return id;
+            }
+        }
+        catch (JsonException) { }
+        return -1;
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        _closed = true;
+        if (_wakeRegistration >= 0)
+        {
+            Bridge.TakeString(Bridge.SharingUnregisterWake(_peerHandle, _wakeRegistration));
+            _wakeRegistration = -1;
+        }
+        if (_wakeHandle.IsAllocated) _wakeHandle.Free();
+        _wakeCallback = null;
+        base.OnDetachedFromVisualTree(e);
     }
 
     // --- Sections ---------------------------------------------------------
@@ -236,10 +304,12 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
             Spacing = 6,
             Margin = new Thickness(0, 6, 0, 0),
         };
+        // No Refresh button: this panel holds a SharingRegisterWake
+        // subscription over the declarations AND the file layers it
+        // counts, so every number here moves by itself. A Refresh control
+        // on tree data is a bug report about a missing subscription
+        // (AP73), and this panel was the bug report.
         row.Children.Add(_recheckBtn);
-        row.Children.Add(RowButton("Refresh",
-            "Re-read the declarations and observe the substrate. Touches nothing and "
-            + "reaches nobody.", Refresh));
         stack.Children.Add(row);
         return stack;
     }
@@ -742,9 +812,19 @@ public sealed class SharingStatusPanel : UserControl, IPanelPreferredHeight
         // *unknown* when there is no mount to count. A confident "0 files"
         // for a folder that has nowhere to put them is the wrong answer to
         // the operator's actual question.
+        //
+        // **Neither number is "on disk", and saying so was a live defect.**
+        // FilesPresent counts tree entries under `local/files/{root}/` —
+        // the SOURCE layer, which is what the watcher has admitted, not
+        // what the filesystem holds. The Local Files panel's sweep prints
+        // a real `filepath.Walk` count under the same words, so the two
+        // panels showed different numbers both labelled "on disk" and an
+        // operator reasonably read that as one of them being broken. AP59
+        // is about reporting both sides of a lossy stage; this is the same
+        // rule applied to the NAMES, which the original fix did not do.
         public string FilesLine => !FilesObservable
             ? "files: unknown — there is no mount to count"
-            : $"files: {FilesPresent} on disk, {FilesIngested} readable as documents";
+            : $"files: {FilesPresent} admitted by the watcher, {FilesIngested} readable as documents";
 
         // Offered only when the loop cannot proceed AND the declaration
         // remembers where the directory was. Without a path there is

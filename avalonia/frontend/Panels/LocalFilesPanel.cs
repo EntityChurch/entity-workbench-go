@@ -1,12 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 
 namespace EntityAvalonia.Panels;
 
@@ -68,6 +70,12 @@ public sealed class LocalFilesPanel : UserControl, IPanelPreferredHeight
     private const int MaxMountsShown = 200;
 
     private readonly long _peerHandle;
+    private long _wakeRegistration = -1;
+    private SharingWake? _wakeCallback;
+    private GCHandle _wakeHandle;
+    private bool _closed;
+
+    private delegate void SharingWake(long handle);
     private readonly TextBlock _summary;
     private readonly ObservableCollection<MountRow> _mounts = new();
 
@@ -162,17 +170,11 @@ public sealed class LocalFilesPanel : UserControl, IPanelPreferredHeight
             ItemTemplate = Rows.Of<MountRow>((row, _) => BuildRow(row)),
         };
 
-        var refresh = new Button { Content = "Refresh", FontSize = 12 };
-        // AP37/P7: pointer input on a Button must not be wired with `+=`.
-        // Click is the routed-command surface and is safe; it is the press
-        // events that Button marks handled in its own override.
-        refresh.Click += (_, _) => Refresh();
-
         // Built once and held in a local. A control constructed twice and
         // added twice violates Avalonia's visual-parent invariant and
         // throws inside DockPanel.Children.Add — the same trap MainWindow
         // documents about its diag bar.
-        var form = BuildMountForm(refresh);
+        var form = BuildMountForm();
 
         var root = new DockPanel();
         DockPanel.SetDock(_summary, Dock.Top);
@@ -185,12 +187,63 @@ public sealed class LocalFilesPanel : UserControl, IPanelPreferredHeight
         Content = root;
 
         Refresh();
+        OpenWake();
     }
 
-    // BuildMountForm lays out the four inputs plus the verb row. The
-    // Refresh button is threaded in so it sits with Mount rather than
-    // orphaned above the list.
-    private Control BuildMountForm(Button refresh)
+    // --- Reactivity --------------------------------------------------------
+
+    private void OpenWake()
+    {
+        _wakeCallback = OnSharingWake;
+        _wakeHandle = GCHandle.Alloc(_wakeCallback);
+        var ptr = Marshal.GetFunctionPointerForDelegate(_wakeCallback);
+        var reply = Bridge.TakeString(Bridge.SharingRegisterWake(_peerHandle, ptr));
+        try
+        {
+            using var doc = JsonDocument.Parse(reply);
+            if (doc.RootElement.TryGetProperty("registration", out var r)
+                && r.TryGetInt64(out var id))
+            {
+                _wakeRegistration = id;
+            }
+        }
+        catch (JsonException) { }
+    }
+
+    // Runs on a Go-owned goroutine — must not touch a control from here.
+    private void OnSharingWake(long handle)
+    {
+        if (_closed) return;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_closed) return;
+            Refresh();
+        });
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        _closed = true;
+        if (_wakeRegistration >= 0)
+        {
+            Bridge.TakeString(Bridge.SharingUnregisterWake(_peerHandle, _wakeRegistration));
+            _wakeRegistration = -1;
+        }
+        if (_wakeHandle.IsAllocated) _wakeHandle.Free();
+        _wakeCallback = null;
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    // BuildMountForm lays out the four inputs plus the verb row.
+    //
+    // There used to be a Refresh button threaded in here. It is gone: the
+    // panel holds a SharingRegisterWake subscription covering the mount
+    // namespaces and the file layers, so the list and its counts move by
+    // themselves. A Refresh control on tree data is a bug report about a
+    // missing subscription (AP73), and this panel showed a stale entity
+    // count beside a Sharing Status panel showing a different one —
+    // which an operator reasonably read as the product being broken.
+    private Control BuildMountForm()
     {
         var grid = new Grid
         {
@@ -229,7 +282,6 @@ public sealed class LocalFilesPanel : UserControl, IPanelPreferredHeight
         buttons.Children.Add(_readOnlyBox);
         buttons.Children.Add(_mountBtn);
         buttons.Children.Add(_forceBtn);
-        buttons.Children.Add(refresh);
         Grid.SetRow(buttons, 4); Grid.SetColumn(buttons, 1);
         grid.Children.Add(buttons);
 

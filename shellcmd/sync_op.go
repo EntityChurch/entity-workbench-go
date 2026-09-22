@@ -203,9 +203,24 @@ func (ws *ShellWorkspace) Sync(req SyncRequest) (SyncOutcome, error) {
 	// never has to reach back for a tree:get before it knows which blob
 	// to pull.
 	deliverURI := fmt.Sprintf("entity://%s/%s", local.PeerID(), workbench.BlobResolvePattern)
+	// `deleted` is here and it was MISSING, which made a share one-way in
+	// a way nothing reported. `BlobResolveHandler` has had a full
+	// deletion branch since it was written — unlink the local file,
+	// remove the binding, ack — and this subscription never asked for the
+	// event that reaches it, so that entire branch was unreachable over a
+	// sync. Removing a file on the sender left it on the receiver's disk
+	// forever, with no error on either side and a `syncs` row reporting
+	// healthy.
+	//
+	// It is AP65 one event over. That finding was "a subscription is a
+	// future tense" and the fix was to add the PAST (backfill); nobody
+	// checked which parts of the future were subscribed. Measured by
+	// scripts/twopeer-sync.sh: create and modify propagate, delete does
+	// not — a distinction no single-process test made, because every one
+	// of them asserted on arrival and none on removal.
 	sub, err := local.SubscribeRawAt(remotePeerID, sourcePrefix+"*", deliverURI, "receive",
 		entitysdk.SubscribeOpts{
-			Events:         []string{"created", "updated"},
+			Events:         []string{"created", "updated", "deleted"},
 			IncludePayload: true,
 		})
 	if err != nil {

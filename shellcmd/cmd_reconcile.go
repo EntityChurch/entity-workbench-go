@@ -114,8 +114,12 @@ func cmdStatus(sh *Shell, args []string) (Result, error) {
 			// arrived" and "there is nowhere for it to arrive" are
 			// different claims, and for a folder in trouble it is
 			// almost always the second.
+			//
+			// NOT "on disk", which is what this said and which collides
+			// with the sweep's genuine filesystem walk. FilesPresent is
+			// the source LAYER — what the watcher admitted into the tree.
 			if f.FilesObservable {
-				lines = append(lines, fmt.Sprintf("               %d file(s) on disk, %d readable as documents",
+				lines = append(lines, fmt.Sprintf("               %d file(s) admitted by the watcher, %d readable as documents",
 					f.FilesPresent, f.FilesIngested))
 			} else {
 				lines = append(lines, "               files: unknown — there is no mount to count")

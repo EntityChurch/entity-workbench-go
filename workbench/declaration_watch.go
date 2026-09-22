@@ -50,6 +50,68 @@ func DeclarationPrefixes() []string {
 	return []string{DevicePrefix, FolderPrefix, ShareOfferPrefix, SyncBindingPrefix}
 }
 
+// LocalFilesSourcePrefix is the watcher's source layer — every admitted
+// file under every mount on this peer.
+const LocalFilesSourcePrefix = "local/files/"
+
+// ObservedPrefixes are the tree locations a sharing surface COUNTS as
+// opposed to DECLARES, and they are the half this file originally
+// missed.
+//
+// # The bug this closes, because it is the one the warning above
+// predicted verbatim
+//
+// The comment on [DeclarationPrefixes] says a watcher that misses a
+// prefix "produces a surface that is live for some changes and stale for
+// others — which is worse than a Refresh button, since nothing tells the
+// operator which kind they are looking at." That is exactly what shipped.
+// [FolderStatus.FilesPresent] and [FolderStatus.FilesIngested] are counts
+// over `local/files/{root}/` and a mount's target prefix — **neither of
+// which is a declaration**, so no wake ever fired when a file arrived.
+// The declared rows updated themselves and the numbers beside them did
+// not.
+//
+// Measured: mount a directory of seven files and the panels report 1, or
+// 2, or whatever the count happened to be at the instant the panel last
+// read — while a second panel driven by an operator-pressed sweep reports
+// 7. Two surfaces, two different numbers, both correct at the moment they
+// were taken and neither labelled with when that was. The operator's
+// report was "one on disc here, seven on disc there."
+//
+// # Why the set is computed and not constant
+//
+// A mount's TARGET prefix is chosen by the operator (`archives/photos/`,
+// or anything else), so there is no fixed parent to watch. The source
+// layer has one, and the two mount namespaces are watched so that
+// creating or removing a mount is itself a wake — which is also what
+// tells a caller its target set is out of date.
+func ObservedPrefixes(st *Store) []string {
+	out := []string{LocalFilesSourcePrefix, MountConfigPrefix, MountBindingPrefix}
+	if st == nil {
+		return out
+	}
+	bindings, _ := LoadMountBindings(st)
+	seen := map[string]bool{}
+	for _, b := range bindings {
+		if b.TargetPrefix == "" || seen[b.TargetPrefix] {
+			continue
+		}
+		seen[b.TargetPrefix] = true
+		out = append(out, b.TargetPrefix)
+	}
+	return out
+}
+
+// SharingWatchPrefixes is everything a sharing surface displays: what
+// this peer has DECLARED plus what it can OBSERVE about the result.
+//
+// One list because the distinction matters to a reader and not to a
+// subscriber — a panel re-reads the whole state on any wake, so the only
+// thing that can go wrong is a prefix being absent.
+func SharingWatchPrefixes(st *Store) []string {
+	return append(DeclarationPrefixes(), ObservedPrefixes(st)...)
+}
+
 // DeclarationWatcher fires a callback when any declared sharing state
 // changes. Safe for concurrent use; Close is idempotent.
 type DeclarationWatcher struct {
@@ -69,6 +131,24 @@ type DeclarationWatcher struct {
 // wake is correct, and one that assumes a wake means a specific change
 // is not.
 func WatchDeclarations(st *Store, notify func()) *DeclarationWatcher {
+	return WatchPrefixes(st, DeclarationPrefixes(), notify)
+}
+
+// WatchSharingState subscribes to everything a sharing surface displays —
+// declarations AND the observed layers those surfaces count
+// ([SharingWatchPrefixes]).
+//
+// **This is what a panel wants; [WatchDeclarations] is not.** A panel
+// that watches declarations alone updates its rows and freezes its
+// numbers, which is the failure [ObservedPrefixes] documents.
+func WatchSharingState(st *Store, notify func()) *DeclarationWatcher {
+	return WatchPrefixes(st, SharingWatchPrefixes(st), notify)
+}
+
+// WatchPrefixes subscribes to an explicit prefix list. The prefix set is
+// a parameter rather than a constant because a mount's target prefix is
+// operator-chosen and only knowable from the store.
+func WatchPrefixes(st *Store, prefixes []string, notify func()) *DeclarationWatcher {
 	w := &DeclarationWatcher{notify: notify}
 	if st == nil || notify == nil {
 		return w
@@ -77,8 +157,11 @@ func WatchDeclarations(st *Store, notify func()) *DeclarationWatcher {
 	// its seed SYNCHRONOUSLY on the calling goroutine when the store has
 	// no watch hub, so attaching under the lock deadlocks on the first
 	// seeded event — a hang with no panic and no race report (AP60).
-	cancels := make([]func(), 0, len(DeclarationPrefixes()))
-	for _, prefix := range DeclarationPrefixes() {
+	cancels := make([]func(), 0, len(prefixes))
+	for _, prefix := range prefixes {
+		if prefix == "" {
+			continue
+		}
 		cancels = append(cancels, st.OnPrefixChange(prefix, func(ChangeEvent) { w.fire() }))
 	}
 

@@ -2,7 +2,8 @@
 
 _Updated: 2026-09-04 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
-> **Start here:** **§0Z — the L5 review, and the ladder that never runs**, then
+> **Start here:** **§10 — the validation audit: we are not testing the thing being tested**, then
+> **§0Z — the L5 review, and the ladder that never runs**, then
 > **§0Y — the flow, run; and the capability surface**, then
 > **§0X — one folder, one panel, no refresh buttons**, then
 > **§0W — it works, and a folder is still not one object**, then
@@ -26,7 +27,48 @@ _Updated: 2026-09-04 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
 
-## §0Z NEW (2026-09-04) — nobody asks our renderers whether they can draw an embed
+## §10 NEW (2026-09-05) — we are not testing the thing being tested
+
+**`make twopeer-sync` exercises `entity-shell`. The operator opens the GUI.** That is the audit in
+one line. The new harness runs two peers in two containers on a real TCP network with real grants
+and a real restart — and the Avalonia app has never been run that way. The GUI's own two-peer test
+is same-process, loopback, and uses a **wildcard grant**, which per AP63 means it establishes that
+the transport works and nothing at all about permission.
+
+The mitigating measurement: `avalonia/bridge/share.go` is a thin envelope, so the business logic the
+GUI runs *is* what the harness covers. What is uncovered is the cgo/JSON boundary (AP49's home,
+which has shipped twice), the panel layer, the GUI's process lifecycle, and its default peer
+config. **A containerised GUI harness is the top of the next session's list.**
+
+**What the harness found and we fixed** (`64605f4`): deletes were never subscribed, so
+`BlobResolveHandler`'s entire deletion branch was unreachable and a removed file stayed on the
+receiver forever; the delete branch computed the *sender's* path where the write branch uses the
+target's, which is the two-root-names trap in a third place; no sharing panel woke when a file
+arrived, because the watch set covered declarations and not the layers the counts read; and
+`FilesPresent` was printed as "on disk" when it is a tree count, beside a sweep that prints a real
+filesystem walk under the same words. Each delete fix was control-armed alone and each alone is
+still red.
+
+**What it found and we did NOT fix** — all live: **an asymmetric restart loses the first change**
+(restart ONE peer and the next file changed never arrives; restart BOTH and nothing is lost — which
+narrows a two-day-old "cause unknown" to the *surviving* peer, and means the old stale-pool
+refutation was made without a reproducer that reaches the shape); **a concurrent edit silently
+destroys the receiver's file**, no conflict copy, no warning, where Dropbox and Syncthing both keep
+one; **30 GB of unpruned state** on the developer machine, 27 GB of it logs, with no reset path
+until now; and **the layout file admits duplicate panels**, which is why the operator's screen had
+`sharing-status` on it twice.
+
+**`bash scripts/entity-state.sh`** inventories every byte this product leaves on a machine and, on
+an explicit `reset`, removes it — never touching a mounted directory, because a received folder's
+bytes are the operator's. Run it with `--keep-identities` to empty the tree and stay the same peer.
+
+The survey, the scenario catalogue (topology, lifecycle, file semantics, capability, GUI,
+robustness), and a landscape comparison against fifteen years of shipped file-sync are in the
+2026-09-05 handoff under `docs/status/`. **The honest summary of coverage: two peers, one folder,
+one direction, one file operation at a time. Three peers has never been run. `Mode: both` has never
+been run over a network. The GUI has never been run two-peer at all.**
+
+## §0Z (2026-09-04) — nobody asks our renderers whether they can draw an embed
 
 **Analysis session, nothing built.** Answering the L5 social-vocabulary review as the non-web
 seat turned into measurements about **our own tree**, and the headline one is a defect we have

@@ -230,22 +230,45 @@ func (h *BlobResolveHandler) Handle(ctx context.Context, req *handler.Request) (
 	// "updated" / "deleted").
 	if notif.Event == "deleted" {
 		relPath := strings.TrimPrefix(relativeURI, sourcePrefix)
-		localSourcePath := sourcePrefix + relPath
+		// TARGET, not source. This read `sourcePrefix + relPath` — which
+		// is just `relativeURI` back again, i.e. the path the file has on
+		// the SENDER — and the write branch twenty lines below has always
+		// used `targetPrefix + relPath`. So a delete was dispatched at a
+		// path that exists on the other machine.
+		//
+		// It is the two-root-names trap in a third place. `accept <peer>
+		// <root> <directory>` names the receiving mount after the
+		// directory the operator picked, so `local/files/photos/` on the
+		// sender is `local/files/received/` here. Whenever the two roots
+		// happen to MATCH, sourcePrefix == targetPrefix and this line is
+		// correct by coincidence — which is why every test in the tree
+		// passed: they all use one name on both peers.
+		//
+		// Measured by scripts/twopeer-sync.sh, two containers, real TCP:
+		// create and modify propagated, delete did not, and the ack still
+		// said `deleted: true`.
+		localTargetPath := targetPrefix + relPath
 		// Only dispatch if a binding actually exists locally — a
-		// concurrent watcher Remove may already have cleaned up.
+		// concurrent watcher Remove may already have cleaned up. The
+		// unbound case is now REPORTED rather than acked as a deletion:
+		// this guard is exactly what swallowed the defect above, because
+		// a wrong path is indistinguishable from "already gone" and both
+		// returned success.
+		dispatched := false
 		if hctx.LocationIndex != nil {
-			if _, bound := hctx.LocationIndex.Get(localSourcePath); bound {
+			if _, bound := hctx.LocationIndex.Get(localTargetPath); bound {
 				_, err := hctx.Execute(ctx, "local/files", "delete", entity.Entity{},
-					handler.WithResource(&types.ResourceTarget{Targets: []string{localSourcePath}}))
+					handler.WithResource(&types.ResourceTarget{Targets: []string{localTargetPath}}))
 				if err != nil {
 					return handler.NewErrorResponse(500, "delete_dispatch_failed",
 						"local/files:delete dispatch: "+err.Error())
 				}
+				dispatched = true
 			}
 		}
 		return ackEntity(200, map[string]interface{}{
-			"deleted":     true,
-			"source_path": localSourcePath,
+			"deleted":     dispatched,
+			"source_path": localTargetPath,
 		})
 	}
 

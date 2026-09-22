@@ -74,7 +74,7 @@ export GOTOOLCHAIN ?= go1.25.1
 # includes the same file and uses the caps on every podman build/run.
 include caps.mk
 
-.PHONY: crossimpl-go consume-live workbench-test console-build console-run test test-each test-each-native test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native lint-perfreview fmt-native
+.PHONY: crossimpl-go twopeer-sync consume-live workbench-test console-build console-run test test-each test-each-native test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native lint-perfreview fmt-native
 
 # ============================================================
 # make + podman — bare-box entry points
@@ -658,6 +658,31 @@ test-fetch:
 # does not.
 crossimpl-go:
 	bash scripts/crossimpl-go.sh
+
+# twopeer-sync — the sharing flow end to end, two peers, two containers,
+# one real TCP network. THE INTEGRATION GATE FOR THE SHARE FEATURE.
+#
+# Every other gate for this flow runs two peers in ONE PROCESS on
+# loopback. That is enough for the protocol and it cannot see a restart,
+# a real listener bind, host-to-host DNS, or a file on a disk one peer
+# owns and the other does not — so the product's own operator was the
+# integration test, by hand, on two machines. It found things the suite
+# could not, which is exactly the problem: a test that only a person can
+# run is not re-runnable and leaves no artifact.
+#
+# It exercises: mount with content already present, share, accept,
+# backfill, CREATE, MODIFY, DELETE, then stops BOTH peers, restarts them
+# against the same sqlite stores, and asserts a change made after the
+# restart still arrives. Assertions are on BYTES ON DISK on the receiving
+# side, never on a tree count — a count passes while the operator's
+# folder is empty.
+#
+# Deliberately OUTSIDE `test-native`: it needs podman and ~2 minutes, and
+# a sweep target that can go red for the container runtime's reasons
+# teaches people to ignore the sweep. Same argument as crossimpl-go.
+# It found two shipped defects on its first run.
+twopeer-sync:
+	bash scripts/twopeer-sync.sh
 
 # consume-live — drive our consumer at the LIVE public federation:
 # enumerate a registry by walking its signed root, resolve every name

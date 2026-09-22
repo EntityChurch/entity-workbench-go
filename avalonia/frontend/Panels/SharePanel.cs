@@ -130,6 +130,19 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
 
     private delegate void ConnWake(long handle);
 
+    // The SHARING wake, distinct from the connections wake above.
+    //
+    // This panel already held a subscription — to PEER CONNECTIONS, so
+    // its discovery list stayed live — and none at all to the state it
+    // exists to show. So folders, offers, shares and file counts sat
+    // frozen behind a Refresh button while the peer list beside them
+    // updated itself, which reads as the panel working. AP73.
+    private long _sharingWakeRegistration = -1;
+    private SharingWake? _sharingWakeCallback;
+    private GCHandle _sharingWakeHandle;
+
+    private delegate void SharingWake(long handle);
+
     // Test surface: auto-dial is off by default under test so a suite
     // does not dial anything, and the set is inspectable so the
     // once-per-peer bound can be asserted rather than assumed.
@@ -411,7 +424,11 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
         row2.Children.Add(_titleBox);
         row2.Children.Add(_shareAddrBox);
         row2.Children.Add(_shareBtn);
-        row2.Children.Add(RowButton("Refresh", "Re-read peers, mounts, shares and syncs", Refresh));
+        // No Refresh button: this panel now holds a SharingRegisterWake
+        // subscription covering the declarations AND the file layers it
+        // counts, so everything here moves by itself. Its only wake used
+        // to be one borrowed from Peer Connections, which kept the
+        // discovery list live and nothing else.
         stack.Children.Add(row2);
 
         stack.Children.Add(_peersEmpty);
@@ -1237,6 +1254,7 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
         _connWakeHandle = GCHandle.Alloc(_connWakeCallback);
         var ptr = Marshal.GetFunctionPointerForDelegate(_connWakeCallback);
         Bridge.TakeString(Bridge.ConnectionsRegisterWake(_connsHandle, ptr));
+        OpenSharingWake();
     }
 
     // Called from Go. Hop to the UI thread before touching anything.
@@ -1318,10 +1336,48 @@ public sealed class SharePanel : UserControl, IPanelPreferredHeight, IDisposable
         }
     }
 
+    // Only the READ is wired: this panel's mutations dial, and a wake
+    // that re-ran them would make an open panel into a dialer.
+    private void OpenSharingWake()
+    {
+        _sharingWakeCallback = OnSharingWake;
+        _sharingWakeHandle = GCHandle.Alloc(_sharingWakeCallback);
+        var ptr = Marshal.GetFunctionPointerForDelegate(_sharingWakeCallback);
+        var reply = Bridge.TakeString(Bridge.SharingRegisterWake(_peerHandle, ptr));
+        try
+        {
+            using var doc = JsonDocument.Parse(reply);
+            if (doc.RootElement.TryGetProperty("registration", out var r)
+                && r.TryGetInt64(out var id))
+            {
+                _sharingWakeRegistration = id;
+            }
+        }
+        catch (JsonException) { }
+    }
+
+    // Runs on a Go-owned goroutine — must not touch a control from here.
+    private void OnSharingWake(long handle)
+    {
+        if (_disposed) return;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_disposed) return;
+            Refresh();
+        });
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
+        if (_sharingWakeRegistration >= 0)
+        {
+            Bridge.TakeString(Bridge.SharingUnregisterWake(_peerHandle, _sharingWakeRegistration));
+            _sharingWakeRegistration = -1;
+        }
+        if (_sharingWakeHandle.IsAllocated) _sharingWakeHandle.Free();
+        _sharingWakeCallback = null;
         if (_connsHandle >= 0)
         {
             Bridge.ConnectionsClose(_connsHandle);
