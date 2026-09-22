@@ -74,9 +74,12 @@ public class LocalFilesPanelTests
     }
 
     // The panel must be able to distinguish "we know the watcher is
-    // reported" from "we cannot see it". Today the bridge always sends
-    // false; if that ever becomes true the panel already renders it, and
-    // this asserts the field is carried rather than defaulted.
+    // reported" from "we cannot see it".
+    //
+    // This used to carry "today the bridge always sends false" — true when it
+    // was written and false since core-go persisted watcher liveness to the
+    // tree (their tracker row 3, 2026-09-17). The assertion itself was always
+    // right, so nothing failed; only the comment went stale.
     [Fact]
     public void WatcherObservable_Is_Carried_Not_Defaulted()
     {
@@ -87,6 +90,39 @@ public class LocalFilesPanelTests
         Assert.False(Assert.Single(Parse("""
         {"ok":true,"mounts":[{"root":"r","watcherObservable":false}]}
         """).Mounts!).WatcherObservable);
+    }
+
+    // The watcher's STATUS and its message are what an operator acts on, and
+    // an undeclared field is dropped in silence (AP49). The failure here is
+    // the reassuring one: a dropped `watcherStatus` leaves the empty string,
+    // the panel's error branch never fires, and a mount whose watcher has died
+    // renders exactly like a healthy one.
+    [Fact]
+    public void The_Watcher_Fault_And_Its_Message_Are_Declared()
+    {
+        var m = Assert.Single(Parse("""
+        {"ok":true,"mounts":[{"root":"r","watcherObservable":true,"watcherStatus":"error",
+          "watcherError":"inotify watch limit reached"}]}
+        """).Mounts!);
+
+        Assert.True(m.WatcherObservable);
+        Assert.Equal("error", m.WatcherStatus);
+        Assert.Contains("inotify", m.WatcherError);
+    }
+
+    // Three states, not two: no watch record is where a mount whose watcher
+    // never started lands, and it is NOT `stopped`. Without this arm the test
+    // above is satisfied by a DTO that decodes a status and by a panel that
+    // renders every unobservable row as stopped.
+    [Fact]
+    public void An_Absent_Watch_Record_Does_Not_Arrive_As_A_Status()
+    {
+        var m = Assert.Single(Parse("""
+        {"ok":true,"mounts":[{"root":"r","watcherObservable":false}]}
+        """).Mounts!);
+
+        Assert.False(m.WatcherObservable);
+        Assert.Equal("", m.WatcherStatus);
     }
 
     // An empty mount set must arrive as an empty list, never null. The

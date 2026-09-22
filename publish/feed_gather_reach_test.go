@@ -18,7 +18,7 @@
 // §6.2's proposition — *one check instead of 500* — and it is the configuration
 // in which a mirror either carries authorship or only carries integrity.
 //
-// # ⛔ WHAT THIS RUN FOUND, measured 2026-09-16
+// # ⛔ WHAT THIS RUN FOUND, measured 2026-09-16 and re-measured 2026-09-17
 //
 //	LEG 1 ok        — addressable at the derived coordinate
 //	LEG 2 ok        — 3 entries named, every one referencing A and not B
@@ -31,36 +31,56 @@
 // bytes are right, the references are right, the view is addressable and
 // complete — and the thing the whole tier exists for does not survive the hop.
 //
-// There are **two causes and they are different bugs**, which is why the run
-// measures the structural one separately rather than stopping at leg 4:
+// # ⭐ THE COUNT IS UNCHANGED AND THE CAUSE IS NOT — read the leg 4 detail line
 //
-//  1. **Ours.** [fetch.Consumer.SignatureOver] derives the §2.2 invariant
-//     pointer under `c.src.PeerID()` — *the peer being read from* — where §2.2
-//     names `/{signer_peer_id}/…`. Those coincide on a direct read and diverge
-//     on exactly this one, so the consumer asked B for a signature bound under
-//     A and got *"nothing bound at this path"*. **Measured: B HOLDS it** (the
-//     gather bound it correctly), so nothing is missing — it is being looked
-//     for in the wrong place.
+// On 2026-09-16 there were two candidate causes and the first was ours.
+// `SYSTEM-DATA-EXCHANGE` v0.3 §2.2.1 ruled it (arch `ROUTING-2026-09-17-a` §1,
+// on `ENTITY-CORE-PROTOCOL` §1.4's authority) and **it is fixed**: the consumer
+// derives the pointer under the SIGNER, passes the already-absolute path
+// through unchanged, and names the serving peer as the handler. Gated on its
+// own in `feed_gather_signer_test.go`, which removes the transport by
+// construction — it passes, and it fails on the pre-fix consumer.
 //
-//  2. **Not ours alone, and it is why (1) is not a one-line fix.** Asking
-//     correctly needs a dispatched read at B for a resource under A's
-//     namespace, and `AppPeer.Get` routes by peer segment, so it would
-//     dispatch to **A** — the read-direction twin of the gap that made
-//     [entitysdk.AppPeer.PutObtainedEntity] necessary on the write side, found
-//     the same afternoon from the other end. `Source.Leaf` also prepends the
-//     serving peer, and B's grant to C names `system/signature/*`, which §PR-8
-//     canonicalizes peer-locally to B's own namespace.
+// **Leg 4 still reports 0, and that is not the same 0.** It used to read
 //
-// ⚠ **Measured and NOT to be confused with a third cause:** B's signed root
+//	nothing bound at this path        ← we asked the wrong peer's namespace
+//
+// and it now reads
+//
+//	.../system/tree?resource=/{A}/system/signature/{hex}: 403 capability_denied
+//
+// — the right question, refused. ⇒ **a second wall, which nobody had measured
+// and which is not ours.** A republisher cannot authorize a read of its own
+// copy of the author's namespace at all:
+//
+//   - the §3 advertisement discipline keeps a policy grant entry only if this
+//     peer's advertised served-scope COVERS it (`AssembleInboundGrants` →
+//     `filterAdvertisedGrants`, *"an uncovered entry is DROPPED, not
+//     narrowed"*), and `advertisedServedScope` gives `system/tree` a bare `*`,
+//     which §PR-8 makes the peer's OWN namespace;
+//   - so adding arch's §1.3 row does not widen the grant, it **deletes the
+//     entry the row was added to** — measured next door, with a control arm;
+//   - and B cannot read its own carried copy either: `403 capability_denied`
+//     on a LOCAL `tree:get`, for the same reason
+//     [entitysdk.AppPeer.PutObtainedEntity] needed
+//     [entitysdk.AppPeer.MintMirrorCapability] on the write side.
+//
+// ⭐ core-go's own `defaultHandlerSelfGrant` documents this exact class forty
+// lines from `advertisedServedScope` — bare `*` is own-namespace-only, the
+// cross-peer form is `/*/*` — and records fixing it there *because* a peer
+// *"could no longer write the foreign-namespace subtrees its store legitimately
+// holds under V7 §1.4's universal address space"*. The advertised scope is the
+// same ceiling facing outward and still carries the old spelling. Routed as
+// core-go row 22; **not shimmed here**, because a local workaround hides a cohort-wide
+// question and republication is the first operation that needs this.
+//
+// ⚠ **Measured and NOT to be confused with a further cause:** B's signed root
 // commits to **0 keys under A's namespace**. That is expected and is *not* the
 // blocker — a detached signature is deliberately read OUTSIDE the committed set
 // (see [fetch.Consumer.SignatureOver]'s own header), because it is
 // self-verifying. It is recorded because it rules out *"carry it in the root"*
 // as the fix, which is the first thing a reader of this file will reach for and
 // is `A-36`'s answer one level further than that answer can go.
-//
-// Routed rather than patched here: the fix changes the verification path, and a
-// second way to locate a signature is a second trust argument.
 package publish_test
 
 import (
@@ -87,7 +107,42 @@ type mirrorTrio struct {
 	plan     workbench.MirrorPlan
 }
 
+// mirrorReaderGrants is what a republisher grants a reader of its mirror: the
+// view itself, plus the AUTHOR's evidence.
+//
+// `readPublishedGrants` alone covers only the view — B's own `app/feed/`
+// prefix, its published root and its own signatures. It does **not** reach A's
+// detached signatures, because a bare `system/signature/*` is peer-relative
+// under §PR-8 and canonicalizes to the GRANTER's namespace, so at B it means
+// *B's* signatures and covers none of A's. Naming the author —
+// `/{A}/system/signature/*`, arch's `ROUTING-2026-09-17-a` §1.3 — is what
+// carries authorship across the hop.
+//
+// ⚠ **For two days this function existed to be MEASURED rather than used**,
+// because adding that row deleted the grant entry it was added to: the
+// advertised served-scope covered only the granter's own namespace, and an
+// uncovered entry is dropped rather than narrowed. Fixed upstream in core-go
+// (`3df98f6`, our tracker row 22) and it is an ordinary grant helper now. The
+// gate that pins both halves is
+// `TestGatherReach_TheAuthorNamespacedGrantWidensRatherThanDeleting`.
+func mirrorReaderGrants(prefix string, authors ...string) []types.GrantEntry {
+	g := readPublishedGrants(prefix)
+	for _, a := range authors {
+		g[0].Resources.Include = append(g[0].Resources.Include, "/"+a+"/system/signature/*")
+	}
+	return g
+}
+
 func newMirrorTrio(t *testing.T, posts int) mirrorTrio {
+	t.Helper()
+	return newMirrorTrioGranting(t, posts, nil)
+}
+
+// newMirrorTrioGranting builds the trio with B's grant to C supplied by the
+// caller, so a negative arm can remove exactly one row and nothing else.
+// A nil grantToConsumer means the conformant one.
+func newMirrorTrioGranting(t *testing.T, posts int,
+	grantToConsumer func(author string) []types.GrantEntry) mirrorTrio {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
@@ -120,7 +175,15 @@ func newMirrorTrio(t *testing.T, posts int) mirrorTrio {
 	if _, err := publish.MintRoot(ctx, publish.MintOpts{Peer: gatherer, Prefix: "app/feed/"}); err != nil {
 		t.Fatalf("B MintRoot over its own mirror: %v", err)
 	}
-	grantAndDial(t, gatherer, consumer, readPublishedGrants("app/feed/"))
+	if grantToConsumer == nil {
+		// ⚠ NOT `mirrorReaderGrants` — see its header. The author-namespaced
+		// row does not widen this grant, it DELETES it, so the conformant
+		// trio is the one that can express the least.
+		grantToConsumer = func(string) []types.GrantEntry {
+			return readPublishedGrants("app/feed/")
+		}
+	}
+	grantAndDial(t, gatherer, consumer, grantToConsumer(author.PeerID()))
 
 	return mirrorTrio{author: author, gatherer: gatherer, consumer: consumer,
 		posts: authored, plan: plan}
@@ -185,7 +248,9 @@ func grantAndDial(t *testing.T, server, client *entitysdk.AppPeer, grants []type
 // one that decides whether a mirror carries authorship or only integrity.
 func TestGatherReach_WhatAThirdPartyCanReachThroughAMirror(t *testing.T) {
 	ctx := context.Background()
-	trio := newMirrorTrio(t, 3)
+	trio := newMirrorTrioGranting(t, 3, func(author string) []types.GrantEntry {
+		return mirrorReaderGrants("app/feed/", author)
+	})
 
 	c, err := workbench.NewPeerConsumer(trio.consumer, trio.gatherer.PeerID(), nil)
 	if err != nil {
@@ -294,10 +359,30 @@ func TestGatherReach_WhatAThirdPartyCanReachThroughAMirror(t *testing.T) {
 	// If this does not answer, the mirror carries integrity without
 	// authorship — which §2.2 says MUST NOT be presented as attributed.
 	//
-	// **Reported, not asserted.** Where a signature pointer resolves when
-	// the serving peer is not the signing peer is precisely the fact this
-	// run exists to establish, and asserting either answer would be writing
-	// down a ruling nobody has made.
+	// **ASSERTED as of 2026-09-17-b. It was a measurement for two days and the
+	// history is why this comment is long: the leg needed TWO walls down, in
+	// two different trees, and each was invisible from the other side.**
+	//
+	//	the consumer asks at the wrong address     OURS      fixed 2026-09-17-a
+	//	the republisher cannot AUTHORIZE the read   core-go   fixed by their 3df98f6
+	//
+	// Ours was `SYSTEM-DATA-EXCHANGE` v0.3 §2.2.1 — bind at the signer-rooted
+	// absolute path, resolve it against the peer SERVING the object, MUST NOT
+	// re-qualify. Theirs was `advertisedServedScope` spelling its resources
+	// axis as a bare `*`, which §PR-8 makes own-namespace-only, so a grant
+	// naming the AUTHOR's namespace was dropped rather than narrowed and the
+	// row deleted the entry it was added to.
+	//
+	// ⚠ **The grant below is what closes it, and it is load-bearing.** C reads
+	// A's evidence out of B's tree only because B's policy row names
+	// `/{A}/system/signature/*`; `readPublishedGrants` alone leaves this leg at
+	// 0 of 3 with a 403, which is the shape a reader sees against any peer
+	// still carrying the old advertised scope. That is the anti-vacuity arm in
+	// `TestGatherReach_TheAuthorNamespacedGrantWidensRatherThanDeleting`.
+	//
+	// The consumer half is ALSO gated on its own in `feed_gather_signer_test.go`,
+	// which removes the transport by construction — deliberately two gates,
+	// because a single end-to-end one cannot say which wall is standing.
 	attributed := 0
 	var lastWhy string
 	for _, r := range mirrored {
@@ -308,7 +393,10 @@ func TestGatherReach_WhatAThirdPartyCanReachThroughAMirror(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		if _, _, err := c.SignatureOver(ctx, "mirrored feed entry", ent); err != nil {
+		// The signer is A — read off the mirrored reference, which leg 2
+		// has just asserted names the AUTHOR and not the republisher. C
+		// never speaks to A to learn it.
+		if _, _, err := c.SignatureOver(ctx, "mirrored feed entry", r.Peer, ent); err != nil {
 			lastWhy = err.Error()
 			continue
 		}
@@ -335,7 +423,7 @@ func TestGatherReach_WhatAThirdPartyCanReachThroughAMirror(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		if _, _, err := direct.SignatureOver(ctx, "feed entry", ent); err == nil {
+		if _, _, err := direct.SignatureOver(ctx, "feed entry", trio.author.PeerID(), ent); err == nil {
 			directOK++
 		}
 	}
@@ -377,4 +465,123 @@ func TestGatherReach_WhatAThirdPartyCanReachThroughAMirror(t *testing.T) {
 			"their author, so leg 4 measures this harness rather than the mirror",
 			directOK, len(mirrored))
 	}
+
+	// ---- Leg 4, asserted LAST, and the order is the point ----
+	//
+	// The control arm above is checked FIRST so a broken harness can never
+	// present as a regression in the mirror. Only once "these entries attribute
+	// when read straight from A" is established does "and they attribute
+	// through B" mean anything.
+	if attributed != len(mirrored) {
+		t.Errorf("LEG 4 FAILED: %d of %d mirrored entries attributable by C, and the control arm "+
+			"passed — so the entries are fine and the MIRROR is what stopped carrying authorship. "+
+			"Two candidate causes, in two trees: this consumer resolving the §2.2 pointer at the "+
+			"wrong address (ours — see feed_gather_signer_test.go, which fails first if so), or the "+
+			"republisher unable to authorize the read (core-go's advertised served-scope regressing "+
+			"to a bare `*`, their row 22). Detail: %s", attributed, len(mirrored), lastWhy)
+	}
+}
+
+// TestGatherReach_TheAuthorNamespacedGrantWidensRatherThanDeleting is what
+// arch's `ROUTING-2026-09-17-a` §6 experiment turned into once both walls came
+// down — *"present a grant carrying `/{A}/system/signature/*` to a conformant
+// peer and confirm it is accepted."*
+//
+// **It is accepted now. For two days it was not, and the way it failed is worth
+// keeping in the comment**: the row did not fail to widen the grant, it DELETED
+// the entry it was added to. `AssembleInboundGrants` ends in
+// `filterAdvertisedGrants`, which keeps a policy entry only if this peer's
+// advertised served-scope covers it — *"an uncovered entry is DROPPED, not
+// narrowed"* — and `advertisedServedScope` gave `system/tree` a bare `*`, which
+// §PR-8 makes own-namespace-only. So an operator widening a grant made it
+// strictly narrower, silently, and the symptom landed on a read that used to
+// work. Fixed in core-go by their `3df98f6` (our tracker row 22): the derived
+// resources axis is the cross-peer `/*/*`.
+//
+// The grammar half of §1.3 was never in doubt and is still exercised here: the
+// leading slash signals universal-tree scope, and `/{granter}/system/signature/*`
+// was accepted throughout.
+//
+// This gate REPLACED a tripwire that asserted the blocked state, and the swap is
+// the discipline rather than bookkeeping. A blocked-state gate must go red when
+// the blocker lifts — that one did, and said so in its message — but a gate that
+// only ever says *"still blocked"* cannot then protect the fix. What pins the fix
+// is the property, with a control arm underneath it.
+func TestGatherReach_TheAuthorNamespacedGrantWidensRatherThanDeleting(t *testing.T) {
+	ctx := context.Background()
+
+	// ---- The property: the row widens, and costs nothing that worked ----
+	trio := newMirrorTrioGranting(t, 2, func(author string) []types.GrantEntry {
+		return mirrorReaderGrants("app/feed/", author)
+	})
+	c, err := workbench.NewPeerConsumer(trio.consumer, trio.gatherer.PeerID(), nil)
+	if err != nil {
+		t.Fatalf("NewPeerConsumer: %v", err)
+	}
+
+	// The ORDINARY read first — B's own published root, covered by a row this
+	// test did not touch. This is the half the deletion pathology broke, and it
+	// is checked separately because "the widening did not take" and "the
+	// widening destroyed the entry" are different failures pointing at
+	// different fixes.
+	if _, err := c.VerifiedRoot(ctx); err != nil {
+		t.Fatalf("⛔ the author-namespaced grant row cost the reader its ORDINARY access, which is "+
+			"the core-go row 22 pathology returning: adding a resource row deleted the entry it was "+
+			"added to. Check `advertisedServedScope` in the sibling kernel for a resources axis that "+
+			"has gone back to a bare `*` — it must be the cross-peer `/*/*`: %v", err)
+	}
+
+	// And the widening itself: A's evidence, out of B's tree, read by a peer
+	// that has never spoken to A.
+	carried := firstCarriedEntry(t, trio.plan)
+	if _, _, err := c.SignatureOver(ctx, "mirrored feed entry", carried.Peer, carried.Entity); err != nil {
+		t.Fatalf("the row is retained but carries nothing: C still cannot resolve A's detached "+
+			"signature out of B's tree, so `/{A}/system/signature/*` is being accepted and not "+
+			"honoured: %v", err)
+	}
+
+	// ---- The anti-vacuity arm, and without it this test proves nothing ----
+	//
+	// The SAME trio with exactly that row removed. If the signature still
+	// resolved here, the positive arm above would be passing because everything
+	// is open — a harness with no authorization in it at all — rather than
+	// because the grant names the author's namespace.
+	control := newMirrorTrioGranting(t, 2, func(string) []types.GrantEntry {
+		return readPublishedGrants("app/feed/")
+	})
+	cc, err := workbench.NewPeerConsumer(control.consumer, control.gatherer.PeerID(), nil)
+	if err != nil {
+		t.Fatalf("control NewPeerConsumer: %v", err)
+	}
+	if _, err := cc.VerifiedRoot(ctx); err != nil {
+		t.Fatalf("the CONTROL arm cannot make its ordinary read either, so this test is measuring a "+
+			"broken harness rather than the grant row: %v", err)
+	}
+	cCarried := firstCarriedEntry(t, control.plan)
+	_, _, err = cc.SignatureOver(ctx, "mirrored feed entry", cCarried.Peer, cCarried.Entity)
+	if err == nil {
+		t.Fatal("⚠ the control arm RESOLVED A's signature with no author-namespaced row in the " +
+			"grant, so this harness authorizes the read some other way and the positive arm above " +
+			"is vacuous. Find what is granting it before trusting either arm")
+	}
+	if !strings.Contains(err.Error(), "capability_denied") {
+		t.Fatalf("the control arm failed for a reason that is not authorization, so it is not the "+
+			"control this test needs: %v", err)
+	}
+	t.Logf("control — with the row removed and nothing else changed, A's evidence is refused: %v", err)
+}
+
+// firstCarriedEntry returns the first republished ENTRY in a plan — never a
+// signature, which is the thing being resolved rather than the thing resolved
+// over.
+func firstCarriedEntry(t *testing.T, plan workbench.MirrorPlan) workbench.CarriedEntity {
+	t.Helper()
+	for _, ce := range plan.Carried {
+		if ce.Kind == workbench.CarriedEntry {
+			return ce
+		}
+	}
+	t.Fatal("the plan carries no entry at all, so the gather is what failed and every arm below " +
+		"would be measuring that instead")
+	return workbench.CarriedEntity{}
 }

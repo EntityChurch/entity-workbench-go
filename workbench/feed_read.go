@@ -119,6 +119,25 @@ type FeedEntryRead struct {
 	MediaType string
 	IsReply   bool
 
+	// IsMarkdown says whether Text may be parsed as markdown. A renderer
+	// that ignores it and parses everything eats the asterisks out of a
+	// `text/plain` post; one that ignores it and parses nothing shows a
+	// markdown post as its source.
+	IsMarkdown bool
+
+	// BodyRung is which step of EMBED §6's ladder produced Text.
+	//
+	// **A surface MUST be able to tell [FeedBodyRendered] from
+	// [FeedBodyFallback]**: the first is the post and the second is the
+	// author's description of a post that is not on screen. They look
+	// identical as strings, which is how rendering every body as its
+	// fallback went unnoticed here.
+	BodyRung FeedBodyRung
+
+	// BodyNote explains a rung below the top, in a sentence for a person.
+	// Empty on [FeedBodyRendered].
+	BodyNote string
+
 	// Attributed is `FEED-R4`: a detached `system/signature` over these
 	// exact bytes verified against the key this peer-id carries.
 	//
@@ -427,26 +446,38 @@ func fillEntry(ctx context.Context, c *fetch.Consumer, subject string, ent entit
 	e.CreatedAt = data.CreatedAt
 	e.MediaType = data.Body.MediaType()
 	e.IsReply = data.Reply != nil
-	if data.Body.Data.Payload.Tag == entitysdk.EmbedPayloadInline {
-		e.Text = string(data.Body.Data.Payload.Bytes)
-	} else {
-		// C-6. `fallback` is EMBED §3's mandatory rung and this is the
-		// branch that renders it — a `child` or `ref` payload has nothing
-		// else to show a reader who cannot run its handler. Before the
-		// check, a missing or empty fallback here produced **a blank row
-		// with no problem on it**, which reads as an author posting
-		// nothing rather than as a producer omitting a mandatory field.
-		//
-		// The entry is KEPT and not dropped, for `FEED-R1`'s reason: the
-		// author wrote it, the index names it, and a list that quietly
-		// disagrees with the index it came from is the worse artifact.
-		// State the fault on the row instead.
+	// EMBED §6's ladder, in `FeedBodyView` — not a payload-tag branch here.
+	// The rung is carried onto the row because a reader handed only text
+	// cannot tell a rendered post from its alt text, and the two mean
+	// opposite things about whether the post has been seen.
+	body := FeedBodyView(data.Body)
+	e.Text = body.Text
+	e.IsMarkdown = body.IsMarkdown
+	e.BodyRung = body.Rung
+	e.BodyNote = body.Note
+
+	// C-6. `fallback` is EMBED §3's mandatory, non-empty rung. The check
+	// runs on any entry that DEPENDED on it — before it, a missing fallback
+	// produced a blank row with no problem on it, which reads as an author
+	// posting nothing rather than as a producer omitting a mandatory field.
+	//
+	// The entry is KEPT and not dropped, for `FEED-R1`'s reason: the author
+	// wrote it, the index names it, and a list that quietly disagrees with
+	// the index it came from is the worse artifact. State the fault on the
+	// row instead.
+	//
+	// ⚠ It runs on the FALLBACK rungs only, and that is the correction this
+	// ladder made necessary: a `text/markdown` body now renders at step 1,
+	// where the fallback is not consulted at all, so validating it there
+	// would report a producer defect on a row that is displaying the
+	// author's own words perfectly — a problem line nobody can act on, on
+	// the one surface whose problem lines have to mean something.
+	if body.Rung != FeedBodyRendered {
 		if err := data.Body.Data.ValidateDecodedNested(ent.Data, "body"); err != nil {
 			e.Problem = "this entry's body is not renderable: " + err.Error()
 		}
-		e.Text = data.Body.Data.Fallback
 	}
-	attribute(ctx, c, ent, e)
+	attribute(ctx, c, subject, ent, e)
 }
 
 // attribute is `FEED-R4`, and its failure arm is the normal one.
@@ -456,8 +487,12 @@ func fillEntry(ctx context.Context, c *fetch.Consumer, subject string, ent entit
 // unreachable and every entry is honestly unattributed, while a reader
 // that dialled the publisher gets it on the same grant that carries the
 // root's own signature. Both are correct readings of what was available.
-func attribute(ctx context.Context, c *fetch.Consumer, ent entity.Entity, e *FeedEntryRead) {
-	if _, where, err := c.SignatureOver(ctx, "feed entry", ent); err != nil {
+// The signer is the SUBJECT, and `fillEntry` has just established that it
+// is also the entry's `author` — `FEED-R1`'s namespace check runs before
+// this and rejects the row otherwise. So the signer is not being assumed
+// here; it is being used one line after it was verified.
+func attribute(ctx context.Context, c *fetch.Consumer, subject string, ent entity.Entity, e *FeedEntryRead) {
+	if _, where, err := c.SignatureOver(ctx, "feed entry", subject, ent); err != nil {
 		e.Attributed = false
 		e.Attribution = "no verified signature for these bytes at " + where + " (" + err.Error() +
 			"). Found under this peer's namespace is not the same fact as written by them — §1.1 makes " +

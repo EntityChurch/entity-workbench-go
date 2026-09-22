@@ -61,11 +61,14 @@ type ShellWorkspace struct {
 	// stay distinguishable.
 	historyBudget historyBudgetState
 
-	// dialedThisProcess is the set of peers WE have opened an outbound
-	// connection to since this process started. See reconcile.go — it is
-	// what makes "our own connection is derived runtime state, rebuilt at
-	// open" expressible, and it is deliberately not persisted.
-	dialedThisProcess map[string]bool
+	// dialFailedThisProcess is the set of peers a dial has already FAILED
+	// for since this process started — a cost bound, not a fact about the
+	// relationship. Whether we HOLD an outbound connection is read from the
+	// pool (`hasOutboundConnection`, adopting core-go's
+	// `Connection.IsOutbound()`); remembering that we once dialled made a
+	// dropped connection report as a live route forever. Deliberately not
+	// persisted: it expires with the process.
+	dialFailedThisProcess map[string]bool
 
 	// Identity is the active identity name. Empty means ephemeral.
 	// One identity per workspace in v1; multi-identity is deferred

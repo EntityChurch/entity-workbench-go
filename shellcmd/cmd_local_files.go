@@ -427,31 +427,54 @@ func cmdMountFilterShow(sh *Shell, args []string) (Result, error) {
 	}), nil
 }
 
-// cmdMounts shows currently-mounted bridges from the tree-resident
-// config namespace. Reads system/config/local/files/* entries —
-// note we read from the local/files handler's own config namespace
-// (it's already persisted there by AddRoot), we don't keep a
-// separate workbench-level mount list.
+// cmdMounts shows currently-mounted bridges from the tree-resident config
+// namespace, through [workbench.LocalFilesModel] — the same model the GUI's
+// Local Files panel renders.
+//
+// ⚠ **It used to walk `system/config/local/files/` itself, and that went
+// wrong the moment the kernel put a second kind of entity in there.**
+// `Handler.persistWatcherState` writes a watch record per root at
+// `.../watch/{root}` (core-go tracker row 3, 2026-09-17), so the old
+// `len(entries)` header counted mounts AND watch records: a peer with two
+// mounts reported *"mounted roots: 4"*. The per-row loop was already correct —
+// it skipped nested paths — so the count and the list disagreed with each
+// other, which is the shape that reads as a tree problem rather than a
+// counting one. The model owns the filter, in one place, and the header is now
+// the number of rows actually listed.
+//
+// This is the repo's own "DRY the integration, not the renderer" rule arriving
+// late: two surfaces answering one question had two implementations of the
+// namespace filter, and only one of them learned.
 func cmdMounts(sh *Shell, args []string) (Result, error) {
 	_ = args
-	local := sh.Local.Peer
-	entries := local.Store().List("system/config/local/files/")
-	if len(entries) == 0 {
+	out := workbench.NewLocalFilesModel(sh.Local.Peer.Store()).Render()
+	if len(out.Mounts) == 0 {
+		if out.Note != "" {
+			return MessageResult(out.Note), nil
+		}
 		return MessageResult("no mounts"), nil
 	}
-	lines := make([]string, 0, len(entries)+1)
-	lines = append(lines, fmt.Sprintf("mounted roots: %d", len(entries)))
-	for _, e := range entries {
-		// Path shape: /{peer-id}/system/config/local/files/{root}. The
-		// peer-id segment is NOT optional here — Store.List returns
-		// qualified paths — and trimming the relative prefix alone left
-		// the whole path as the "root", which is not a name `unmount`
-		// accepts. See workbench/tree_path.go.
-		root, under := workbench.RelativeUnder(e.Path, "system/config/local/files/")
-		if !under || root == "" || strings.Contains(root, "/") {
-			continue
+
+	lines := make([]string, 0, len(out.Mounts)*2+1)
+	lines = append(lines, fmt.Sprintf("mounted roots: %d", len(out.Mounts)))
+	for _, m := range out.Mounts {
+		lines = append(lines, fmt.Sprintf("  %-30s @ %s", m.Root, m.ConfigPath))
+
+		// Three states, not two: no record is where a mount whose watcher
+		// never started lands, and it is not `stopped`.
+		watcher := "no watch record"
+		if m.WatcherObservable {
+			watcher = m.WatcherStatus
 		}
-		lines = append(lines, fmt.Sprintf("  %-30s @ %s", root, e.Path))
+		lines = append(lines, fmt.Sprintf("      %s → %s  ·  watcher: %s",
+			m.FilesystemRoot, m.Prefix, watcher))
+		if m.WatcherStatus == "error" && m.WatcherError != "" {
+			// The only line that says why a mount stopped producing documents.
+			lines = append(lines, fmt.Sprintf("      watcher error: %s", m.WatcherError))
+		}
+		if m.Err != "" {
+			lines = append(lines, fmt.Sprintf("      config unreadable: %s", m.Err))
+		}
 	}
 	return LinesResult(lines), nil
 }

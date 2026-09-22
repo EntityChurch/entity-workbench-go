@@ -178,29 +178,50 @@ func TestTreeFollow_DeepTreeConvergence(t *testing.T) {
 	}
 	t.Logf("alice committed %d leaves: head=%s", totalLeaves, aliceCommit.Version)
 
-	// Wait for tree-level materialization on bob. The materialized
-	// paths sit under the SOURCE namespace per V7 peer-id-keyed
-	// addressing — i.e. bob mirrors alice's paths under
-	// /{aliceID}/deep/, not under /{bobID}/deep/. That's the
-	// follower's "view of alice's data" — same as revision-follow's
-	// post-merge state.
+	// Wait for tree-level materialization on bob — read out of BOB'S OWN
+	// STORE (L0), never through `bob.List`.
+	//
+	// ⛔ AP11, and this test was the catalogue entry's own worst instance
+	// until 2026-09-17. `AppPeer.List` ROUTES BY PEER-ID: a peer-qualified
+	// path dispatches to THAT peer, so `bob.List("/{aliceID}/deep/sub-N/")`
+	// asked ALICE for alice's tree and counted the answer as bob's mirror.
+	// It returned 50/50 within 0.2s of alice's own commit, on every run,
+	// **including with the cross-peer credential scoped to a nonexistent
+	// operation** — i.e. the assertion this test is named after could not
+	// fail, and it had been green since the day it was written while
+	// reporting "G3 RESOLVED" from a measurement of the wrong peer.
+	//
+	// Which namespace a merged subtree lands in is exactly what this test
+	// exists to establish, so it is not pre-judged here: `tree:merge`
+	// applies the source envelope under (executing peer's namespace +
+	// TargetPrefix), which says `/{bobID}/deep/`, while this test's
+	// original comment claimed `/{aliceID}/deep/`. Count both out of bob's
+	// index and report which one actually holds the bytes.
 	deadline := time.Now().Add(15 * time.Second)
-	realMaterialized := 0
+	underSource, underLocal := 0, 0
 	for time.Now().Before(deadline) {
-		realMaterialized = 0
+		underSource, underLocal = 0, 0
 		for sub := 0; sub < numSubdirs; sub++ {
-			ents, _ := bob.List(fmt.Sprintf("/%s/deep/sub-%d/", aliceID, sub))
-			realMaterialized += len(ents)
+			underSource += len(bob.RawLocationIndex().List(fmt.Sprintf("/%s/deep/sub-%d/", aliceID, sub)))
+			underLocal += len(bob.RawLocationIndex().List(fmt.Sprintf("/%s/deep/sub-%d/", bobID, sub)))
 		}
-		if realMaterialized >= totalLeaves {
+		if underSource >= totalLeaves || underLocal >= totalLeaves {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Logf("bob materialized %d/%d leaves under /%s/deep/sub-*/", realMaterialized, totalLeaves, aliceID)
+	realMaterialized := underSource
+	namespace := "the SOURCE namespace /" + aliceID + "/"
+	if underLocal > underSource {
+		realMaterialized = underLocal
+		namespace = "the LOCAL namespace /" + bobID + "/"
+	}
+	t.Logf("bob's own index holds %d/%d leaves (source-ns %d, local-ns %d) — %s",
+		realMaterialized, totalLeaves, underSource, underLocal, namespace)
 
 	if realMaterialized < totalLeaves {
-		t.Fatalf("G3 NOT closed by tree:extract+tree:merge: only %d/%d leaves materialized", realMaterialized, totalLeaves)
+		t.Fatalf("G3 NOT closed by tree:extract+tree:merge: only %d/%d leaves materialized in bob's own store (source-ns %d, local-ns %d)",
+			realMaterialized, totalLeaves, underSource, underLocal)
 	}
-	t.Logf("G3 RESOLVED by canonical entity-sync pattern: tree:extract closure-bundles, tree:merge ingests + binds — all %d leaves in one chain round", totalLeaves)
+	t.Logf("G3 RESOLVED by canonical entity-sync pattern: tree:extract closure-bundles, tree:merge ingests + binds — all %d leaves in one chain round, under %s", totalLeaves, namespace)
 }

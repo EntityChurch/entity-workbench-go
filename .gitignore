@@ -20,6 +20,11 @@ entity-vcs/entity-vcs
 entity-fetch/entity-fetch
 entity-seed-site/entity-seed-site
 entity-serve-cors/entity-serve-cors
+# `avalonia/bridge` became a suite directory on 2026-09-17 (make test-bridge),
+# so the dir-named stray now has a reason to recur: the package is built
+# `-buildmode=c-shared` and a bare `go build` there drops a 27MB `bridge`.
+# Untracked build output in a tree whose AGENTS.md warns against `git add -A`.
+avalonia/bridge/bridge
 
 # Podman resource caps — per-machine overrides (RESOURCE-CAPS standard).
 # Committed defaults live in caps.mk; each machine's deviations go here and

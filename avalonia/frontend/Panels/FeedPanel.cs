@@ -953,14 +953,64 @@ public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
                 TextWrapping = TextWrapping.Wrap,
             });
         }
-        else
+        else if (row.BodyRung == "unrenderable")
         {
+            // Nothing to draw and nothing to degrade to. Stated rather than
+            // left blank: an empty row reads as an author who posted
+            // nothing, which blames the wrong party (C-6).
             stack.Children.Add(new SelectableTextBlock
             {
-                Text = row.Text,
-                FontSize = 13,
+                Text = row.BodyNote.Length > 0 ? row.BodyNote : "this entry has no renderable body",
+                FontSize = 12,
+                Opacity = 0.7,
+                Foreground = Brushes.Goldenrod,
                 TextWrapping = TextWrapping.Wrap,
             });
+        }
+        else
+        {
+            // The body, at whatever rung the model reached. Markdown goes
+            // through the SAME renderer a site page uses — SITE §3 and FEED
+            // §2.3 already share EMBED as the vocabulary, so this needed no
+            // spec change and simply had no code.
+            //
+            // A `text/plain` body MUST NOT come through here: the parser
+            // would eat the author's asterisks and underscores, which is a
+            // silent edit to somebody else's words.
+            if (row.IsMarkdown)
+            {
+                var body = new SelectableTextBlock { FontSize = 13, TextWrapping = TextWrapping.Wrap };
+                foreach (var inline in MarkdownRenderer.BuildInlines(row.Text))
+                {
+                    body.Inlines?.Add(inline);
+                }
+                stack.Children.Add(body);
+            }
+            else
+            {
+                stack.Children.Add(new SelectableTextBlock
+                {
+                    Text = row.Text,
+                    FontSize = 13,
+                    TextWrapping = TextWrapping.Wrap,
+                });
+            }
+
+            // The fallback rung SAYS SO. Without this line the two rungs are
+            // indistinguishable on screen and a short alt text reads as a
+            // short post — which is how rendering every body as its fallback
+            // went unnoticed in this tree for as long as it did.
+            if (row.BodyRung == "fallback" && row.BodyNote.Length > 0)
+            {
+                stack.Children.Add(new SelectableTextBlock
+                {
+                    Text = row.BodyNote,
+                    FontSize = 11,
+                    Opacity = 0.7,
+                    Foreground = Brushes.Goldenrod,
+                    TextWrapping = TextWrapping.Wrap,
+                });
+            }
         }
         if (row.Problem.Length > 0)
         {
@@ -1102,6 +1152,9 @@ public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
             var label = dto.Label ?? "";
             Who = label.Length > 0 ? label : Short(dto.Subject ?? "");
             Text = dto.Text ?? "";
+            BodyRung = dto.BodyRung ?? "";
+            BodyNote = dto.BodyNote ?? "";
+            IsMarkdown = dto.IsMarkdown;
             Attributed = dto.Attributed;
             Listed = dto.Listed;
             Rejected = dto.Rejected;
@@ -1113,6 +1166,17 @@ public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
 
         public string Who { get; }
         public string Text { get; }
+
+        // APP-CONVENTION-EMBED §6's ladder. `rendered` is the post;
+        // `fallback` is the author's DESCRIPTION of a post that is not on
+        // screen; `unrenderable` has neither. They are the same string type
+        // and drawing them identically is the defect arch named in
+        // ROUTING-2026-09-17-a §4 — a conformant reader showing an image
+        // post as its alt text.
+        public string BodyRung { get; }
+        public string BodyNote { get; }
+        public bool IsMarkdown { get; }
+
         public bool Attributed { get; }
         public bool Listed { get; }
         public bool Rejected { get; }
@@ -1199,6 +1263,9 @@ public sealed class FeedPanel : UserControl, IDisposable, IPanelPreferredHeight
         [JsonPropertyName("text")] public string? Text { get; set; }
         [JsonPropertyName("mediaType")] public string? MediaType { get; set; }
         [JsonPropertyName("isReply")] public bool IsReply { get; set; }
+        [JsonPropertyName("bodyRung")] public string? BodyRung { get; set; }
+        [JsonPropertyName("bodyNote")] public string? BodyNote { get; set; }
+        [JsonPropertyName("isMarkdown")] public bool IsMarkdown { get; set; }
         [JsonPropertyName("listed")] public bool Listed { get; set; }
         [JsonPropertyName("attributed")] public bool Attributed { get; set; }
         [JsonPropertyName("attribution")] public string? Attribution { get; set; }

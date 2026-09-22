@@ -630,8 +630,23 @@ func (c *Consumer) leafAt(ctx context.Context, treePath string) (entity.Entity, 
 // publisher binds" on this type, because that door would hand back bytes
 // no signature and no root vouched for, wearing the same UI as bytes that
 // came out of the walk.
-func (c *Consumer) SignatureOver(ctx context.Context, what string, signed entity.Entity) (types.SignatureData, string, error) {
-	_, sig, locator, err := c.SignatureEntityOver(ctx, what, signed)
+// **`signer` is WHOSE signature this is, and it is not the peer being read
+// from.** §2.2 roots the invariant pointer at the signer, so on a direct
+// read the two coincide and on a republication road they do not: a mirror
+// carries the author's evidence under the author's namespace, in the
+// republisher's tree. Deriving it under `c.src.PeerID()` therefore asked
+// the right peer about the wrong path and reported *"nothing bound here"*
+// — measured as **0 of 3 attributable** through a mirror against a control
+// of 3 of 3 read directly, with the republisher holding every signature at
+// the correct key the whole time.
+//
+// It is a required parameter rather than a defaulting one on purpose. The
+// caller always knows the signer — for a feed entry it is the `author`
+// field `FEED-R1` has just been checked against — and a default of *"the
+// peer we are reading from"* is exactly the wrong answer in the only case
+// where the distinction exists.
+func (c *Consumer) SignatureOver(ctx context.Context, what, signer string, signed entity.Entity) (types.SignatureData, string, error) {
+	_, sig, locator, err := c.SignatureEntityOver(ctx, what, signer, signed)
 	return sig, locator, err
 }
 
@@ -653,7 +668,7 @@ func (c *Consumer) SignatureOver(ctx context.Context, what string, signed entity
 // checked, and the failure is invisible downstream: the next reader
 // verifies against the author's key and simply reports the entry as
 // unattributed, which reads as the *author's* omission.
-func (c *Consumer) SignatureEntityOver(ctx context.Context, what string, signed entity.Entity) (entity.Entity, types.SignatureData, string, error) {
+func (c *Consumer) SignatureEntityOver(ctx context.Context, what, signer string, signed entity.Entity) (entity.Entity, types.SignatureData, string, error) {
 	if signed.ContentHash.IsZero() {
 		// Everything this consumer returns carries a recomputed hash, so a
 		// zero one means the caller built the entity rather than fetching
@@ -662,11 +677,26 @@ func (c *Consumer) SignatureEntityOver(ctx context.Context, what string, signed 
 		return entity.Entity{}, types.SignatureData{}, "", fmt.Errorf(
 			"fetch: cannot verify a signature over an entity with no recomputed content hash")
 	}
-	pub, keyType, err := publishedroot.DeriveKey(c.src.PeerID())
+	if signer == "" {
+		return entity.Entity{}, types.SignatureData{}, "", fmt.Errorf(
+			"fetch: cannot verify a %s signature without naming the signer — §2.2 roots the "+
+				"invariant pointer at /{signer_peer_id}/, and the peer serving these bytes is "+
+				"not necessarily the peer that signed them", what)
+	}
+	// The KEY is the signer's too, and it has to be: verifying the author's
+	// signature against the republisher's key fails closed, which is safe
+	// and reports the author as unattributed — the one outcome §2.2 exists
+	// to prevent and the one a reader cannot tell from a real forgery.
+	pub, keyType, err := publishedroot.DeriveKey(signer)
 	if err != nil {
 		return entity.Entity{}, types.SignatureData{}, "", err
 	}
-	sigEnt, locator, err := c.leafAt(ctx, publishedroot.SignatureRelPath(signed.ContentHash))
+	// Absolute and signer-rooted, always — including when the signer IS the
+	// peer being read from. One spelling means [Source.Leaf] has one
+	// behaviour to get right here, and the direct read is then the special
+	// case of the general one rather than a second path that happens to
+	// agree today.
+	sigEnt, locator, err := c.leafAt(ctx, "/"+signer+"/"+publishedroot.SignatureRelPath(signed.ContentHash))
 	if err != nil {
 		return entity.Entity{}, types.SignatureData{}, locator,
 			fmt.Errorf("resolving the §5.2 signature pointer at %s: %w", locator, err)

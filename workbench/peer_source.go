@@ -3,6 +3,7 @@ package workbench
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"entity-workbench-go/entitysdk"
 	"entity-workbench-go/fetch"
@@ -124,7 +125,15 @@ func (s *PeerSource) Describe() fetch.Description {
 // Locator is the address form this source reports for a tree path — the
 // dispatched analogue of a URL, so the chain an operator reads names
 // where each step looked whichever mode answered.
+//
+// An absolute path is reported as *the serving peer, asked about that
+// path*, because that is the operation: collapsing it to one peer-id would
+// make the two legs of a republication read identically in a chain whose
+// entire job is to say which party answered.
 func (s *PeerSource) Locator(treePath string) string {
+	if strings.HasPrefix(treePath, "/") {
+		return "entity://" + s.peerID + "/system/tree?resource=" + treePath
+	}
 	return "entity://" + s.peerID + "/" + treePath
 }
 
@@ -167,9 +176,32 @@ func (s *PeerSource) Root(ctx context.Context) (entity.Entity, string, error) {
 // discipline `publishedroot.Check` applies one layer up. A publisher
 // that lies about either is caught above the seam anyway, because the
 // value is about to be compared with what the *signed* root committed.
+// **An ALREADY-ABSOLUTE path is passed through unchanged**, and that is a
+// MUST rather than a convenience. `ENTITY-CORE-PROTOCOL` §1.4 forbids
+// re-qualifying one and names the resulting `/{local}//{other}/…` as the
+// cohort's most-recurring cross-impl bug; here the prepend was silent
+// rather than corrupt, because [entitysdk.AppPeer.Get] routes by peer
+// segment, so asking B about a path under A dispatched to **A** — a peer
+// the reader of a mirror has never spoken to. See
+// [entitysdk.AppPeer.GetObtainedEntity] for the operation and for why the
+// handler URI and the resource are two fields and not one.
+//
+// A peer-relative path still belongs to this source's publisher, so it is
+// still qualified with their peer-id. The two forms are not a mode: one
+// names a path in the publisher's own namespace and the other names a path
+// in somebody else's that the publisher may hold a copy of.
 func (s *PeerSource) Leaf(ctx context.Context, treePath string) (hash.Hash, string, error) {
 	locator := s.Locator(treePath)
-	ent, found, err := s.ap.Get("/" + s.peerID + "/" + treePath)
+	var (
+		ent   entity.Entity
+		found bool
+		err   error
+	)
+	if strings.HasPrefix(treePath, "/") {
+		ent, found, err = s.ap.GetObtainedEntity(s.peerID, treePath)
+	} else {
+		ent, found, err = s.ap.Get("/" + s.peerID + "/" + treePath)
+	}
 	if err != nil {
 		return hash.Hash{}, locator, fmt.Errorf("tree:get %s: %w", locator, err)
 	}

@@ -71,7 +71,6 @@ func cmdConnect(sh *Shell, args []string) (Result, error) {
 	// it just to satisfy its once-per-process rule — which showed up as
 	// `status` reporting an action, and never "settled", immediately
 	// after the operator had connected by hand.
-	sh.markDialed(peerID)
 
 	short := peerID
 	if len(short) > 12 {

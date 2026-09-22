@@ -79,8 +79,32 @@ import (
 // explanation, and whoever published first is the baseline.
 const DefaultFeedPageSize = 32
 
+// The embed media types this cohort's feed bodies carry today.
+//
+// **They live here, beside the author, because a media type is a producer
+// and a consumer agreeing** — it is the `app/embed/{media_type}` dispatch key
+// (EMBED §3), so the writer's spelling and the reader's switch are one
+// contract. A reader holding its own copy is how one seat renders a body and
+// the other renders its alt text with neither able to see it
+// (`ROUTING-2026-09-17-a` §4).
+const (
+	// FeedMediaPlain is prose the author did not mean as markup. A reader
+	// MUST NOT run a markdown parser over it.
+	FeedMediaPlain = "text/plain"
+
+	// FeedMediaMarkdown is a body drawn by the same code that draws a site
+	// page — `SITE` §3.1/§3.2 and `FEED` §2.3 already share EMBED as the
+	// vocabulary, so this needs no spec change and never did.
+	FeedMediaMarkdown = "text/markdown"
+)
+
 // DefaultPostMediaType is the embed media type a bare text post carries.
-const DefaultPostMediaType = "text/plain"
+//
+// It stays `text/plain` deliberately. Defaulting a bare `post` to markdown
+// would silently reinterpret every apostrophe-and-asterisk post an operator
+// has already written, and the one thing a default may not do is change what
+// existing bytes mean.
+const DefaultPostMediaType = FeedMediaPlain
 
 // FeedAuthor writes this peer's own feed.
 //

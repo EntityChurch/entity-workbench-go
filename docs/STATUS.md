@@ -1,8 +1,27 @@
 # entity-workbench-go — status
 
-_Updated: 2026-09-16 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
+_Updated: 2026-09-17 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
 > **STARTING WORK? Read
+> `docs/status/HANDOFF-2026-09-17-c-the-substrate-closed-thirteen-rows-and-the-test-that-should-have-caught-the-rest-read-the-wrong-peer.md`**
+> — the newest: the Go kernel under us closed 13 tracker rows in one session, our sweep went 20
+> failures to 4, the three that were our own tripwires are replaced with the property, and the test
+> that should have caught the rest had been green since the day it was written while measuring the
+> wrong peer. §4 is why nothing was routed — a decision, not an omission — and §5 is the ordered
+> next list, whose first line is the joint feed run. **Nothing is blocked on us for a cut and there
+> is nothing to send anyone.** Then
+> `docs/status/HANDOFF-2026-09-17-b-both-walls-are-down-and-the-third-hop-closes-3-of-3.md`
+> — republication now carries authorship end to end (the leg that read 0 of 3 for two
+> days reads 3 of 3), the one move worth carrying — how to retire a gate that was built to fail —
+> the measured tree state from a single sweep, and §6's ordered next list, whose first line is
+> still that **nothing is blocked on us for a cut**. Then
+> `docs/status/HANDOFF-2026-09-17-a-the-third-hop-is-half-fixed-and-the-grant-that-would-close-it-deletes-itself.md`
+> — what shipped against the last ruling packet before release mode, and the falsifier that found
+> the second cause; note its §1 and §5 are **superseded** by -b (the cause is fixed, and the sweep
+> it reports was run in two parts). Then
+> `docs/status/HANDOFF-2026-09-16-b-the-gatherer-is-built-and-the-evidence-does-not-survive-the-hop.md`
+> — the gathering loop, and note its §2 cause is **superseded**: the consumer half named there is
+> fixed, and what remains is a second wall in another tree. Then
 > `docs/status/HANDOFF-2026-09-16-a-the-naming-rule-was-gated-somewhere-else-and-the-feeds-produce-side-reached-no-pixel.md`**
 > — the newest: what shipped, the four things not to re-litigate about the feed publish control,
 > the second instance of the bound-versus-content-set confusion, and §6's ordered next list (the
@@ -36,10 +55,14 @@ _Updated: 2026-09-16 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > into ours / waiting-on-architecture / waiting-on-core-go, in the order to do them, with the
 > one piece of work that is deliberately sequenced behind somebody else named as such.
 >
-> **Start here:** **§54 — a peer republishes another peer's feed now, and the evidence does not
-> survive the hop** (the gathering loop, and the measurement showing a republished entry arrives
-> unattributable to a third party — with the cause narrowed to where a signature's address is
-> looked up). Then **§53 — a rule described as "gated" is gated over somebody's corpus, and ours
+> **Start here:** **§56 — a republished entry carries its author's signature all the way to a
+> stranger** (both causes are fixed, the leg closes 3 of 3, and the part to keep is what you do
+> with a gate that existed to pin a blocked state once the block lifts). Then **§55 — a signature
+> is looked up under the peer that SIGNED it, and a feed body is drawn at the rung it deserves** (the address fix, a generalisation of ours that was wrong and
+> is retracted, the remaining cause that is not in this repository, and the embed ladder — where
+> the old behaviour was *conformant*, which is why no test could see it). Then **§54 — a peer
+> republishes another peer's feed now, and the evidence does not survive the hop** (the gathering
+> loop; **its cause paragraph is superseded by §55**). Then **§53 — a rule described as "gated" is gated over somebody's corpus, and ours
 > was not it** (the check ran where the rule is written down, not where it is obeyed; plus the
 > feed's produce side, which reached a command line and no pixel — and the §52 distinction biting
 > a second time, one function over, in a warning that fired on the operator who had done the right
@@ -168,6 +191,216 @@ _Updated: 2026-09-16 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > project's own state lives in `docs/status/`, which publishes nothing: dated snapshots,
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
+
+## §57 NEW (2026-09-17) — the substrate fixed thirteen defects under us, and the test that should have caught the last one was reading the wrong peer
+
+The Go kernel this application layer sits on landed a large batch of fixes for defects found here.
+Re-measured in this tree rather than taken from the report: **the full sweep went from 20 failures
+across two suites to 6 across three** — the file-replication family alone went **16 → 1**. File
+mounts now rehydrate after a restart; a watcher's liveness is a fact in the tree instead of a Go-API
+affordance; a connection can say which side dialled it; and the reverse-write path's echo guard is
+content identity rather than a five-second clock.
+
+**Three of the remaining six were our own tripwires going off correctly.** After replacing them and
+fixing the vacuous test below, the tree stands at **9 of 11 suites green, 4 failures in 2 suites**,
+none of them ours to fix. They had asserted that
+clock defect *on purpose*, each with instructions in its own failure message for the day it stopped
+reproducing. They are now **replaced, not deleted** — each asserts the property the fix delivers,
+against the same rig. That is the step most likely to be skipped in both directions: a tripwire that
+keeps passing after its blocker lifts is the one failure it must not have, and one deleted on the
+day it fires leaves the fix with no gate at all, in the only tree whose product depends on it. The
+timing arm is deliberately separate from the arrival arm, because a build that reintroduced
+suppression *with a retry queue* would deliver the second write five seconds late and an
+arrival-only test that waits ten would pass.
+
+### The finding, and it is about a test rather than about code
+
+Two failures remained with one shape: a cross-peer **continuation** step refused with
+`403 capability_denied`. Chasing them turned up a third instance that had been **green since the day
+it was written**.
+
+`TestTreeFollow_DeepTreeConvergence` asks whether a follower materialises a 50-leaf subtree. It read
+the follower's mirror with `peer.List("/{other-peer}/…")` — and that call **routes by peer-id**, so
+it dispatched to the *other* peer and counted *their* tree as the mirror. It reported 50/50 within
+0.2 s of the source peer's own commit, every run.
+
+**Measured, and this is what makes it more than a style point: it passes identically with the
+cross-peer credential scoped to an operation that does not exist.** The assertion the test is named
+after could not fail. Pointed at the follower's own index it reports **0/50** and the same refusal.
+
+⭐ **The anti-pattern catalogue has carried this since August, with the exact sentence — *"a test
+that gets this wrong is green whether or not the mirror was ever written"* — and this file was the
+entry's own worst instance.** A rule written down is not a rule applied. The tell is cheap and
+worth internalising: **an assertion about peer B's state that names peer A's namespace is a remote
+read unless you went out of your way to make it local.**
+
+So the blocker's measured size is three tests and one cause, where the tree said two — and the one
+it hid was the one whose entire subject is *does cross-peer continuation work at all*.
+
+⚠ **A fourth test is red and is deliberately NOT attributed to that cause.** It is a mirror chain
+that delivers nothing, and hand-running it produces no error code and no failure marker of any kind
+— consistent with the same blocker, not evidence of it. This tree has already been caught once
+inferring a shared cause from a log that could not name one, and the correction cost a day; the
+discipline applies just as much when the inference would be convenient.
+
+### What is and is not established about the cause
+
+**Established:** the refusal is not the presented credential — widening it to every handler and
+every operation changes nothing. The gate is the *executing handler's* grant, and the handler
+executing a continuation advance declares no scope of its own, so it takes a default that authorises
+the local peer only.
+
+**Not established, and it decides which of two fixes is right:** whether the step's own dispatch
+credential fails to reach that check, or reaches it and is rejected. Recorded as unknown rather than
+inferred.
+
+⚠ **It is deliberately not routed.** Nothing shipped depends on it — folder sharing, the two-peer
+sync gate and the publish/consume corridor are all green — and the tier that owns the fix is at a
+release cut. Which is also the correction this session owes itself: a batch of long-filed asks went
+out in one tranche immediately before that cut, and the cost landed on somebody else. **A finding
+worth filing is worth delivering the week it is filed**; the batching was the defect, not the
+findings.
+
+Also cleared: the one file with formatting drift, as its own commit. Nothing gates formatting here,
+so it accumulates silently.
+
+## §56 NEW (2026-09-17) — a republished entry carries its author's signature all the way to a stranger
+
+Republication works end to end now. A peer that has never spoken to an author can read that
+author's entries out of a **republisher's** tree and verify every one of them against the author's
+own detached signature. That was the whole point of the gathering work, and until today it was the
+one leg that did not answer.
+
+### It needed two fixes, in two layers, and each was invisible from the other side
+
+The reader was asking at the wrong address — it looked for a signature under *the peer it was
+reading from*, which is the author on a direct read and the republisher on a mirror. That was fixed
+here yesterday (§55).
+
+Fixing it did not change the count. The leg still reported **0 of 3**, and it was **not the same
+0**: the detail line moved from *"nothing bound at this path"* to *"403, capability denied"* at
+exactly the right path. The right question, refused — which is a different defect wearing an
+identical summary line.
+
+The second cause was underneath us, in the substrate: a peer advertises what it serves, and that
+advertisement covered only the peer's **own** namespace. A republisher's grant has to name the
+*author's* namespace, so the grant was not narrowed to fit — it was **dropped**. Adding a
+permission row deleted the row it was added to, with the policy written and accepted and nothing
+logged. That has been fixed in the substrate; we confirmed it against their tree rather than
+against their report, and the leg now closes **3 of 3**, with the control arm — the same entries
+read straight from the author — also 3 of 3.
+
+The transferable half is the question, not the incident: **ask of any filter that admits by
+coverage whether it NARROWS or DROPS.** The two are indistinguishable at the call site, and only
+one of them is safe to widen into.
+
+### Replacing a gate that was built to fail
+
+While the leg was blocked, it was left as a **measurement** rather than an assertion, with a
+separate tripwire pinning the blocked state. That was deliberate: an end-to-end assertion would
+have reported our own fixed half as broken for as long as the other half was open, and the next
+session would have re-fixed what was already fixed.
+
+The tripwire did its job — it went red the moment the blocker lifted, and said so in its failure
+message. **The step most likely to be skipped is what happens next.** A gate that only ever says
+*"still blocked"* cannot then protect the fix, so it was neither deleted nor kept: it was replaced
+by one that pins the property, with an anti-vacuity arm that strips out exactly the permission row
+and requires the refusal back. Without that arm the passing test would be satisfied by a harness
+with no permissions in it at all.
+
+The leg-4 assertion is also ordered **after** its control arm, so a broken harness can never
+present as a regression in the thing under test.
+
+### Two pieces of housekeeping, both the same shape
+
+The bridge test suite was added to the "run everything and report" sweep and **not** to the
+fail-fast one that `make test` runs — so the gate it carries was absent from the check that gates a
+change. It is in both lists now. The same directory also drops a 27 MB stray binary when built
+without an output flag, in a tree whose own guidance warns against blanket staging; it is ignored
+and swept like the other dir-named strays.
+
+Both are the same failure: **a thing that exists in one list and not its twin.** Neither was
+found by a test, because neither is the kind of thing a test looks at.
+
+## §55 NEW (2026-09-17) — a signature is looked up under the peer that SIGNED it, and a feed body is drawn at the rung it deserves
+
+Two things landed, and the first one is a correction to a claim this project made.
+
+### The signature address, and a generalisation we got wrong
+
+A republished entry travels with its author's detached signature, and a reader has to find it. Ours
+looked for it under **the peer it was reading from**, which is the author on a direct read and the
+republisher on a mirror — so an entry read through a mirror came back unattributable, with the
+signature sitting at the correct address the whole time.
+
+That much was already measured here. What was *also* filed, and was wrong, is the generalisation:
+that a peer-qualified path is ambiguous — meaning both *"ask that peer"* and *"my own copy of that
+peer's subtree"* — with nothing able to say which. It is not ambiguous. A request names the peer it
+is **asked of** and the resource it is **about** in two separate fields, and an arriving request is
+never re-routed, so the two readings are two different operations rather than one overloaded path.
+Reading the protocol document settled it; we had read one layer up and concluded the question was
+open.
+
+Fixed: the signature's address is rooted at the **signer**, named explicitly by the caller rather
+than defaulted (the default any reader reaches for is right on a direct read and wrong on the only
+case where the distinction exists), and an already-absolute path is passed through unchanged by
+both byte sources instead of being re-qualified. The HTTP half of that had been failing silently —
+a path lost its leading slash and was appended to a base already naming a different peer, producing
+a perfectly well-formed URL for an object nobody publishes, whose 404 reads as *the publisher is
+withholding*.
+
+> ✅ **SUPERSEDED BY §56 the following day — the remaining cause below was fixed in the substrate
+> and a mirrored entry IS attributable to a third party now, 3 of 3.** The paragraph is kept as
+> written because the intermediate state is the instructive part: the count did not move when we
+> fixed our half, and the two zeros meant different things.
+
+⛔ **A mirrored entry is still not attributable to a third party, and the remaining cause is not in
+this repository.** A republisher cannot express — in the grant it hands a reader — that it serves
+its own copy of the author's subtree. Worse, attempting it is destructive: the grant entry naming a
+foreign namespace is dropped whole rather than narrowed, so *widening* a grant makes it strictly
+narrower and the reader loses access it already had, with no error anywhere. Measured with four
+arms, reported upstream, and deliberately not worked around here — a local shim would hide a
+question the whole cohort shares.
+
+⭐ **The two causes are gated separately, and that is the part worth copying.** A single end-to-end
+gate would report the half we fixed as broken for as long as somebody else's half is open, and the
+next session would re-fix what is already fixed. So the consumer's behaviour is gated with the
+transport removed by construction, and the blocked end-to-end path stays a **measurement** with a
+tripwire beside it that goes red — and says so — when the blocker lifts. *A gate pinning a blocked
+state must not keep passing after the state changes.*
+
+### A feed body is an embed, and we were rendering every one of them as its alt text
+
+An entry's body is an embed node, and the embed vocabulary defines a three-step degradation ladder
+ending in the author's mandatory fallback text. We had implemented the last step and nothing above
+it: a markdown post showed its source, and an image post showed its alt text as though that were
+the post.
+
+⭐ **Nothing caught it because the old behaviour was conformant.** Showing a fallback is exactly
+what the ladder says to do; the defect was doing it when a better rung was available. The output is
+always well-formed, nothing errors, and every test phrased as *"is this valid"* passes. The gates
+are now phrased as **which rung**, which is the only question that separates the two.
+
+So: markdown renders through the same code that renders a site page, plain text renders and is
+deliberately **not** handed to a markdown parser, and any lower rung is named on the row — because
+a rendered body and a fallback are the same string type, and a short alt text reads as a short
+post. Three states rather than two: the third is an entry with nothing to draw and no fallback
+either, which is a producer error and must say so instead of rendering as an author who posted
+nothing. `post -markdown` is the authoring half, so this project does not render what it cannot
+produce.
+
+⚠ **One rule in there is a security rule and the tidy implementation breaks it.** The fallback is
+bounded: an embed directive inside it is shown as visible text, never expanded. The markdown rung
+lowers those directives, and sharing that line between the two looks like cleanup — it would let
+the author of an unrenderable entry make every reader that **degraded** fetch an asset of their
+choosing. The path taken by readers that can do less must not acquire the wider reach.
+
+### Also
+
+The cgo bridge had no test target, so a gate written beside it would have run for whoever typed the
+command in that directory and for nobody else. It has one now, and the sweep covers eleven suites.
+The first thing it gates is the field names crossing into the desktop frontend, which is where a
+dropped field renders as a confident zero value.
 
 ## §54 NEW (2026-09-16) — a peer republishes another peer's feed now, and the evidence does not survive the hop
 

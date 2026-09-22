@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"entity-workbench-go/workbench"
 )
 
 // cmd_follow.go — the operator surface over somebody else's feed.
@@ -239,12 +241,27 @@ func renderTimeline(out TimelineOutcome) []string {
 		if !e.Entry.Attributed {
 			mark += " ⚠ UNATTRIBUTED"
 		}
+		if e.Entry.BodyRung == workbench.FeedBodyFallback {
+			// EMBED §6 step 2. Marked at the row rather than left to the
+			// note below, because the text under it is the author's
+			// DESCRIPTION of a post and is otherwise indistinguishable from
+			// the post — which is the whole reason the rung is carried.
+			mark += " (fallback text)"
+		}
 		lines = append(lines, fmt.Sprintf("  %s  %s%s", stamp, who, mark))
 		if e.Entry.Problem != "" {
 			lines = append(lines, "            "+wrapDetail(e.Entry.Problem))
 			continue
 		}
+		if e.Entry.BodyRung == workbench.FeedBodyUnrenderable {
+			lines = append(lines, "            "+wrapDetail(e.Entry.BodyNote))
+			lines = append(lines, "            "+shortHex(e.Entry.Hash.Bytes()))
+			continue
+		}
 		lines = append(lines, "            "+firstLine(e.Entry.Text))
+		if e.Entry.BodyNote != "" {
+			lines = append(lines, "            "+wrapDetail(e.Entry.BodyNote))
+		}
 		lines = append(lines, "            "+shortHex(e.Entry.Hash.Bytes()))
 	}
 

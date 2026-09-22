@@ -119,6 +119,23 @@ type timelineEntryDTO struct {
 	MediaType string `json:"mediaType"`
 	IsReply   bool   `json:"isReply"`
 
+	// BodyRung is which step of `APP-CONVENTION-EMBED` §6's ladder produced
+	// Text, and IsMarkdown is whether a markdown parser may touch it.
+	//
+	// **Both cross because a renderer cannot recover either from the
+	// string.** `rendered` is the post; `fallback` is the author's
+	// DESCRIPTION of a post that is not on screen; they are the same Go
+	// type and the same JSON string, and showing them identically is
+	// exactly the defect §4 of arch's `ROUTING-2026-09-17-a` named — a
+	// conformant reader displaying an image post as its alt text.
+	//
+	// AP49: an undeclared field is dropped here in silence, and the failure
+	// mode for THESE two is the confident direction — every body renders as
+	// plain text, at a rung nobody can see.
+	BodyRung   string `json:"bodyRung"`
+	BodyNote   string `json:"bodyNote"`
+	IsMarkdown bool   `json:"isMarkdown"`
+
 	// Listed is whether §4.2's index named this entry, or §4.3 rule 6's
 	// enumeration found it. Carried to a pixel because AP106: a
 	// conformance fallback built to survive a hostile publisher will
@@ -571,6 +588,9 @@ func timelineToDTO(out shellcmd.TimelineOutcome) timelineDTO {
 			Text:        e.Entry.Text,
 			MediaType:   e.Entry.MediaType,
 			IsReply:     e.Entry.IsReply,
+			BodyRung:    string(e.Entry.BodyRung),
+			BodyNote:    e.Entry.BodyNote,
+			IsMarkdown:  e.Entry.IsMarkdown,
 			Listed:      e.Entry.Listed,
 			Attributed:  e.Entry.Attributed,
 			Attribution: e.Entry.Attribution,

@@ -185,11 +185,13 @@ type DeviceStatus struct {
 	// rendering Connected without this one is reporting a fact it does
 	// not have.
 	//
-	// Sourced from dialedThisProcess, which is the honest local signal:
-	// core-go's Connections() concatenates inbound and outbound without
-	// tagging them, and IsConnected() conflates the pool with the §6.11
-	// reentry map, so neither can answer this. Routed upstream in
-	// reviews/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md.
+	// Sourced from the POOL, via core-go's Connection.IsOutbound() (their
+	// tracker row 13, adopted 2026-09-17). It used to be sourced from a set
+	// of peers we remembered dialling, because Connections() concatenated
+	// both directions without tagging them and IsConnected() conflates the
+	// pool with the §6.11 reentry map — a workaround that was wrong in one
+	// direction, since "we dialled them" stays true after the connection
+	// drops and this field then asserted a route that no longer existed.
 	OutboundRoute bool
 
 	// Paused mirrors the declaration.
@@ -785,55 +787,85 @@ func writePolicyIfChanged(st *workbench.Store, peerID string, grants []types.Gra
 	return true, existed, nil
 }
 
-// dialedThisProcess records the peers this PROCESS has opened an
-// outbound connection to.
+// hasOutboundConnection reports whether the pool currently holds a
+// connection WE opened to this peer.
 //
-// # Why a process-scoped set, and why it is the fix for a real defect
+// # Why this replaced a set of peers we remember having dialled
 //
-// Measured 2026-09-03 with two real peers: share a folder, accept it,
-// watch files flow — then restart the SENDING peer. Its writes stop
-// reaching the receiver, and `status` reports **"settled — everything
-// declared is established."** A manual `connect` on the sender restores
-// delivery instantly.
+// The defect it was written for is real and is worth keeping in view.
+// Measured 2026-09-03 with two real peers: share a folder, accept it, watch
+// files flow — then restart the SENDING peer. Its writes stop reaching the
+// receiver, and `status` reports **"settled — everything declared is
+// established."** A manual `connect` on the sender restores delivery
+// instantly. The cause is that **a connection has a direction for authority
+// and none for display**: a dial-by-address authorizes the DIALER only
+// (AP63), so delivery from us to them runs over the connection WE opened,
+// and after a restart we have opened none — while the receiver's own
+// connection sits in our pool making `ConnectedPeers()` say "connected".
 //
-// The cause is that **a connection has a direction for authority and none
-// for display.** A dial-by-address authorizes the DIALER only (AP63), so
-// delivery from us to them runs over the connection WE opened. After a
-// restart we have opened none — but the receiver's own connection is
-// still in our pool, so `ConnectedPeers()` says "connected", maintain-peer
-// finds a live session and is satisfied, and every surface agrees the
-// relationship is fine while nothing can be dispatched over it.
+// The workaround was a process-scoped set of peers we had dialled, because
+// core-go's `Connections()` concatenated both directions without tagging
+// them and `IsConnected()` conflated the pool with the §6.11 reentry map.
+// We routed that (`reviews/CONNECTION-DIRECTION-AND-BILATERAL-REACH-2026-09-09.md`)
+// and **core-go answered it**: `Connection.IsOutbound()` / `Direction()`,
+// recorded once in `PerformConnect`, dialer-only (their tracker row 13).
 //
-// So our outbound connection is **derived runtime state that must be
-// re-established at open**, exactly like the subscription engine's path
-// index (AP62) and like maintain-peer's own session map, which
-// `AGENTS.md` already records as re-issued per launch. This set is what
-// makes "once per process" expressible: empty at startup, so the first
-// pass dials every declared peer we have an address for, and later passes
-// skip them — because reconnecting on every pass would make the loop an
-// outage generator, which is the same reason the policy write is
-// conditional.
-//
-// Not persisted, deliberately. Persisting it would reinstate the bug: the
-// whole point is that the fact expires when the process does.
-func (ws *ShellWorkspace) markDialed(peerID string) {
-	if ws.dialedThisProcess == nil {
-		ws.dialedThisProcess = map[string]bool{}
+// ⭐ **Adopting it is not tidying — the workaround was wrong in one
+// direction.** *"We dialled this peer"* and *"we have a connection to this
+// peer"* are different claims, and they diverge exactly when the outbound
+// connection drops mid-session: the remembered fact stays true forever, so
+// `OutboundRoute` went on reporting a route that no longer existed. That is
+// the same false-reassurance this whole field exists to prevent, one layer
+// in — a surface stating a fact it does not have. The pool answers the
+// question that was always being asked.
+func (ws *ShellWorkspace) hasOutboundConnection(peerID string) bool {
+	if peerID == "" || ws.Local.Peer == nil {
+		return false
 	}
-	ws.dialedThisProcess[peerID] = true
+	return ws.Local.Peer.HasOutboundConnection(peerID)
 }
 
-func (ws *ShellWorkspace) hasDialedThisProcess(peerID string) bool {
-	return ws.dialedThisProcess[peerID]
+// markDialFailed records that a dial to this peer has already failed in
+// this process, so a pass does not re-walk the whole address ladder at ten
+// seconds an address for a peer that is simply switched off.
+//
+// ⚠ It records FAILURE only, and that is the half that changed when
+// `IsOutbound()` was adopted. The old set recorded success too, which meant
+// a dropped outbound connection was never re-dialled — the loop knew the
+// route was gone (once the display was honest) and declined to act on it.
+// Now the pool answers *do we have a route*, this answers *is it worth
+// trying again right now*, and a connection that drops is re-established by
+// the next pass instead of waiting for an operator to type `connect`.
+//
+// Not persisted, deliberately: the whole point is that it expires with the
+// process.
+func (ws *ShellWorkspace) markDialFailed(peerID string) {
+	if ws.dialFailedThisProcess == nil {
+		ws.dialFailedThisProcess = map[string]bool{}
+	}
+	ws.dialFailedThisProcess[peerID] = true
 }
 
-// ensureOutboundRoute opens OUR connection to a peer, once per process.
+func (ws *ShellWorkspace) hasDialFailedThisProcess(peerID string) bool {
+	return ws.dialFailedThisProcess[peerID]
+}
+
+// ensureOutboundRoute opens OUR connection to a peer when the pool does not
+// already hold one.
 //
 // Reports whether it dialled and what to say about it. A failure is not
 // an error to unwind anything for: the declaration is right, the peer is
-// simply not there, and the next pass tries again.
+// simply not there, and a later process tries again.
 func (ws *ShellWorkspace) ensureOutboundRoute(ctx context.Context, d workbench.DeviceData, st *DeviceStatus, out *ReconcileOutcome) {
-	if ws.hasDialedThisProcess(d.PeerID) {
+	// Ask the pool, not our memory. Reconnecting on every pass would make
+	// the loop an outage generator — which is what this guard is for — but
+	// the condition that justifies skipping is *a live outbound connection
+	// exists*, and until core-go's row 13 there was no way to ask.
+	if ws.hasOutboundConnection(d.PeerID) {
+		st.OutboundRoute = true
+		return
+	}
+	if ws.hasDialFailedThisProcess(d.PeerID) {
 		return
 	}
 	addrs := ws.dialLadderFor(d)
@@ -865,7 +897,6 @@ func (ws *ShellWorkspace) ensureOutboundRoute(ctx context.Context, d workbench.D
 			tried = append(tried, fmt.Sprintf("%s (%v)", addr, err))
 			continue
 		}
-		ws.markDialed(d.PeerID)
 		// Write the WORKING address back, so the next process starts from
 		// a fact rather than from the guess that just failed. This is the
 		// half that makes the correction durable: without it the ladder
@@ -896,6 +927,9 @@ func (ws *ShellWorkspace) ensureOutboundRoute(ctx context.Context, d workbench.D
 		return
 	}
 
+	// Every address failed. Record it so the next pass in this process does
+	// not spend ten seconds an address re-establishing the same answer.
+	ws.markDialFailed(d.PeerID)
 	st.Note = "could not dial " + strings.Join(tried, "; ")
 }
 

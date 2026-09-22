@@ -74,7 +74,7 @@ export GOTOOLCHAIN ?= go1.25.1
 # includes the same file and uses the caps on every podman build/run.
 include caps.mk
 
-.PHONY: loadtest crossimpl-go twopeer-sync threepeer-sync conflict-semantics gui-drive twopeer-gui consume-live workbench-test console-build console-run test test-each test-each-native test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native lint-perfreview fmt-native
+.PHONY: loadtest crossimpl-go twopeer-sync threepeer-sync conflict-semantics gui-drive twopeer-gui consume-live workbench-test console-build console-run test test-each test-each-native test-native test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch test-bridge perfreview build build-native shell shell-test shell-help shell-once shell-build publish-build publish-serve vcs-build fetch-build go clean clean-strays ensure-bindir image help lint fmt check lint-native lint-perfreview fmt-native
 
 # ============================================================
 # make + podman — bare-box entry points
@@ -151,8 +151,8 @@ help:
 	@echo "    make check       lint + test (the green gate)"
 	@echo
 	@echo "  Why test-each exists: 'make test' is fail-fast, so a count taken from a red"
-	@echo "  run covers ONE package and is a lower bound (AP15). test-each runs all ten"
-	@echo "  suites regardless and leaves per-suite logs in .test-logs/."
+	@echo "  run covers ONE package and is a lower bound (AP15). test-each runs every"
+	@echo "  suite regardless and leaves per-suite logs in .test-logs/."
 	@echo
 	@echo "  -native variants run on a host Go toolchain; ARGS=… / *-box per the"
 	@echo "  Makefile header. Platform: Linux is the only tested host (see README)."
@@ -524,7 +524,14 @@ ensure-bindir:
 # matches the perfreview target's -timeout=20m precedent.
 GOTEST_FLAGS := -race -count=1 -timeout=30m
 
-test-native: test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch
+# `test-bridge` is in this list as well as in TEST_SUITES below, and it was
+# missing here for a day. A suite in `test-each` but not in `test-native` runs
+# only for someone who asks for the state of the whole tree and never for
+# `make test` — which is the fail-fast sweep people actually type — so the gate
+# it carries is absent from the check that gates a change. That is AP21/D22
+# exactly, which is the shape `test-bridge`'s own header cites as its reason
+# for existing. **Both lists, or neither.**
+test-native: test-sdk test-shell test-shellboot test-shellcmd test-shellpanel test-workbench test-programs test-inspect test-publish test-fetch test-bridge
 	@echo "--- full sweep passed ---"
 
 # ============================================================
@@ -540,10 +547,10 @@ test-native: test-sdk test-shell test-shellboot test-shellcmd test-shellpanel te
 # routed the numbers to another repo.
 #
 # The workaround has been a for-loop in AGENTS.md that every contributor
-# had to know. This is that loop, as a target: it runs all ten
+# had to know. This is that loop, as a target: it runs every suite
 # regardless of failures, keeps per-suite logs, prints a table, and
 # exits non-zero if any suite failed.
-TEST_SUITES := sdk inspect shell shellboot shellcmd shellpanel workbench programs publish fetch
+TEST_SUITES := sdk inspect shell shellboot shellcmd shellpanel workbench programs publish fetch bridge
 TEST_LOG_DIR := .test-logs
 
 test-each: preflight
@@ -651,6 +658,23 @@ test-publish:
 
 test-fetch:
 	cd fetch && go test $(GOTEST_FLAGS) $(ARGS) ./...
+
+# test-bridge — the cgo bridge's OWN Go tests.
+#
+# It joined the sweep on 2026-09-17. Before that `avalonia/bridge` was a
+# go.work module with no suite target, so a gate written there would have
+# run for whoever typed `go test` in that directory and for nobody else —
+# the same shape as `publish`/`fetch` before 2026-08-19 (AP21/D22), where
+# two halves of one corridor drifted four ways apart with every suite green.
+#
+# What lives here is the field-NAME boundary: the panel reads JSON keys the
+# Go side emits, System.Text.Json drops an undeclared one in silence (AP49),
+# and the C# suite cannot reach a per-entry field without a populated
+# timeline it is not allowed to build (AP70, no network). Requires cgo — the
+# package is built `-buildmode=c-shared` — so it is not in LINT_MODULES'
+# plain-vet set.
+test-bridge:
+	cd avalonia/bridge && CGO_ENABLED=1 go test $(GOTEST_FLAGS) $(ARGS) ./...
 
 # crossimpl-go — the LIVE cross-impl federation consume leg (C-7 / §1b).
 #
@@ -854,6 +878,7 @@ clean-strays:
 	         entity-publish/entity-publish entity-vcs/entity-vcs entity-fetch/entity-fetch \
 	         entity-seed-site/entity-seed-site entity-serve-cors/entity-serve-cors \
 	         canvas/canvas canvas/entity-canvas \
+	         avalonia/bridge/bridge \
 	         entity-shell; do \
 		if [ -f "$$p" ]; then \
 			echo "removing stray binary: $$p"; \

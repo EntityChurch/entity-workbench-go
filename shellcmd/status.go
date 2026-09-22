@@ -191,7 +191,7 @@ func (ws *ShellWorkspace) observeDevice(d workbench.DeviceData) DeviceStatus {
 	}
 	// Direction, which the pool cannot express. See DeviceStatus.
 	// OutboundRoute for why a bare Connected is not an answer.
-	st.OutboundRoute = ws.hasDialedThisProcess(d.PeerID)
+	st.OutboundRoute = ws.hasOutboundConnection(d.PeerID)
 	// Outbound authority, exactly knowable: this is our row, which we
 	// wrote. "(nothing)" is a real answer and a different one from "we
 	// could not look" — a peer we know and grant nothing is a peer whose

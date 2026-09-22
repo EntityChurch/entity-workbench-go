@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"go.entitychurch.org/entity-core-go/core/hash"
+
+	"entity-workbench-go/entitysdk"
 )
 
 // cmd_feed.go — the operator surface over this peer's own feed.
@@ -25,10 +27,18 @@ import (
 // SDK types.
 
 const postUsage = `post <text>                 — write one entry into this peer's feed
+post -markdown <text>       — the body is markdown, and readers draw it as markdown
 post -reply <hash> <text>   — reply to an entry this peer holds
 
-The body is carried inline as an ` + "`app/embed/text/plain`" + ` payload and is
-bounded at 16384 bytes (APP-CONVENTION-EMBED §3). Every entry is signed
+The body is carried inline as an ` + "`app/embed/{media_type}`" + ` payload —
+` + "`text/plain`" + ` by default, ` + "`text/markdown`" + ` with -markdown — and is
+bounded at 16384 bytes (APP-CONVENTION-EMBED §3). The media type is the
+embed's dispatch key, so it decides how EVERY reader draws the body, not
+how this one stores it. Plain is the default on purpose: it is what an
+existing post already means, and a default may not reinterpret bytes that
+have already been written.
+
+Every entry is signed
 individually at authoring time: a detached ` + "`system/signature`" + ` is what
 attributes an entry once it leaves this tree, and nothing downstream can
 supply one afterwards.
@@ -62,16 +72,26 @@ func cmdPost(sh *Shell, args []string) (Result, error) {
 
 	var req FeedPostRequest
 	rest := args
-	if args[0] == "-reply" {
-		if len(args) < 3 {
+	if rest[0] == "-markdown" {
+		// The media type is the embed's dispatch key (EMBED §3), so this
+		// decides how every reader draws the body — not how this one
+		// stores it.
+		req.MediaType = entitysdk.FeedMediaMarkdown
+		rest = rest[1:]
+		if len(rest) == 0 {
+			return Result{}, fmt.Errorf("post: -markdown needs a body\n%s", postUsage)
+		}
+	}
+	if rest[0] == "-reply" {
+		if len(rest) < 3 {
 			return Result{}, fmt.Errorf("post: -reply needs an entry hash and a body\n%s", postUsage)
 		}
-		h, err := parseEntryHash(args[1])
+		h, err := parseEntryHash(rest[1])
 		if err != nil {
 			return Result{}, fmt.Errorf("post: %w", err)
 		}
 		req.ReplyTo = h
-		rest = args[2:]
+		rest = rest[2:]
 	}
 	req.Text = strings.Join(rest, " ")
 

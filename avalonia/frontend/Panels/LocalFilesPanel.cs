@@ -555,8 +555,22 @@ public sealed class LocalFilesPanel : UserControl, IPanelPreferredHeight
         flags.Add($"{row.FileCount} entit{(row.FileCount == 1 ? "y" : "ies")} in tree");
         // Stated on every row rather than once in the header, because a
         // row is what gets screenshotted and quoted.
-        flags.Add(row.WatcherObservable ? "watcher: reported" : "watcher: unknown");
-        stack.Children.Add(Line(string.Join("  ·  ", flags), Brushes.DarkGray));
+        //
+        // THREE states, not two. `watcherObservable` false means the tree
+        // carries no watch record for this root — which is where a mount whose
+        // watcher never started lands, and is a different thing from one that
+        // was stopped. Collapsing them sends an operator to the wrong place.
+        flags.Add(row.WatcherObservable
+            ? $"watcher: {row.WatcherStatus}"
+            : "watcher: no record");
+        stack.Children.Add(Line(string.Join("  ·  ", flags),
+            row.WatcherStatus == "error" ? Brushes.Goldenrod : Brushes.DarkGray));
+
+        // The only line that says WHY a mount stopped producing documents.
+        // Rendered on its own row because it is the thing to act on, and a
+        // message folded into the flag strip reads as a label.
+        if (row.WatcherStatus == "error" && !string.IsNullOrWhiteSpace(row.WatcherError))
+            stack.Children.Add(Line($"watcher error: {row.WatcherError}", Brushes.IndianRed));
 
         if (row.Include is { Count: > 0 })
             stack.Children.Add(Line($"include: {string.Join(", ", row.Include)}", Brushes.DarkGray));
@@ -624,6 +638,11 @@ public sealed class LocalFilesPanel : UserControl, IPanelPreferredHeight
         [JsonPropertyName("configPath")] public string ConfigPath { get; set; } = "";
         [JsonPropertyName("fileCount")] public int FileCount { get; set; }
         [JsonPropertyName("watcherObservable")] public bool WatcherObservable { get; set; }
+        // Declared, not inferred: an undeclared field is discarded in silence
+        // by System.Text.Json (AP49), and the failure mode here is a watcher
+        // reporting `error` that renders as though nothing were wrong.
+        [JsonPropertyName("watcherStatus")] public string WatcherStatus { get; set; } = "";
+        [JsonPropertyName("watcherError")] public string WatcherError { get; set; } = "";
         [JsonPropertyName("err")] public string Err { get; set; } = "";
     }
 

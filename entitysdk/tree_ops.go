@@ -205,6 +205,65 @@ func (a *AppPeer) PutObtainedEntity(callerCap entity.Entity, path string, ent en
 	return a.putEntityAt(callerCap, "system/tree", path, ent)
 }
 
+// GetObtainedEntity reads the entity bound at an absolute, peer-qualified
+// path **in the named serving peer's view** — *"what does B hold about A's
+// namespace"* — and is the read twin of [AppPeer.PutObtainedEntity].
+//
+// ⛔ **[AppPeer.Get] cannot express this, and the way it fails is silent
+// rather than loud.** `resolveDispatchTarget` routes by peer segment, so
+// `Get("/{A}/system/signature/{hex}")` dispatches to **A** however firmly
+// the caller meant *"ask B"*. On a republication road A is a peer the
+// reader has never spoken to and must not have to: the whole proposition
+// of a mirror is that the evidence survives detachment from its author.
+// The read silently goes to the wrong party and comes back
+// *"unreachable"*, which reads as the mirror being incomplete when the
+// mirror is holding exactly the right bytes.
+//
+// **The handler URI names WHO YOU ASK; the resource names WHAT YOU ASK
+// ABOUT** (`ENTITY-CORE-PROTOCOL` §1.4, whose cross-peer worked example is
+// this operation in both directions). They are two separate fields of the
+// same EXECUTE, so nothing new is needed to say it — which is why this is a
+// constructor of the right message and not a new road.
+//
+// The path travels **verbatim**. §1.4 makes re-qualifying an
+// already-absolute path a MUST NOT and names the class it belongs to —
+// *"the single most-recurring cross-impl bug class"*, with the corrupt
+// `/{local}//{other}/…` double segment as its signature. An inbound EXECUTE
+// is never re-routed (§6.5 canonicalizes before handler resolution), so the
+// serving peer answers out of its own view, definitionally.
+//
+// The authority is the serving peer's to decide and is expressed in the
+// grant they wrote: `/{A}/system/signature/*` is the named-author form and
+// `/*/system/signature/*` the all-authors one. A **bare** `system/…`
+// pattern is peer-relative under §PR-8 and canonicalizes to the granter's
+// own namespace, so it does not reach a foreign one — the difference is a
+// leading slash, and it is the difference between a grant that works and
+// one that silently covers nothing.
+func (a *AppPeer) GetObtainedEntity(servingPeer, path string) (entity.Entity, bool, error) {
+	if !strings.HasPrefix(path, "/") {
+		return entity.Entity{}, false, NewError(400, "invalid_request",
+			"an obtained entity is read at a peer-qualified path (/{peer}/…); "+path+
+				" names no namespace, so there is nothing to distinguish it from the serving peer's own")
+	}
+	handlerURI := "system/tree"
+	if servingPeer != "" && servingPeer != a.PeerID() {
+		handlerURI = "entity://" + servingPeer + "/system/tree"
+	}
+
+	getReq, resource, err := tree.CreateGetRequest(path, "entity")
+	if err != nil {
+		return entity.Entity{}, false, WrapError(400, "invalid_request", "build get request", err)
+	}
+	resp, err := a.executor.ExecuteOnResource(handlerURI, "get", getReq, resource)
+	if err != nil {
+		if IsNotFound(err) {
+			return entity.Entity{}, false, nil
+		}
+		return entity.Entity{}, false, err
+	}
+	return resp.Entity(), true, nil
+}
+
 func (a *AppPeer) putEntityAt(callerCap entity.Entity, handlerURI, resourcePath string, ent entity.Entity) (hash.Hash, error) {
 	putReq, resource, err := tree.CreatePutRequest(resourcePath, &ent)
 	if err != nil {

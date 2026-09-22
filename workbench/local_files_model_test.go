@@ -157,18 +157,107 @@ func TestLocalFilesModel_UndecodableConfigStillRenders(t *testing.T) {
 	}
 }
 
-// Watcher liveness is not in the tree. The model must say it does not
-// know rather than let a renderer infer "configured" means "running".
-func TestLocalFilesModel_DoesNotClaimWatcherLiveness(t *testing.T) {
+// putWatch persists a WatcherConfig exactly where Handler.persistWatcherState
+// puts it, so these tests read the bytes the real handler writes rather than a
+// shape invented here.
+func putWatch(t *testing.T, st *Store, root string, wc localfiles.WatcherConfigData) {
+	t.Helper()
+	ent, err := wc.ToEntity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Put(MountWatchPrefix+root, ent.Type, wc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Watcher liveness IS in the tree now (core-go row 3), and this is the arm
+// that would have caught the four months in which this file asserted the
+// opposite: it fails against a model that never learned to read the record.
+//
+// It replaces `TestLocalFilesModel_DoesNotClaimWatcherLiveness`, which pinned
+// the blocked state and therefore kept passing after the blocker lifted — the
+// one failure mode a blocked-state gate must not have.
+func TestLocalFilesModel_ReportsWatcherLivenessFromTheTree(t *testing.T) {
+	st := newMountTestStore()
+	putMount(t, st, "notes", localfiles.RootConfigData{
+		Prefix: "local/files/notes/", FilesystemRoot: "/home/me/notes",
+	})
+	putWatch(t, st, "notes", localfiles.WatcherConfigData{RootName: "notes", Status: "active"})
+
+	row := mountModel(st).Render().Mounts[0]
+	if !row.WatcherObservable {
+		t.Fatal("a root with a persisted watch record must report as observable; " +
+			"core-go's Handler.persistWatcherState writes system/config/local/files/watch/{root} " +
+			"on every start/stop/error path")
+	}
+	if row.WatcherStatus != "active" {
+		t.Errorf("WatcherStatus = %q, want the kernel's own value \"active\"", row.WatcherStatus)
+	}
+}
+
+// An `error` status is the only thing that says WHY a mount stopped
+// producing documents, so the message has to survive to the row.
+func TestLocalFilesModel_CarriesTheWatcherErrorMessage(t *testing.T) {
+	st := newMountTestStore()
+	putMount(t, st, "notes", localfiles.RootConfigData{
+		Prefix: "local/files/notes/", FilesystemRoot: "/home/me/notes",
+	})
+	putWatch(t, st, "notes", localfiles.WatcherConfigData{
+		RootName: "notes", Status: "error", ErrorMessage: "inotify watch limit reached",
+	})
+
+	row := mountModel(st).Render().Mounts[0]
+	if row.WatcherStatus != "error" {
+		t.Fatalf("WatcherStatus = %q, want error", row.WatcherStatus)
+	}
+	if !strings.Contains(row.WatcherError, "inotify") {
+		t.Errorf("WatcherError = %q; an error status with no message tells an operator "+
+			"a watcher failed and nothing about what to do", row.WatcherError)
+	}
+}
+
+// ⭐ The control arm, and the load-bearing one: NO record is a third state,
+// not `stopped`. A mount whose watcher never started and one deliberately
+// stopped send an operator to different places.
+//
+// Without this arm the two tests above are satisfied by a model that reports
+// `observable` unconditionally — which is the invented fact the old
+// hard-`false` existed to prevent, arriving from the opposite direction.
+func TestLocalFilesModel_AbsentWatchRecordIsNotStopped(t *testing.T) {
 	st := newMountTestStore()
 	putMount(t, st, "notes", localfiles.RootConfigData{
 		Prefix: "local/files/notes/", FilesystemRoot: "/home/me/notes",
 	})
 
-	if out := mountModel(st).Render(); out.Mounts[0].WatcherObservable {
-		t.Error("WatcherObservable must stay false until core-go exposes watcher state: " +
-			"WatcherConfigData is a `watch` response and is never written to a tree path, " +
-			"so a true here would be an invented fact")
+	row := mountModel(st).Render().Mounts[0]
+	if row.WatcherObservable {
+		t.Error("a root with NO watch record must not report as observable")
+	}
+	if row.WatcherStatus != "" {
+		t.Errorf("WatcherStatus = %q, want empty: an absent record is not a status, and "+
+			"defaulting it to one turns \"never started\" into \"stopped\"", row.WatcherStatus)
+	}
+}
+
+// A watch record is not a mount. The nested-path filter is what stops every
+// `watch/{root}` entity rendering as a mount of its own — it sits inside the
+// same config namespace, so this is the filter earning its keep rather than
+// being defensive.
+func TestLocalFilesModel_WatchRecordsDoNotRenderAsMounts(t *testing.T) {
+	st := newMountTestStore()
+	putMount(t, st, "notes", localfiles.RootConfigData{
+		Prefix: "local/files/notes/", FilesystemRoot: "/home/me/notes",
+	})
+	putWatch(t, st, "notes", localfiles.WatcherConfigData{RootName: "notes", Status: "active"})
+
+	out := mountModel(st).Render()
+	if len(out.Mounts) != 1 || out.Mounts[0].Root != "notes" {
+		roots := make([]string, 0, len(out.Mounts))
+		for _, m := range out.Mounts {
+			roots = append(roots, m.Root)
+		}
+		t.Fatalf("expected exactly the one real mount; got roots %v", roots)
 	}
 }
 

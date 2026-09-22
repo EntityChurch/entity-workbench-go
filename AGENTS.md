@@ -37,7 +37,7 @@ D12–D27 here are ours, earned on the eight crash-hunt commits, two feedback ep
 consume run, the 2026-08-20 reachability audit, and the 2026-08-21 crash hunt that found a
 month-old fatal bug the moment an instrument could reach it.
 - **Disciplines** (invariants — the *what*): `docs/architecture/DISCIPLINE-CHARTER.md` —
-  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP113, and the promotion
+  D1–D27, the ten review questions, the anti-pattern catalog AP1–AP115, and the promotion
   criteria (§5) that the ecosystem ladder generalizes.
 - **Substrate model** (ground truth): `docs/architecture/MODEL-AVALONIA-RUNTIME.md` — what
   the Avalonia/.NET/Skia/X11 runtime actually does (stack diagram, lifecycle matrix, the
@@ -82,6 +82,22 @@ Three rules about work that crosses a repo boundary, each earned the hard way:
   *last reconciled* line being newer than yours — theirs read our tip that morning, ours was three
   days stale — and the structural cost is that *a party that reads more often than it is read
   becomes the only one who knows the state.*
+  ⛔ **AND THE BACKLOG THIS RULE PRODUCES HAS ITS OWN COST, WHICH LANDS ON SOMEBODY ELSE** (2026-09-17,
+  and it is the third direction). Every instance above is about a packet not arriving. The one this
+  file had never written down is what happens when the whole backlog arrives **at once**: fourteen
+  rows on `TRACKER-entity-core-go.md` sat at delivery *"not established"* for weeks — several filed
+  in August — and were reconciled to that seat in a **single 22-row tranche immediately before a
+  release cut**. They worked all of it, and worked it well; that is not the point. **We chose the
+  moment, and we chose it by not choosing it for two months.** A tranche is not a neutral way to
+  deliver a backlog — it is a scheduling decision imposed on a seat that had no say in it, at the
+  one time of the cycle when their cost of interruption is highest.
+  Two rules. **A row worth filing is worth routing the week it is filed** — the batch is the defect,
+  not the rows, and a row routed on the day it is found is a cheap question while fifteen routed
+  together are an audit. **And a counterpart in a release freeze gets NOTHING that does not block
+  you now** — check their `STATUS.md` for release mode before opening a packet, hold what can wait,
+  and say in the row that it is *held under their freeze*, which is a recorded decision rather than
+  a thing you forgot. `TRACKER-entity-core-go.md` row 23 is the worked example: measured, falsifier
+  ready, deliberately unsent.
 - **There are exactly three counterpart seats, and each has ONE tracker at a PREDICTABLE PATH:
   `docs/status/TRACKER-<counterpart-repo>.md`** — `TRACKER-entity-core-go.md` (upstream substrate:
   a defect in an implementation of something already decided), `TRACKER-entity-system-architecture.md`
@@ -163,7 +179,7 @@ one — name the recurring cycle first, then let each step own one lever of it.
 `Makefile` header.
 
 - **`make test-each` is the target to reach for when you want to know the state of the
-  tree.** It runs all ten suites **to completion** regardless of failures, prints a pass/fail
+  tree.** It runs every suite **to completion** regardless of failures, prints a pass/fail
   table with per-suite timings, leaves logs in `.test-logs/`, and exits non-zero if any
   failed. ~12 min.
 - `make test` — full sweep (`-race -count=1`); `entitysdk`/`shellcmd` slowest; pin tests
@@ -640,7 +656,7 @@ one — name the recurring cycle first, then let each step own one lever of it.
   matters, you're probably about to mislead. Cite `file:line` in test comments and doc
   explanations.
 - The project measures everything against the **27 disciplines (D1–D27)**, ten review
-  questions, and anti-pattern catalog (AP1–AP113) in `docs/architecture/DISCIPLINE-CHARTER.md`.
+  questions, and anti-pattern catalog (AP1–AP115) in `docs/architecture/DISCIPLINE-CHARTER.md`.
 - **A COPY OF A LIVE SQLITE STORE IS NOT THE STORE, AND THE MISSING WRITES READ AS ZERO ROWS**
   (AP76). File-backed `SqliteStore` opens **WAL** (`core/store/sqlite.go`, `buildSqliteDSN`
   defaults `JournalMode` to `"WAL"`), so everything since the last checkpoint is in the `-wal`
@@ -769,6 +785,26 @@ one — name the recurring cycle first, then let each step own one lever of it.
   head still at `ecf-sha256:0000…`. Do not reach for this file's three documented load-dependent
   tests to explain them. `[not measured: that all sixteen share the one cause — four were re-run,
   twelve are inferred from the same suite, handler and code.]`
+  ✅ **CLOSED BY CORE-GO 2026-09-17, and the inference above was right: 16 of the 16 went green on
+  one fix.** `ext/revision` declares an `InternalScope` (entry 1 reproduces the default self-grant
+  verbatim; entry 2 gives `system/revision` `fetch`/`fetch-entities` a peers wildcard — narrow in the
+  three dimensions a handler can name, wildcard only in the one it cannot), `OpenAccessGrants` grew
+  its `Peers:["*"]`, and `pull`'s 502 wrapper now carries the downstream code. **Measured here against
+  their tree: `shellcmd` 16 → 1, `entitysdk` 4 → 2, sweep 20 → 6.** *Do not shim it locally* was the
+  right call and this is the payout.
+  ⛔ **WHAT REMAINS IS A DIFFERENT HANDLER AND A BIGGER QUESTION — core-go tracker row 23.** Entry 2
+  deliberately does not carry `fetch-diff`, and that is not the gap: a **continuation** step whose
+  target is remote is denied whatever the operation, because the advance executes as
+  `ext/continuation`'s handler, which declares no `InternalScope` at all. Measured: widening the
+  step's own minted credential to `Handlers:["*"] Operations:["*"]` changes nothing, so the credential
+  is not the limiting factor — under E1 a target-minted credential relaxes Dimension 4 and **cannot
+  supply a grant**, which is exactly what `EXTENSION-CONTINUATION` §4.2 case 3's `dispatch_capability`
+  was the mechanism for. **Three tests measured with that shape** (all `entitysdk`). A fourth red,
+  `shellcmd`'s `TestInstallRevisionMirrorChain_…`, is a continuation mirror chain that delivers
+  nothing and, hand-run, carries **no code and no chain-error marker at all** — consistent, *not
+  established*, and deliberately not folded in: this file's own row-21 entry is about that exact
+  inference going wrong in the opposite direction. **Held, not routed** — it blocks nothing shipped
+  and that tier is at a release cut.
 - **SHARING ONE FOLDER USED TO GRANT A READ OF THE WHOLE TREE** (AP90, fixed 2026-09-10).
   `workbench.SyncSenderGrants` carried `Resources: ["*"]` on three of its four entries, and the
   reconciler writes that row verbatim — so *"share this folder"* authorized every entity and
@@ -1848,11 +1884,70 @@ entities):
   canonicalization, CBOR canonical encoding, subscription pattern matching, …) must be
   byte-identical across impls — extract named constants + reference vectors. Layer-1
   ergonomics may vary freely.
-- **A dispatched read of a peer-qualified path is a REMOTE read** (AP11). `AppPeer.Get` /
-  `List` / `Has` route by peer-id: `List("/{them}/…")` dispatches to *that peer* and
+- **`AppPeer.Get`/`List`/`Has` ROUTE BY PEER-ID, so a peer-qualified path on THOSE
+  helpers is a remote read** (AP11). `List("/{them}/…")` dispatches to *that peer* and
   returns *their* tree, not our cached mirror of it. To assert on a mirror — or on anything
   we hold in another peer's namespace — read `AppPeer.Store()` (L0) instead. A test that
   gets this wrong is green whether or not the mirror was ever written.
+  ⛔ **AND THE ENTRY'S OWN WORST INSTANCE WAS IN THIS TREE THE WHOLE TIME, FOUND 2026-09-17.**
+  `entitysdk/tree_follow_deep_test.go` asks whether a follower materializes a 50-leaf subtree and
+  read the mirror with `bob.List("/{aliceID}/deep/sub-N/")` — so it dispatched to **alice**, counted
+  **alice's** tree, and reported `bob materialized 50/50` within **0.2 s of alice's own commit**, on
+  every run since the day it was written. It also logged *"G3 RESOLVED"*, so a vacuous measurement
+  became a recorded conclusion another session could cite.
+  **Measured, and it is what makes this more than a style note: it passes identically with the
+  cross-peer credential scoped to an operation that does not exist.** Pointed at bob's own index it
+  reports **0/50** and a `403`, which is the blocker three other tests were already showing — so the
+  vacuous test was hiding the third instance of a live defect, and the one it hid was the one whose
+  subject is *"does cross-peer continuation work at all"*.
+  ⭐ **The tell is cheap and is the part to carry: an assertion about B's state that NAMES A's
+  namespace is a remote read unless you went out of your way to make it local.** A rule written
+  down is not a rule applied — this entry has existed since August, in as many words, and the
+  instance survived every reading of it. When you next open this bullet, **grep the suite you are
+  in** (`\.List\("/%s/`, `\.Get\("/%s/`) rather than only nodding at the rule; that grep is what
+  finds these, and it takes a minute. **It was run across the tree on 2026-09-17 and the corpus is
+  otherwise clean** — two other hits, both correct: one reads a peer's *own* namespace (dispatch to
+  self is a local read), and `publish/feed_live_test.go:359` is a *deliberate* remote read whose
+  comment says so, because the arm's whole point is that the signature is reachable live and not in
+  the committed set. **A rule with two legitimate-looking exceptions is why the grep has to be read,
+  not just run.**
+  ⭐ **RE-SCOPED 2026-09-17, and the old wording was a fact about these three helpers stated
+  as a fact about the protocol.** It read *"a dispatched read of a peer-qualified path is a
+  REMOTE read"*, full stop, and we then generalised from it — in a routed packet — to *"a
+  peer-qualified path is ambiguous in both directions and the corpus has no way to say
+  which."* **That is false, and arch argued it down with `ENTITY-CORE-PROTOCOL` §1.4, whose
+  cross-peer worked example is exactly the operation we said no road expressed.** The
+  handler URI names **who you ask**; the resource target names **what you ask about**; they
+  are two separate fields of one EXECUTE. An inbound EXECUTE is never re-routed (§6.5
+  canonicalizes before handler resolution), so a request arriving at B is answered out of
+  B's own view definitionally, and *"B goes and asks A"* is a **locally-originated outbound
+  sub-dispatch**, which §1.4 distinguishes by name. **Two operations, not one ambiguous
+  path.** So: AP11 is true of our own sub-dispatch and of these three helpers, and false as
+  a general rule. Use `AppPeer.GetObtainedEntity` / `PutObtainedEntity` to say the other
+  thing. **Had we carried the framing we routed, this tier would have grown a road
+  qualifier, a second signature locator and a second trust argument to route around an
+  addressing model that was working** — which is the cost of an over-general catalogue
+  entry, and the reason the scope of one is worth as much care as its claim.
+- **AN ALREADY-ABSOLUTE PATH PASSES THROUGH UNCHANGED, AND RE-QUALIFYING ONE IS THE COHORT'S
+  MOST-RECURRING CROSS-IMPL BUG** (`ENTITY-CORE-PROTOCOL` §1.4, which says so in as many
+  words and names `/{local}//{other}/…` as the signature; there is a
+  `universal_address_space` conformance category for it). It bit here twice in one
+  afternoon, in **two functions and one class**: `fetch.Consumer.SignatureEntityOver`
+  derived §2.2's invariant pointer under `c.src.PeerID()` — *the peer being read from* —
+  and both `Source.Leaf` implementations prepended the serving peer to whatever they were
+  handed. Fixed by naming the **signer** (a required parameter, never defaulting to the
+  source: the default is right on a direct read and wrong on the only case where the
+  distinction exists) and passing the absolute path through in both Sources.
+  ⚠ **Neither failure looked like a path bug.** On dispatch, `AppPeer.Get` routed the
+  foreign path to **the author**, a peer the reader of a mirror has never spoken to, so the
+  answer was *"unreachable"* — the mirror reading as incomplete while holding exactly the
+  right bytes. On HTTP, `types.BuildTreeLeafURL` does a `TrimLeft(treePath, "/")`, so the
+  path lost its leading slash and was appended to a base already ending in the serving peer:
+  a syntactically perfect URL, under two peer-ids, for an object nobody publishes. **A 404
+  from that reads as a withholding origin** — an accusation against the publisher, caused by
+  the reader. Gates: `fetch/absolute_leaf_path_test.go` (with the peer-relative control arm,
+  because the fix must not change what every existing path means) and
+  `publish/feed_gather_signer_test.go`.
 - **Mirroring another peer's subtree needs a capability that names their namespace.** The
   owner self-cap's `Resources: ["*"]` is peer-**local** under §PR-8, so `tree:merge` 403s on
   every `/{them}/…` target. Use `AppPeer.MintMirrorCapability` +
@@ -2201,14 +2296,62 @@ entities):
   ⛔ **The finding, measured** (`publish/feed_gather_reach_test.go`, three peers, C a stranger to
   A): view addressable at the derived coordinate ✓, 3 entries all referencing A ✓, B serves all 3
   by hash ✓, **0 of 3 attributable by C** against a control of **3 of 3 read directly from A**.
-  §2.2 names `/{signer_peer_id}/system/signature/{hex}`; every reader resolves it relative to the
-  peer it is **reading from**, and those coincide on a direct read only. **B HOLDS the signature**
-  at the right key — nothing is missing, it is looked for in the wrong place. ⚠ **Ruled out and
-  measured so nobody reaches for it:** B's root commits to **0 keys under A's namespace**, which is
-  expected (a detached signature is read outside the committed set by design), so *"carry it in the
-  root"* is not the fix and is `A-38`(D) pushed past where moving a prefix can go. **Not patched
-  here** — it changes the verification path, and a second way to locate a signature is a second
-  trust argument. Asks `A-45`/`A-46`, packet `ROUTING-2026-09-16-c-…`.
+  ⚠ **Ruled out and measured so nobody reaches for it:** B's root commits to **0 keys under A's
+  namespace**, which is expected (a detached signature is read outside the committed set by
+  design), so *"carry it in the root"* is not the fix and is `A-38`(D) pushed past where moving a
+  prefix can go. Asks `A-45`/`A-46`, packet `ROUTING-2026-09-16-c-…`.
+  ✅ **BOTH WALLS ARE DOWN AND LEG 4 CLOSES 3 OF 3 (2026-09-17-b).** `DX-C1`'s third hop carries
+  authorship on a live transport: a stranger to the author verifies every mirrored entry out of the
+  republisher's tree. It took two fixes in two trees, each invisible from the other side, and the
+  history below is kept because **the intermediate state read as one bug and was two.**
+  ⭐ **`A-45` RULED, OUR HALF FIXED — AND FOR TWO DAYS THE COUNT STAYED 0 AND IT WAS NOT THE SAME 0**,
+  which is the part to carry, because the sweep looks identical either way.
+  `SYSTEM-DATA-EXCHANGE` v0.3 §2.2.1 rules it on `ENTITY-CORE-PROTOCOL` §1.4's authority: bind at
+  the signer-rooted absolute path, resolve it **against the peer serving the object**, MUST NOT
+  re-qualify. Ours asked under the peer it was reading from; it now names the signer and passes
+  the absolute path through (see the AP11 re-scope above). Leg 4's detail line moved from
+  *"nothing bound at this path"* to **`?resource=/{A}/system/signature/{hex}: 403
+  capability_denied`** — the right question, refused.
+  ✅ **The second wall was not ours, nobody had measured it, and core-go fixed it in hours
+  (`3df98f6`).** Arch's §1.3 offered the repair as one character — a bare `system/signature/*` is
+  peer-relative under §PR-8, so name the author, `/{A}/system/signature/*`. **The grammar was right
+  and the conclusion did not hold.** Measured, three arms: the granter's OWN namespace (`/{B}/…`)
+  accepted; a THIRD peer's refused; `/*/…` refused. And the refusal was worse than a refusal —
+  `AssembleInboundGrants` → `filterAdvertisedGrants` keeps an entry only if this peer's advertised
+  served-scope covers it and *"an uncovered entry is DROPPED, not narrowed"*, while
+  `advertisedServedScope` gave `system/tree` a bare `*`. ⇒ **adding the row did not widen the
+  grant, it DELETED the entry the row was added to**, and the reader lost reads that worked before:
+  an operator widening a grant made it strictly narrower, silently, with the policy row written and
+  accepted. **The fix is the cross-peer `/*/*` on the derived resources axis** (`MaxScope`, when a
+  handler declares one, untouched). Keep the shape in mind rather than the incident: **ask of any
+  filter that admits by coverage whether it NARROWS or DROPS**, because the two are
+  indistinguishable at the call site and only one of them is safe to widen into.
+  ⭐ **core-go's own `defaultHandlerSelfGrant` documented this exact class forty lines from
+  `advertisedServedScope`** — bare `*` is own-namespace-only, the cross-peer form is `/*/*` — and
+  recorded fixing it there *because* a peer *"could no longer write the foreign-namespace subtrees
+  its store legitimately holds under V7 §1.4's universal address space."* The advertised scope was
+  the same ceiling facing **outward**, still carrying the old spelling: **the third surface of one
+  class, and the first two were fixed by people who could not see the third.** It was **not shimmed
+  here** — a local workaround would have hidden a cohort-wide question — and that call is why the
+  fix landed in the tree that owns it.
+  ⭐ **What made it turn around in hours was routing a FALSIFIER, not a bug report.** Four arms with
+  the control included, so the other seat could reproduce the finding *and its negative case*
+  without re-deriving either. A report says *this is broken*; a falsifier hands over the experiment.
+  ⭐ **So the two walls were gated SEPARATELY, and that is the transferable move.** A gate that only
+  runs the full hop reports our fixed half as broken for as long as somebody else's blocker is open,
+  and the next session re-fixes what is already fixed.
+  `publish/feed_gather_signer_test.go` removes the transport by construction — a Source reporting
+  the republisher while serving the author's bytes — and asserts the address, the key and a
+  wrong-signer control arm; it fails on the pre-fix consumer. Leg 4 is an **assertion** now, ordered
+  **after** its control arm so a broken harness can never present as a regression in the mirror.
+  ⭐ **AND THE TRIPWIRE WAS REPLACED RATHER THAN DELETED OR KEPT** — the step most likely to be
+  skipped. `…GrantDeletesTheGrantItWasAddedTo` pinned the blocked state and went red the moment the
+  blocker lifted, exactly as designed (*a blocked-state gate that keeps passing after the blocker
+  lifts is the one failure it must not have*). But **a gate that only ever says "still blocked"
+  cannot then protect the fix**, so it is now
+  `…TheAuthorNamespacedGrantWidensRatherThanDeleting`: the property, plus the anti-vacuity arm that
+  removes exactly that row and requires the 403 back. Without that arm the positive arm passes
+  against a harness with no authorization in it at all.
   ⭐ **The generalisation is bidirectional and is the half to carry: a peer-qualified path means
   both *"ask A for x"* and *"my own copy of A's x"*, and republication is the first operation in
   this cohort that needs the second on the READ and the WRITE side.** AP11 has covered the read
@@ -2235,6 +2378,67 @@ entities):
   **Still owed:** the pointer-body blob closure (an embed over EMBED §3's 16 KiB ceiling
   republishes with its body unreachable — named in `MirrorPlan.Notes` at plan time rather than left
   to be found), a thread gather, and `app/feed/collection`.
+- **THE BODY CALL: A FEED ENTRY'S BODY IS AN EMBED NODE AND WE RENDERED EVERY ONE OF THEM AS ITS
+  FALLBACK** (`workbench/feed_body.go`, 2026-09-17 — arch's `ROUTING-2026-09-17-a` §4, and the one
+  thing they asked either app seat to align on). `APP-CONVENTION-FEED` §2.3 makes `body` an
+  **Embed node**, `SITE` §3.1/§3.2 already shares EMBED as the vocabulary ⇒ **a feed entry
+  carrying markdown, drawn by the same code that draws a site page, is conformant today with no
+  spec change.** Ours read the inline bytes into a text field whatever the media type said, and
+  rendered `fallback` for every other arm.
+  ⭐ **Why no gate could see it: the old reader was CONFORMANT.** Showing a fallback is exactly
+  what §6 step 2 says to do; the defect was doing it when step 1 was available. Nothing errors,
+  nothing is malformed, and *every assertion phrased as "is the output valid" passes*. Arch put
+  it in one line — **the ladder puts `fallback` LAST, and implementing only the last rung
+  produces a conformant reader that displays an image post as its alt text.** So the gates are
+  phrased as **which rung**, which is the only question that separates the two.
+  **It was an ALIGNMENT defect, not only a local one**: `entity-browser-rust` had taken the first
+  pass (`feed_body.rs`), so one seat rendered markdown and the other rendered alt text for the
+  same bytes — two products, one convention, **invisible from both sides**, since each is
+  internally consistent and neither reads the other's output.
+  §6's three steps, and what this tier can actually reach: step 1's full form **exists in no tree**
+  (the §5 handler/renderer registry has no implementation anywhere and §4 `EmbedOutput` is
+  deliberately not built here), so what is implemented is §7's stated **v1 floor** — *"an
+  inline-payload passive embed renders at the floor tier"* — which for a text media type is: draw
+  the bytes in the form the type declares. Step 3 has nothing to do without §4, and is **named
+  rather than silently skipped**.
+  ⚠ **§6 step 2's anti-poisoning rule is a security rule and the natural implementation breaks
+  it** (S-8): a fallback is rendered with embed directives **DISABLED** at depth 1 — shown as
+  visible text, *not re-expanded and not silently stripped*. So `EmbedsToMarkdownImages` runs on
+  the markdown rung and **MUST NOT** run on the fallback, however much sharing the line looks like
+  tidying: the author of an unrenderable entry controls that string, and expanding a directive
+  there lets them make every reader that **degraded** fetch an asset of their choosing — the path
+  for readers that can do less acquiring the wider reach.
+  **`Rung` is a field because the string cannot carry it.** `rendered` is the post; `fallback` is
+  the author's *description* of a post that is not on screen; they are the same Go type and the
+  same JSON string, and a short alt text reads as a short post. Three states, not two —
+  `unrenderable` is EMBED §3's mandatory-`fallback` violation and renders the fault, never a blank
+  row (`C-6`'s finding, kept).
+  Also fixed while here: the `ValidateDecodedNested` check now runs on the **fallback rungs only**
+  — a markdown body renders at step 1, where the fallback is never consulted, so validating it
+  there puts a producer-defect problem line on a row displaying the author's words perfectly.
+  **Authoring exists too, or the tree could render what it cannot produce**: `post -markdown`,
+  `entitysdk.FeedMediaMarkdown`/`FeedMediaPlain` spelled **once beside the author** (a reader
+  holding its own copy of a producer's dispatch key is the shape of the divergence this closes).
+  `DefaultPostMediaType` stays `text/plain` **deliberately** — defaulting a bare `post` to markdown
+  silently reinterprets every post already written, and the one thing a default may not do is
+  change what existing bytes mean.
+  Surfaces in the same change (D23): `timeline` marks the rung and prints the note; the Feed panel
+  draws markdown through the **same `MarkdownRenderer` a site page uses** and captions the fallback
+  in Goldenrod. Gates: `workbench/feed_body_test.go` (eight arms, mutation-checked — dropping the
+  markdown rung and lowering directives in the fallback each fire on exactly their own arm).
+  ⭐ **And the envelope gate went where it could actually run.** `FeedPanelTests` had named
+  per-ENTRY fields as a hole it could not cover (a populated timeline needs a reachable publisher
+  and no suite here may reach the network; AP70 forbids writing to the shared fixture peer) — but
+  **the hole was about the LAYER, not the fixture**: *"does Go emit the key C# reads"* needs no
+  peer at all. `avalonia/bridge/feed_envelope_test.go` builds the model struct, runs the real
+  projection, and asserts the key names as **literals** (a test that derives the expected name
+  from the tag it checks agrees with itself for any value of the tag). It covers `via`/`listed`
+  too, so that gap is closed rather than extended. **`avalonia/bridge` was a `go.work` module with
+  no suite target** — a gate there would have run for whoever typed `go test` in that directory
+  and nobody else, which is `publish`/`fetch` before 2026-08-19 (AP21/D22) — so `make test-bridge`
+  exists and `TEST_SUITES` is **eleven**. ⚠ Still true and named: a rename on the **C# side alone**
+  is invisible to it. The two halves are gated in two languages and neither can see the other's,
+  which is AP49's own shape.
 - **A LIVE REFERENCE RESOLVES NOW, AND THE ABSENCE IT REPORTS HAS TWO CAUSES THAT MUST NOT BE ONE**
   (`workbench/ref_resolve.go`, verb `ref`, 2026-09-15). `APP-CONVENTION-FEED` §2.2.2 gives a live
   reference four outcomes and `FEED-R7` **[MUST]s that a reader be able to tell which one it got**.
@@ -2852,11 +3056,18 @@ entities):
   us; it was, in a doc of ours, for a day. **A capability that exists in a dependency is not a
   capability of your product until something in your tree calls it** — D23 aimed one layer out,
   and the D23 sweep does not look for it because there is no unreached model of *ours* to find.
-  The reverse-write loop's own loop guard is a five-second clock with a live correctness defect;
-  the reproducer is `workbench/localfiles_reverse_window_test.go` and the finding that matters if
-  you touch this area is that **the content check the clock is standing in for already exists**,
-  and `markWritten` sits downstream of it, so the clock can only arm when it is harmful. Read the
-  file header before re-deriving any of it.
+  ✅ **The reverse-write loop's five-second clock is GONE, fixed by core-go 2026-09-17** (tracker
+  row 2), and this bullet described it as a live defect until then. `reverseTracker` is removed
+  **entirely**: the content check is the sole echo authority, which is exactly what our packet
+  argued — *the check the clock was standing in for already existed, and `markWritten` sat
+  downstream of it, so the clock could only arm when it was harmful.* They verified against our own
+  F9 self-loop repro (bounded at 4 entities against ~2200 unfixed).
+  `workbench/localfiles_reverse_window_test.go` is **no longer a reproducer**: its three
+  defect-asserting tests fired on the fix and were **replaced with the property** (a genuine second
+  update lands; it lands promptly; a delete inside a burst lands), with the content-identity arm
+  re-cast as their anti-vacuity control — *"a second write lands"* is satisfied just as well by a
+  build with the echo guard deleted, which is a peer in a write loop with itself. Read the file
+  header; it keeps the whole history and the reason the tripwires were replaced rather than deleted.
 - **Not the conformance team.** When a cross-impl wire bug surfaces during perf/feature
   work, capture `file:line` + reproducer and route it (Python encoder → Python team, spec
   ambiguity → arch, conformance test-gap → core-go) — don't extend the probe into a

@@ -56,6 +56,16 @@ type FeedPostRequest struct {
 	// conversation's root is INHERITED from it and never assumed to be it
 	// — see entitysdk.FeedAuthor.ReplyTo.
 	ReplyTo hash.Hash
+
+	// MediaType is the body's embed media type. Empty means
+	// [entitysdk.DefaultPostMediaType].
+	//
+	// **It is a field rather than a bool because the media type IS the
+	// dispatch key** (EMBED §3 — `app/embed/{media_type}`), and a
+	// `markdown bool` here would have to be widened the first time a
+	// second type is authorable, changing every caller. The verb's flag is
+	// the bool; the model's field is the type.
+	MediaType string
 }
 
 // FeedPostOutcome is what one post did and what it did not.
@@ -152,7 +162,7 @@ func (ws *ShellWorkspace) Post(ctx context.Context, req FeedPostRequest) (FeedPo
 	}
 	author := ws.Local.Peer.Feed()
 
-	post := entitysdk.PostRequest{Text: req.Text}
+	post := entitysdk.PostRequest{Text: req.Text, MediaType: req.MediaType}
 	if !req.ReplyTo.IsZero() {
 		reply, err := author.ReplyTo(req.ReplyTo)
 		if err != nil {

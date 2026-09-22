@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"go.entitychurch.org/entity-core-go/core/ecf"
 	"go.entitychurch.org/entity-core-go/ext/localfiles"
 )
 
@@ -34,22 +35,42 @@ import (
 // does. It is not a dispatched read: a peer-qualified path would route to
 // that peer and answer about *their* tree (AP11), which is not the question.
 //
-// # What this model deliberately does NOT report
+// # Watcher status — a tree fact since 2026-09-17, and this file said
+// otherwise for as long as it was not
 //
-// **Watcher status.** [localfiles.WatcherConfigData] carries exactly the
-// field a panel wants (`active` / `stopped` / `error` plus a message), and
-// it is unreachable from here: it is built as the *response* to a `watch`
-// operation (`ext/localfiles/operations.go:457,479,503`) and never written
-// to a tree path. The handler holds the live set in an unexported
-// `watchers` map with no accessor. So a mount row can say what was
-// configured and cannot say whether it is currently running.
+// [localfiles.WatcherConfigData] carries exactly the field a panel wants
+// (`active` / `stopped` / `error` plus a message). It used to be built only
+// as the *response* to a `watch` operation, with the live set in an
+// unexported map and no accessor — so a mount row could say what was
+// configured and not whether it was running, and [MountRow.WatcherObservable]
+// was hard `false` so a renderer could say *unknown* rather than imply *fine*.
+// Reporting "active" because a config row exists would have invented a fact
+// the tree did not carry.
 //
-// Reporting "active" because a config row exists would be inventing a fact
-// the tree does not carry — the same move AP45 names, where a dismissal
-// written into a doc comment becomes invisible to review forever. The row
-// carries [MountRow.WatcherObservable] = false instead, so a renderer can
-// say *unknown* rather than imply *fine*, and the ask is filed against
-// core-go rather than papered over here.
+// core-go closed that ask (their tracker row 3) the better way than we asked
+// for: `Handler.persistWatcherState` writes the same shape to
+// `system/config/local/files/watch/{root}` on **every** path that starts,
+// stops or faults a watcher — the auto/restart path included — so watcher
+// liveness is a tree fact any implementation reads, not a Go-API affordance.
+// We read it here.
+//
+// ⚠ **The stale half is the part worth keeping in view.** The paragraph above
+// survived in this doc comment, and in a test asserting `WatcherObservable`
+// stays false, for as long as it took someone to look — the test kept passing
+// *because* it pinned the blocked state, which is the one failure a
+// blocked-state gate must not have (a gate that goes on reporting "still
+// blocked" after the blocker lifts). It is replaced with the property, and the
+// arm that would have caught the drift is the one asserting a row DOES report
+// a status when the tree carries one.
+//
+// # Three states, not two
+//
+// `WatcherObservable` false means **no watch record exists for this root** —
+// which is a real and different thing from `stopped`. A mount whose handler
+// never started a watcher and a mount whose watcher was deliberately stopped
+// send an operator to different places, and collapsing them into one "not
+// running" is how the first gets diagnosed as the second. A renderer must not
+// default an absent record to any status value.
 
 // MountRow is one filesystem mount as the tree records it.
 //
@@ -84,10 +105,18 @@ type MountRow struct {
 	// when Prefix is empty.
 	FileCount int
 
-	// WatcherObservable is always false today. It is a field rather
-	// than a doc sentence so the ignorance is renderable: see the file
-	// note above.
+	// WatcherObservable reports whether the tree carries a watch record
+	// for this root at all. False means **no record**, which is not the
+	// same claim as `stopped` — see the file note. A renderer that reads
+	// WatcherStatus without checking this one first turns "never started"
+	// into whatever the zero value happens to look like.
 	WatcherObservable bool
+	// WatcherStatus is the kernel's own value — `active`, `stopped` or
+	// `error` — and is empty exactly when WatcherObservable is false.
+	WatcherStatus string
+	// WatcherError is the kernel's message on an `error` status, and is
+	// the only thing that says *why* a mount stopped producing documents.
+	WatcherError string
 
 	// Err is set when this row's config entity did not decode. The row
 	// still appears — a mount whose config is unreadable is exactly the
@@ -130,6 +159,14 @@ func NewLocalFilesModel(store *Store) *LocalFilesModel {
 // Named once here because three call sites reconstructing the same string
 // literal is how one of them ends up spelled differently.
 const MountConfigPrefix = "system/config/local/files/"
+
+// MountWatchPrefix is where `ext/localfiles` persists each root's watcher
+// liveness (`Handler.persistWatcherState`). It sits *inside*
+// [MountConfigPrefix], which is why [LocalFilesModel.Render]'s "a nested
+// path under our namespace is not a mount" filter is load-bearing rather
+// than defensive: without it every watch record would render as a mount
+// named `watch/{root}`.
+const MountWatchPrefix = MountConfigPrefix + "watch/"
 
 // Render reads the config namespace and returns one row per mount.
 //
@@ -190,11 +227,45 @@ func (m *LocalFilesModel) Render() LocalFilesOutput {
 		if cfg.Prefix != "" {
 			row.FileCount = len(m.store.List(cfg.Prefix))
 		}
+		if wc, ok := m.watcherStateFor(root); ok {
+			row.WatcherObservable = true
+			row.WatcherStatus = wc.Status
+			row.WatcherError = wc.ErrorMessage
+		}
 		rows = append(rows, row)
 	}
 
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Root < rows[j].Root })
 	return LocalFilesOutput{Mounts: rows}
+}
+
+// watcherStateFor reads one root's persisted watcher liveness.
+//
+// The decode is done here rather than through a kernel helper because
+// `ext/localfiles` exports `RootConfigDataFromEntity` and has no
+// `WatcherConfigDataFromEntity` beside it — the type was originally only ever
+// an operation *response*, which needed no decoder. Filed as a small ask
+// rather than worked around silently; `ecf.Decode` into their own struct is
+// their idiom verbatim (`ext/localfiles/types.go:132-138`), so this cannot
+// drift from the shape they write.
+//
+// A record that does not decode reports ABSENT rather than a zero-valued
+// status: a malformed watch record tells us nothing about the watcher, and
+// inventing `stopped` from it would be the tolerant-fallback shape (AP33)
+// applied to a liveness claim.
+func (m *LocalFilesModel) watcherStateFor(root string) (localfiles.WatcherConfigData, bool) {
+	ent, ok := m.store.Get(MountWatchPrefix + root)
+	if !ok {
+		return localfiles.WatcherConfigData{}, false
+	}
+	var wc localfiles.WatcherConfigData
+	if err := ecf.Decode(ent.Data, &wc); err != nil {
+		return localfiles.WatcherConfigData{}, false
+	}
+	if wc.Status == "" {
+		return localfiles.WatcherConfigData{}, false
+	}
+	return wc, true
 }
 
 // MountFilesystemRoot reads the on-disk directory one mount is bound to,

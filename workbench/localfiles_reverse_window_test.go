@@ -1,43 +1,52 @@
 package workbench
 
-// M1 reproducer — ext/localfiles' reverse-write loop guard is a clock, and
-// the clock drops writes the content check would have delivered.
+// ext/localfiles' reverse-write loop: the echo guard is CONTENT IDENTITY, and
+// a genuine second write inside a burst must land.
 //
-// WHAT THIS FILE IS. It is a reproducer for a defect in a SIBLING repo
-// (`entity-core-go`, `ext/localfiles/reverse.go`), kept here because
-// `AGENTS.md` says a routed ask owes a failing probe and because per AP43 a
-// probe that does not reach the mechanism refutes nothing. Nothing in this
-// file tests workbench code. It drives core-go's real handler, real root
-// mapping, real reverse-write loop and real filesystem, with a hand-fed tree
-// event channel standing in for the notifying store's fan-out — which is the
-// same seam `ext/localfiles/handler_test.go`'s own `TestReverseWrite` uses.
+// ⭐ WHAT THIS FILE WAS, AND WHY IT CHANGED SHAPE. It began as the M1
+// reproducer for **core-go tracker row 2**: the reverse-write loop's echo
+// guard was a five-second clock (`reverseTracker` / `recentWriteWindow`), and
+// the clock DISCARDED — not deferred — any tree change event on a path we had
+// written inside the window. A file edited twice in quick succession upstream
+// lost its second version, permanently, with no error on any channel. Every
+// test here asserted that defect on purpose, and each failure message said
+// what to do if it ever stopped reproducing.
 //
-// THE MECHANISM, cited so a reader can check it rather than trust it
-// (`entity-core-go` `ext/localfiles/reverse.go`, symbols not line numbers
-// because their history is republished):
+// ✅ **It stopped reproducing on 2026-09-17.** core-go removed `reverseTracker`
+// entirely: the content check (`currentDiskBlobHash == fileData.Content`,
+// §5.5 Amdt 3) is now the sole echo authority, and `reverseDelete`'s
+// `os.IsNotExist` tolerance covers an echoed delete. Three tests here went red
+// with their own retirement instructions, exactly as designed.
 //
-//   - `reverseTracker` records `path -> time.Now()` in `markWritten`.
-//   - `reverseWriteLoop` drops any tree change event whose bare path is
-//     `isRecentlyWritten` — i.e. was written by us inside
-//     `recentWriteWindow = 5 * time.Second`. The event is DISCARDED, not
-//     deferred: there is no queue, no retry, and no second look.
-//   - `reverseWrite` separately refuses to write when the on-disk bytes
-//     already hash to the incoming blob (`currentDiskBlobHash == fileData.Content`).
-//     That is a genuine content-identity circuit breaker and it sits BEFORE
-//     `markWritten` in the same function.
+// ⭐ **THE TRIPWIRES ARE REPLACED, NOT DELETED — and that is the step most
+// likely to be skipped.** A tripwire that keeps passing after its blocker
+// lifts is the one failure it must not have; a tripwire DELETED on the day it
+// fires leaves the fix with no gate at all, in the one tree that noticed the
+// defect. So each of the three now asserts the PROPERTY the fix delivers,
+// against the same rig, driving the same real handler:
 //
-// The ordering in that last bullet is the whole finding, and TestReverseWindow_
-// TheClockEngagesOnlyAfterARealWrite is what establishes it: the tracker can
-// only be armed by a call that got PAST the content check, so on the echo path
-// the content check has already fired and the clock is never consulted. The
-// clock therefore suppresses events the content check would have suppressed
-// anyway — plus the ones below, which it should not have.
+//   - a genuinely different second update inside the old window LANDS;
+//   - it lands PROMPTLY — the old window is not merely survivable, it is gone;
+//   - a delete inside a burst LANDS.
 //
-// EACH TEST ASSERTS THE DEFECT. That is deliberate. If one of these fails
-// because the substrate now does the right thing, the substrate has been
-// fixed: close the matching row in
-// `docs/architecture/reviews/CORE-GO-TRACKER.md` and delete the test. Every
-// failure message says so.
+// ⚠ **The anti-vacuity arm for all three is `…ContentIdentityStopsTheEcho`**,
+// and it is not optional: "a second write lands" is satisfied just as well by
+// a build with the echo guard deleted outright, which would put the peer back
+// in a write loop with itself. That test proves the guard is still real, with
+// the same rig, so the three positives cannot pass by suppression having been
+// removed rather than corrected.
+//
+// WHAT THIS FILE TESTS. Nothing in it is workbench code. It drives core-go's
+// real handler, real root mapping, real reverse-write loop and real
+// filesystem, with a hand-fed tree event channel standing in for the notifying
+// store's fan-out — the same seam `ext/localfiles/handler_test.go`'s own
+// `TestReverseWrite` uses. It is kept here because this tree is where the
+// defect was found and is the only tree whose product depends on the fix; a
+// regression would present here as files silently not arriving.
+//
+// The filename still says `reverse_window` for the mechanism that is gone. It
+// is left alone deliberately — `AGENTS.md` cites this path, and renaming a
+// file to tidy a name costs a working citation.
 //
 // Tier: integration (TESTING-STRATEGY) — real handler, real disk, real
 // goroutine, no network.
@@ -197,17 +206,22 @@ func (r *reverseRig) waitForDisk(name string, want []byte, budget time.Duration)
 // R1 — a genuinely new tree write inside the window is discarded.
 // -----------------------------------------------------------------------
 
-// TestReverseWindow_SuppressesGenuinelyNewContent is the core reproducer.
+// TestReverseWrite_GenuineSecondUpdateLands is the property that replaces the
+// core reproducer (core-go tracker row 2, fixed 2026-09-17).
 //
-// Two updates land on one path inside five seconds. The first is written to
-// disk and arms the clock; the second carries DIFFERENT bytes and is dropped
-// as an echo it is not. Tree and disk diverge, silently, with no error on any
-// channel.
+// Two updates land on one path within milliseconds. The first is written to
+// disk; the second carries DIFFERENT bytes and must reach disk too. Under the
+// old clock the second was discarded as an echo it was not, and tree and disk
+// diverged silently with no error on any channel.
 //
 // This is not an exotic shape. It is what a file edited twice in quick
 // succession upstream looks like at the consuming peer, which is exactly the
 // traffic M2 (two machines, one folder) is made of.
-func TestReverseWindow_SuppressesGenuinelyNewContent(t *testing.T) {
+//
+// Anti-vacuity: `…ContentIdentityStopsTheEcho` is the arm that stops this
+// passing against a build with the echo guard simply removed. Read them
+// together or neither means anything.
+func TestReverseWrite_GenuineSecondUpdateLands(t *testing.T) {
 	rig := newReverseRig(t)
 
 	a := []byte("version A — the reverse writer put this on disk\n")
@@ -217,39 +231,38 @@ func TestReverseWindow_SuppressesGenuinelyNewContent(t *testing.T) {
 	if !rig.waitForDisk("notes.md", a, 10*time.Second) {
 		t.Fatalf("setup: version A never reached disk; the rig is wrong, not the substrate")
 	}
-	// The clock is armed for notes.md as of this instant.
 
 	rig.emit("notes.md", rig.bind("notes.md", b), store.ChangeModified)
-	rig.barrier()
-
-	got := string(rig.diskBytes("notes.md"))
-	if got == string(b) {
-		t.Fatalf("SUBSTRATE FIXED: version B reached disk inside the 5s window. " +
-			"The reverse-write clock no longer drops genuine updates — close row 2 in " +
-			"docs/architecture/reviews/CORE-GO-TRACKER.md and delete this file.")
-	}
-	if got != string(a) {
+	if !rig.waitForDisk("notes.md", b, 10*time.Second) {
+		got := string(rig.diskBytes("notes.md"))
+		if got == string(a) {
+			t.Fatalf("REGRESSION (core-go tracker row 2): version B was dropped on the heels of version A. "+
+				"Disk holds the stale version A and the tree binding at %snotes.md commits version B. "+
+				"An echo guard is discarding a genuine update again — re-read ext/localfiles/reverse.go "+
+				"and check whether a time-based suppression has come back.", reverseWindowPrefix)
+		}
 		t.Fatalf("disk holds neither A nor B (%q) — the rig has drifted; re-derive the mechanism before routing anything", got)
 	}
-
-	// Say the divergence out loud rather than only asserting it, so a failing
-	// run in someone else's CI carries the finding and not just a diff.
-	t.Logf("REPRODUCED: tree binding at %snotes.md commits version B; disk holds version A. "+
-		"No error was returned, logged, or queued for retry.", reverseWindowPrefix)
 }
 
-// TestReverseWindow_SuppressionIsPermanent establishes the half that makes
-// the drop a data-loss bug rather than a latency bug: nothing re-drives it.
+// TestReverseWrite_ASecondUpdateIsNotDelayedByAWindow replaces the half of the
+// old reproducer that established the drop was DATA LOSS rather than latency:
+// the event was consumed and discarded, with no deferred queue, so waiting out
+// the window changed nothing.
 //
-// The event is consumed and discarded. There is no deferred queue, so waiting
-// out the window changes nothing — the disk stays stale until some unrelated
-// future write to that path happens to arrive outside a window. The second
-// leg re-emits the identical event after expiry and it lands, which proves
-// the drop was the CLOCK and not the content, the entity, or the path.
-func TestReverseWindow_SuppressionIsPermanent(t *testing.T) {
-	if testing.Short() {
-		t.Skip("waits out the 5s recentWriteWindow")
-	}
+// ⭐ The property that replaces it is deliberately about TIME, not just about
+// arrival, because the two are different regressions and only one of them is
+// caught by the test above. A build that re-introduced suppression *with* a
+// retry queue would deliver version B — five or more seconds late — and
+// `…GenuineSecondUpdateLands` would pass, since it waits ten. That is a
+// latency defect a sync product feels directly, so it gets its own assertion:
+// B must land well inside the window that used to swallow it.
+//
+// The bound is deliberately loose (2s against the old 5s window). This is a
+// regression gate, not a performance budget — a real delivery is sub-millisecond
+// here, so anything approaching seconds means a timer has come back, while a
+// tight bound would just make the suite flaky under load.
+func TestReverseWrite_ASecondUpdateIsNotDelayedByAWindow(t *testing.T) {
 	rig := newReverseRig(t)
 
 	a := []byte("version A\n")
@@ -260,46 +273,39 @@ func TestReverseWindow_SuppressionIsPermanent(t *testing.T) {
 		t.Fatalf("setup: version A never reached disk")
 	}
 
-	fhB := rig.bind("notes.md", b)
-	rig.emit("notes.md", fhB, store.ChangeModified)
-	rig.barrier()
-
-	// Wait past the window with no further events. If a retry existed, this
-	// is where it would fire.
-	time.Sleep(6 * time.Second)
-	rig.barrier()
-
-	if got := string(rig.diskBytes("notes.md")); got != string(a) {
-		t.Fatalf("SUBSTRATE CHANGED: after the window expired the disk holds %q, not the stale version A. "+
-			"Something re-drives suppressed events now — re-read reverseWriteLoop and update the packet.", got)
-	}
-	t.Logf("REPRODUCED: 6s after the drop, with the window long expired, the disk is still stale. The event was discarded, not deferred.")
-
-	// Same event, same bytes, same entity hash — now outside the window.
-	rig.emit("notes.md", fhB, store.ChangeModified)
+	const oldWindow = 5 * time.Second
+	started := time.Now()
+	rig.emit("notes.md", rig.bind("notes.md", b), store.ChangeModified)
 	if !rig.waitForDisk("notes.md", b, 10*time.Second) {
-		t.Fatalf("the identical event was dropped OUTSIDE the window too — the cause is not the clock; re-derive before routing")
+		t.Fatalf("REGRESSION: version B never landed at all (disk holds %q) — "+
+			"see TestReverseWrite_GenuineSecondUpdateLands, which is the same defect without the timing arm",
+			string(rig.diskBytes("notes.md")))
 	}
-	t.Logf("CONTROL: the identical event delivered once the window expired. The only difference between delivery and loss is wall-clock time.")
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("REGRESSION: version B took %v to reach disk, against an old suppression window of %v. "+
+			"It arrived, so the drop is gone, but something is now DEFERRING a genuine update on a timer "+
+			"— re-read ext/localfiles/reverse.go for a reintroduced delay.", elapsed, oldWindow)
+	}
 }
 
 // -----------------------------------------------------------------------
 // R2 — a delete inside the window is discarded, and nothing else catches it.
 // -----------------------------------------------------------------------
 
-// TestReverseWindow_SuppressesDelete is the sharper half of the same defect.
+// TestReverseWrite_DeleteWithinBurstLands is the sharper half, and it is the
+// one whose old failure could not be caught anywhere else.
 //
-// A write inside the window is at least covered on paper by the content check
-// three lines below the clock. A DELETE is not: `reverseWriteLoop` routes
-// `ChangeDeleted` to `reverseDelete` before any content is fetched, and
-// `reverseDelete` has no circuit breaker of its own. So the clock is the only
-// thing standing between a tree deletion and the filesystem, and inside the
-// window it stops it permanently.
+// A suppressed WRITE was at least covered on paper by the content check:
+// `reverseWriteLoop` routes `ChangeDeleted` to `reverseDelete` before any
+// content is fetched, so under the old clock the clock was the *only* thing
+// standing between a tree deletion and the filesystem — and it stopped it
+// permanently, with no content check downstream to catch it.
 //
-// Result: the tree says the file is gone, the disk says it is there, and the
-// next watcher scan is entitled to ingest it back — a deletion that undoes
-// itself.
-func TestReverseWindow_SuppressesDelete(t *testing.T) {
+// The failure that produced: the tree says the file is gone, the disk says it
+// is there, and the next watcher scan is entitled to ingest it back. A
+// deletion that undoes itself, which reads to an operator as the product
+// refusing to delete their file.
+func TestReverseWrite_DeleteWithinBurstLands(t *testing.T) {
 	rig := newReverseRig(t)
 
 	a := []byte("this file is about to be deleted upstream\n")
@@ -308,38 +314,45 @@ func TestReverseWindow_SuppressesDelete(t *testing.T) {
 		t.Fatalf("setup: the file never reached disk")
 	}
 
-	// Delete it from the tree, inside the window.
+	// Delete it from the tree immediately — inside what used to be the window.
 	if _, ok := rig.li.Remove(reverseWindowPrefix + "doomed.md"); !ok {
 		t.Fatalf("setup: nothing bound at %sdoomed.md to remove", reverseWindowPrefix)
 	}
 	rig.emit("doomed.md", hash.Hash{}, store.ChangeDeleted)
 	rig.barrier()
 
-	if _, err := os.Stat(filepath.Join(rig.dir, "doomed.md")); err != nil {
-		t.Fatalf("SUBSTRATE FIXED: the delete reached disk inside the window (%v). "+
-			"Close row 2 in docs/architecture/reviews/CORE-GO-TRACKER.md and delete this test.", err)
+	if _, err := os.Stat(filepath.Join(rig.dir, "doomed.md")); err == nil {
+		t.Fatalf("REGRESSION (core-go tracker row 2): the tree no longer binds %sdoomed.md and the file is "+
+			"STILL ON DISK. reverseDelete has no content check, so a suppression in front of it is "+
+			"unrecoverable — the next watcher scan will ingest the file back and the deletion undoes itself.",
+			reverseWindowPrefix)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat after delete: %v (expected the file to be gone)", err)
 	}
-	t.Logf("REPRODUCED: the tree no longer binds %sdoomed.md and the file is still on disk. "+
-		"reverseDelete has no content check, so nothing downstream of the clock can catch this one.", reverseWindowPrefix)
 }
 
 // -----------------------------------------------------------------------
 // R3 — the control arm: what the clock is actually buying.
 // -----------------------------------------------------------------------
 
-// TestReverseWindow_ContentIdentityAlreadyStopsTheEcho is the control that
-// makes the ask actionable rather than a complaint.
+// TestReverseWindow_ContentIdentityStopsTheEcho is the ANTI-VACUITY ARM for
+// the three property tests above, and it is the reason they mean anything.
 //
-// The echo the clock exists to stop — our own disk write coming back around
-// as a tree event — is already stopped by content identity. Here the file is
-// put on disk directly, so `markWritten` is never called for it (the only two
-// call sites are `reverseWrite`, past its content check, and `handleWrite`,
-// which this test does not invoke). The clock is therefore provably not
-// involved, and the event is still refused, by `currentDiskBlobHash ==
-// fileData.Content`.
+// Each of those asserts that something LANDS. All three are satisfied just as
+// well by a build with echo suppression removed outright — which would put the
+// peer in a write loop with itself, a strictly worse failure than the one they
+// were written for. This arm holds the other side: our own disk write coming
+// back around as a tree event is still REFUSED, by content identity
+// (`currentDiskBlobHash == fileData.Content`) and not by any clock.
 //
-// If the echo is caught with the clock disarmed, the clock is not the guard.
-func TestReverseWindow_ContentIdentityAlreadyStopsTheEcho(t *testing.T) {
+// It was originally the control that made the row-2 ask actionable rather than
+// a complaint — it established that the guard the clock was standing in front
+// of already existed. core-go's fix was to delete the clock and keep exactly
+// this guard, so the test needed no change at all; only its job did.
+//
+// The file is seeded on disk directly, so nothing in the write path ran for it
+// first. If the echo is caught anyway, content identity is the guard.
+func TestReverseWindow_ContentIdentityStopsTheEcho(t *testing.T) {
 	rig := newReverseRig(t)
 
 	a := []byte("bytes that are already on disk\n")
@@ -364,50 +377,45 @@ func TestReverseWindow_ContentIdentityAlreadyStopsTheEcho(t *testing.T) {
 		t.Fatalf("stat after: %v", err)
 	}
 	if !after.ModTime().Equal(before.ModTime()) {
-		t.Fatalf("the echo was rewritten (mtime %v -> %v) with the clock disarmed — "+
-			"the content circuit breaker did NOT catch it, which invalidates the packet's central claim. Re-derive before routing.",
+		t.Fatalf("ANTI-VACUITY ARM FAILED: the echo was rewritten (mtime %v -> %v). "+
+			"Content identity is no longer refusing our own write coming back as a tree event, which means "+
+			"the three property tests above are passing against a build with NO echo guard — a peer in a "+
+			"write loop with itself. Fix this before trusting any of them.",
 			before.ModTime(), after.ModTime())
 	}
-	t.Logf("CONTROL: the echo was refused with the clock provably disarmed for this path. " +
-		"The guard is currentDiskBlobHash == fileData.Content, not recentWriteWindow.")
 }
 
-// TestReverseWindow_TheClockEngagesOnlyAfterARealWrite pins the ordering the
-// whole argument rests on: inside `reverseWrite`, the content check returns
-// BEFORE `markWritten` is reached.
+// TestReverseWrite_ARefusedEchoDoesNotBlockTheNextUpdate keeps the property
+// that survives the clock's removal.
 //
-// Consequence — the clock cannot arm on an echo, because an echo never gets
-// past the content check. It arms only after a real tree-to-disk write, which
-// is precisely the moment when the NEXT event on that path is most likely to
-// be a genuine follow-up update rather than an echo.
-//
-// The differential against TestReverseWindow_SuppressesGenuinelyNewContent is
-// the evidence: identical second event, opposite outcome, and the only thing
-// that differs is whether the first event caused a write.
-func TestReverseWindow_TheClockEngagesOnlyAfterARealWrite(t *testing.T) {
+// It used to pin the ORDERING the whole row-2 argument rested on — the content
+// check returns before `markWritten`, so an echo can never arm the clock —
+// and with `reverseTracker` gone there is no ordering left to pin. What is
+// still worth asserting, and is not covered above, is the composition: an
+// event REFUSED by the echo guard must not poison the path for the genuine
+// update that follows it. A guard that latched on a refusal would pass every
+// other test in this file and silently stall exactly the path a burst is
+// hitting.
+func TestReverseWrite_ARefusedEchoDoesNotBlockTheNextUpdate(t *testing.T) {
 	rig := newReverseRig(t)
 
 	a := []byte("version A\n")
 	b := []byte("version B\n")
 
-	// Disk already holds A, so event 1 hits the content check and returns
-	// without arming the clock.
+	// Disk already holds A, so event 1 is refused by the content check.
 	if err := os.WriteFile(filepath.Join(rig.dir, "notes.md"), a, 0o600); err != nil {
 		t.Fatalf("seed disk: %v", err)
 	}
 	rig.emit("notes.md", rig.bind("notes.md", a), store.ChangeModified)
 	rig.barrier()
 
-	// Event 2 is the same event that was lost in the other test, at the same
-	// distance from event 1 — well inside five seconds.
+	// Event 2 is a genuine update on the path event 1 was refused on.
 	rig.emit("notes.md", rig.bind("notes.md", b), store.ChangeModified)
 	if !rig.waitForDisk("notes.md", b, 10*time.Second) {
-		t.Fatalf("SUBSTRATE CHANGED: version B was dropped even though event 1 did not write. "+
-			"markWritten is reachable without a write now — re-read reverseWrite and update the packet. Disk holds %q.",
-			string(rig.diskBytes("notes.md")))
+		t.Fatalf("REGRESSION: version B was dropped after a REFUSED echo on the same path. "+
+			"The echo guard is latching rather than deciding per event, so a path stalls for as long as "+
+			"echoes keep arriving on it. Disk holds %q.", string(rig.diskBytes("notes.md")))
 	}
-	t.Logf("ESTABLISHED: markWritten sits downstream of the content check. An echo cannot arm the clock; " +
-		"only a real write can, so the clock's five seconds always start at the exact moment a genuine follow-up is most likely.")
 }
 
 // -----------------------------------------------------------------------

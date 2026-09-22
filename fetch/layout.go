@@ -232,8 +232,60 @@ func lastSegment(s string) string {
 // `{tree-base}/{path}{tree_leaf_suffix}` (§6.5.3.1, Amendment 6). The
 // suffix is the publisher's, appended literally; URL rewriting at
 // consume time is not normative.
+//
+// **An absolute `/{peer}/…` path is resolved under THAT peer, not under
+// this layout's publisher**, which is §6.5.3's join read literally:
+// `{tree_url_prefix}/{peer_id}/{path}`, where the peer-id is the one the
+// path names. It is the static half of the rule
+// `ENTITY-CORE-PROTOCOL` §1.4 states for dispatch — an already-absolute
+// path passes through unchanged and a layer MUST NOT re-qualify it — and
+// it is the shape a republished view takes on this road: a gatherer's
+// static projection is a directory, so its author-namespaced evidence is
+// literally a file under `{prefix}/{author}/…`.
+//
+// ⚠ **Without this the failure is silent, not a 404 with a cause.**
+// `types.BuildTreeLeafURL` does a `TrimLeft(treePath, "/")`, so an
+// absolute path used to lose its leading slash and be appended to a base
+// that already ended in the *serving* peer's id — producing
+// `{origin}/{B}/{A}/…`, a well-formed URL for an object nobody publishes.
 func (l Layout) TreeLeafURL(treePath string) string {
+	if peer, rel, ok := splitAbsolutePath(treePath); ok {
+		return types.BuildTreeLeafURL(l.treeBaseFor(peer), rel, l.Endpoint.TreeLeafSuffix)
+	}
 	return types.BuildTreeLeafURL(l.treeBase(), treePath, l.Endpoint.TreeLeafSuffix)
+}
+
+// splitAbsolutePath splits `/{peer}/{rel}` into its two halves. A path
+// that is not absolute, or that names a peer and nothing under it, is not
+// one of these — reported rather than guessed at, because the caller's
+// fallback (treat it as peer-relative) is the correct reading of both.
+func splitAbsolutePath(p string) (peer, rel string, ok bool) {
+	if !strings.HasPrefix(p, "/") {
+		return "", "", false
+	}
+	rest := p[1:]
+	i := strings.Index(rest, "/")
+	if i <= 0 || i == len(rest)-1 {
+		return "", "", false
+	}
+	return rest[:i], rest[i+1:], true
+}
+
+// treeBaseFor is [Layout.treeBase] for a peer that is not necessarily
+// this layout's publisher — the join in §6.5.3's normative sentence with
+// the peer-id supplied rather than assumed.
+func (l Layout) treeBaseFor(peerID string) string {
+	if peerID == l.PeerID {
+		return l.treeBase()
+	}
+	base := l.resolvePrefix(l.Endpoint.TreeURLPrefix)
+	// The publisher's own id is baked into the peer-rooted arm of the
+	// prefix (see treeBase). Strip it back off before joining a different
+	// one, or the result names both peers and addresses neither.
+	if lastSegment(base) == l.PeerID {
+		base = strings.TrimSuffix(base, "/"+l.PeerID)
+	}
+	return base + "/" + peerID
 }
 
 // ListingURL is the URL of the listing at treePath. An empty treePath is

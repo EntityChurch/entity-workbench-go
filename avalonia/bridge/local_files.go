@@ -14,19 +14,23 @@ package main
 // that would be machinery maintained for an event that does not arrive.
 //
 // If mounts ever gain a real event source — a watcher-status feed is the
-// obvious candidate, and see below for why that does not exist yet — this
-// should grow the handle shape rather than start polling.
+// obvious candidate — this should grow the handle shape rather than start
+// polling.
 //
-// **What this surface cannot tell you: whether a watcher is running.**
-// `localfiles.WatcherConfigData` carries exactly that (`active` /
-// `stopped` / `error` plus a message) and is built as the *response* to a
-// `watch` operation, never written to a tree path; the handler keeps the
-// live set in an unexported map with no accessor. So a row says what was
-// configured, not what is running, and `watcherObservable` is false on
-// every row. A panel must render that as *unknown* rather than let a
-// reader infer that a configured mount is a live one — the AP45 rule that
-// a surface must say what it does not know, rather than let the absence
-// read as fine.
+// **Whether a watcher is running IS on this surface now.**
+// `localfiles.WatcherConfigData` (`active` / `stopped` / `error` plus a
+// message) used to be built only as the *response* to a `watch` operation,
+// with the live set in an unexported map and no accessor — so a row said what
+// was configured, not what was running, and `watcherObservable` was false on
+// every row. core-go persists it to `system/config/local/files/watch/{root}`
+// on every start/stop/error path as of 2026-09-17 (their tracker row 3), and
+// the model reads it.
+//
+// ⚠ **`watcherObservable` false is still a real state and is NOT `stopped`.**
+// It now means *no watch record for this root*, which is where a mount whose
+// watcher never started lands. A panel must render three states, not two — the
+// AP45 rule that a surface must say what it does not know still applies, it
+// just applies to a smaller set of rows than it used to.
 //
 // Note on the preamble below: cgo compiles the comment block
 // IMMEDIATELY preceding `import "C"` as C. Prose there is fed to gcc,
@@ -67,6 +71,8 @@ type localFilesMountDTO struct {
 	ConfigPath         string   `json:"configPath"`
 	FileCount          int      `json:"fileCount"`
 	WatcherObservable  bool     `json:"watcherObservable"`
+	WatcherStatus      string   `json:"watcherStatus"`
+	WatcherError       string   `json:"watcherError"`
 	Err                string   `json:"err"`
 }
 
@@ -113,6 +119,8 @@ func LocalFilesRender(peerHandle C.int64_t) (result *C.char) {
 			ConfigPath:         mnt.ConfigPath,
 			FileCount:          mnt.FileCount,
 			WatcherObservable:  mnt.WatcherObservable,
+			WatcherStatus:      mnt.WatcherStatus,
+			WatcherError:       mnt.WatcherError,
 			Err:                mnt.Err,
 		})
 	}

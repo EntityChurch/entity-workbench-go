@@ -693,7 +693,11 @@ func obtainEntries(ctx context.Context, c *fetch.Consumer, read FeedRead) ([]Gat
 		// second attribution path, and two code paths for one trust
 		// argument is how the weaker one ends up wearing the same UI.
 		if row.Attributed {
-			if sigEnt, _, _, err := c.SignatureEntityOver(ctx, "feed entry", ent); err == nil {
+			// `read.Subject` is the author, and it is the signer: the read
+			// above rejects any entry whose `author` is not the namespace it
+			// was found under (`FEED-R1`), so this is the checked value and
+			// not an assumption about who signs.
+			if sigEnt, _, _, err := c.SignatureEntityOver(ctx, "feed entry", read.Subject, ent); err == nil {
 				s := sigEnt
 				g.Signature = &s
 			}

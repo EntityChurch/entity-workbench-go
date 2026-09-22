@@ -396,4 +396,3 @@ func peerRelativeForTest(peerID, path string) string {
 	}
 	return path
 }
-
