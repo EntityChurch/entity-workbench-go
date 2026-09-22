@@ -2,7 +2,9 @@
 
 _Updated: 2026-09-04 · public: 0.9.0 (master) · working branch: `dev` (ahead of `master`)_
 
-> **Start here:** **§0X — one folder, one panel, no refresh buttons**, then
+> **Start here:** **§0Z — the L5 review, and the ladder that never runs**, then
+> **§0Y — the flow, run; and the capability surface**, then
+> **§0X — one folder, one panel, no refresh buttons**, then
 > **§0W — it works, and a folder is still not one object**, then
 > **§0V — driving the flow for real, and what it found**, then
 > **§0U — the control loop got a face**, then
@@ -24,7 +26,147 @@ _Updated: 2026-09-04 · public: 0.9.0 (master) · working branch: `dev` (ahead o
 > handoffs, and cross-team coordination. Write here for the next session, but a stranger reads
 > it.
 
-## §0X NEW (2026-09-04) — one folder across two peers, one panel for the job, and no refresh buttons
+## §0Z NEW (2026-09-04) — nobody asks our renderers whether they can draw an embed
+
+**Analysis session, nothing built.** Answering the L5 social-vocabulary review as the non-web
+seat turned into measurements about **our own tree**, and the headline one is a defect we have
+been shipping since the figure work landed.
+
+**First, the thing that is NOT a defect, because getting this backwards would send us building the
+wrong fix.** A renderer that cannot draw an HTML embed, or an SVG, is **fine**. Declining is a
+correct outcome: an HTML embed is an HTML document with everything that implies, and nobody should
+be obliged to become a browser engine to participate. The symmetry is the point — we could ship an
+embed type a browser cannot render either, and it would decline, and that would also be fine.
+**`format: "html"` on a site page already works exactly this way here**: we lower it to text and
+*say on screen* that we did and what was lost (`workbench/body_display.go:93-100`). That case is
+closed and correct, and the publisher's reason for HTML is worth recording since it was nowhere in
+our tree — it was chosen for the book as the **lighter** option against PDF, a priced tradeoff
+rather than a web default leaking in.
+
+**The defect is that for an embed, nothing is ever asked.**
+
+**A figure never reaches `APP-CONVENTION-EMBED`'s degradation ladder, because it stops being an
+embed one layer above the renderer.** `EmbedsToMarkdownImages` rewrites
+`::embed[fallback]{ref=x}` into `![fallback](x)` (`workbench/site_embed.go:120`) before anything
+else looks at the body. After that there is no embed, no `media_type` and no handler dispatch —
+there is a markdown image node. The spec's three-step ladder is unreachable by construction.
+We did not invent this: we transcribed it from `entity-browser-rust`'s `embed_to_markdown_image`
+on purpose, and **their doc comment names the reason as the HTML renderer** — the lowering exists
+to make `pulldown_cmark` emit `<img alt src>`. It works in our GUI by luck, because Markdig models
+an image as a `LinkInline` we happen to intercept.
+
+**In the terminal there is nothing left to decline, so it prints the source.** `entity-shell`'s
+`open` writes the display body verbatim (`shellcmd/cmd_browse.go:583`), and every figure comes out
+as the literal string `![Entity Demo Figure — …](assets/figures/demo.svg)`. EMBED §6 step 3 says
+*never dump raw source as visible text*; we do, for every figure, on every page. **The fallback
+text itself is fine and would read well — the terminal is never offered the choice.**
+
+**Three smaller ones from the same pass, all measured:**
+
+- **`renderer-caps` and `renditions` are implemented nowhere in the cohort** (zero hits in our Go,
+  our C# and `entity-browser-rust`'s Rust), and the cohort's own demo asset is an **SVG**, which
+  Avalonia's raster-only `Bitmap` cannot decode (`BrowserPanel.cs:1179`). So on the reference demo
+  site our GUI shows a caption and no picture. **Not drawing the SVG is fine** — adding an SVG
+  package is a dependency decision we have deliberately declined. What is wrong is that §5.3 is
+  the mechanism by which a publisher could have offered a PNG and a renderer could have declined
+  the SVG *for a stated reason*, and it is implemented by nobody — so what happens instead is a
+  silent absence, and an operator cannot tell it from a break. `V-CAPS-DECLINE` is **our** vector
+  and nothing in our tree exercises it.
+- **`fallback` is mandatory-non-empty in the spec and our parser accepts empty**, and says so in
+  the struct field (`workbench/site_embed.go:42`). Same tolerance in the reference, transcribed
+  deliberately. Routed rather than fixed unilaterally — a parser stricter than the reference is
+  how a figure appears in one browser and not the other.
+- **A narrowed publish drops entry signatures.** If the feed convention lands as drafted, an entry
+  needs a detached `system/signature` at `/{author}/system/signature/{hex}` — a **different
+  top-level prefix** from the entries. `Publish` narrows by `-prefix` and nothing else
+  (`publish/publish.go:195`; `IncludePath`/`IncludeType` refuse, `:225-231`), and "detached" means
+  the closure has no edge to follow. So the entries travel and their authorship does not. Routed
+  as the substrate item.
+
+**One thing that came out well, worth recording because it says the spec's basis is right.**
+`MarkdownRenderer.EmitImage` builds `StackPanel{Image, caption}` — which is the spec's
+`box{layout:"figure", children:[image, text(caption)]}`, arrived at independently by someone not
+reading the spec, with no broken-image glyph on any of its four failure paths. **The output basis
+survives contact with a non-web front end; the input lowering does not.**
+
+**Priced while we were there** (throwaway harness, deleted): a detached signature is **14.2 µs**
+and **255 bytes**, and `types.SignatureData`/`LocalSignaturePath` are already called in four
+places in our SDK. Per-entry signing is not a cost worth designing around.
+
+**The property to build against, and it is the whole scope of the fix we owe:** *a renderer that
+will not draw an embed must be able to say which embed it declined and why.* That is unsatisfiable
+today at any point in our pipeline, because `![alt](ref)` carries a reference and **no type** — so
+everything downstream guesses from a file extension, which is literally what our GUI does
+(`BrowserPanel.cs:1187`, a substring match on `"svg"`). The fix is to stop flattening the directive
+and carry a typed node to the renderer. **In a terminal the right answer is usually "HTML embed —
+not rendered here", printed, and that is a good outcome rather than a degraded one.**
+
+**Two capability rows closed in the same pass.** The reciprocal-grant gate *can* never open — zero
+calls to `MarkEstablishedViaRendezvousKey` in our tree, confirmed — **but marking our own path
+would be a lie and, worse, asymmetric**: our rendezvous backend is discovery (its header says it
+"surfaces candidates and stops"), the connection that follows is a dial-by-address, and the
+acceptor would never mark itself, which is the one-sided-claim shape the design forbids. Of the
+three dependencies a `Coordinator` needs, one ships, one is small, and one — `SRFLXGatherer` —
+**exists ready-made with every dependency exported and sits under `cmd/internal/`, where no other
+module can import it.** Routed to core-go. **The better question, routed to arch, is whether a
+punch is even the right fix**: it is NAT traversal, and the problem is two laptops on a LAN that
+can already reach each other. And on rings: all three variables measure **ring 1** while the
+vocabulary is ring 2; one mechanism for both is correct and we are not splitting it, but
+`Mode: both` is a ring-1 gesture wearing a ring-2 label.
+
+The findings went back to the specification authors as an internal review packet (not published;
+`docs/architecture/reviews/`, dated today). **Nothing here is built.** The embed declination gap is
+the one that is a live defect in a shipped surface, and it is not fixed.
+
+## §0Y (2026-09-04) — the two-peer flow found four defects, and the manual step may not need to exist
+
+**Running the flow through the panel found four things no gate could see**, which is the whole
+argument for running it. The one that matters most: **the first share between two machines was
+invisible to the receiver.** The panel asked for offers from the DECLARED devices, and connecting
+deliberately does not create a declaration — so a peer you had just connected to was not in that
+list. It broke both gestures at once: you could not share with someone until you had already
+shared with them, and a receiver saw no offer from anyone they had not already shared with. That
+is the only case that matters on day one. The other three: an `await` inside a loop over a
+collection the wake rebuilds (reliable on the accept path, contained only 8 times before the
+process dies); **both gestures completing in total silence**, because the panel read a `note`
+field the bridge replies do not have; and the panel **pasting a shell command at a GUI operator** —
+`connect <peer-id> <this-peer's host:port>` — which is AP71's shape inside the GUI, guidance
+correct for one surface shipped to another where nobody can act on it. Gate:
+`SyncPanelTwoPeerTests`, two real peers on loopback, driven through the panel's own handlers and
+**reading its prose**, which nothing else in the suite does.
+
+**And then the finding that reframes it.** Absorbing arch's capability-surface review turned up
+their A-5, which is about this seat: `sendReciprocalGrant` is gated on
+`EstablishedViaRendezvousKey()`, `core-go` ships `ext/signaling/peerwiring.Coordinator` which marks
+**both** halves (`coordinator.go:179` and `:211`), and nothing here uses it. Re-measured rather
+than carried: **`MarkEstablishedViaRendezvousKey` has zero call sites in `entitysdk/`, so the gate
+cannot open on any path we ship** — even though our rendezvous machinery
+(`entitysdk/rendezvous.go`, `signaling.go`) is substantial and ours. **So the manual dial I spent
+the session explaining may not need to exist.** That is D20 aimed at explanation rather than
+construction: we grep the kernel before we build, and did not grep it before documenting a
+limitation as permanent. AGENTS.md already carries the sentence for this — *a paragraph explaining
+why a limitation is correct closes the question permanently* — and this is its second instance.
+The fix is **not sized**; `peerwiring` needs three things injected by the caller. The finding is
+that the gate can never open, which is certain.
+
+**The vocabulary the operator said we lack, we have — it is just on no surface.** The V7 §3.6
+four-tuple `handlers × operations × resources × peers` is *which extension · which verb · what ·
+who*, the unit of management is a named bundle of them (a role, which
+`entitysdk/role.go` already wraps), and no fifth axis may be added — that is ruled, because three
+implementations had degraded named caps to *"has any token → allow"*. The sentence to design
+against is **"[Alice] may [read] [Holiday photos] via [content + tree]"**, with the test that a
+surface which cannot be expressed that way is reaching outside the authority model. Two
+constraints to know before anyone builds a capabilities panel: grants and signatures are
+**sensitive** and must not be rendered outside the operator role, and subscriptions under
+`system/capability/` should be **rejected** unless the scope is operator-class — so a live
+capabilities window is an operator-class consumer or a poll loop. **Checked: our watcher touches
+`app/workbench/*` and `app/share/records/` only, so it is clear today.** Absorption, the routing
+packet addressed to us that we had not read, and the tracking rows are in
+`docs/status/ABSORB-2026-09-04-the-capability-surface-and-a-routing-packet-we-had-not-read.md`.
+
+Green: `make -C avalonia test` 180/180.
+
+## §0X (2026-09-04) — one folder across two peers, one panel for the job, and no refresh buttons
 
 §0W's three findings are closed. The scoping in it over-estimated the first by a lot, and the
 reason is the transferable part.
